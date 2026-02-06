@@ -3,7 +3,7 @@ from so3krates_torch.tools.eval import evaluate_model, ensemble_prediction
 from so3krates_torch.tools.utils import save_results_hdf5
 from ase.io import read
 import torch
-from mace import data as mace_data
+from so3krates_torch.data.utils import KeySpecification
 from pathlib import Path
 import os
 
@@ -66,7 +66,7 @@ def run_evaluation(
         models.append(model)
 
     data = read(data_path, index=":")
-    keyspec = mace_data.utils.KeySpecification(
+    keyspec = KeySpecification(
         info_keys={
             "energy": energy_key,
             "dipole": dipole_key,

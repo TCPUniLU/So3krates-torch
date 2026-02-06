@@ -2,10 +2,10 @@ import logging
 import torch
 import numpy as np
 from typing import Tuple, List, Union, Optional
-from mace import data as mace_data
-from mace.tools import torch_geometric, torch_tools
-from mace.tools.torch_tools import to_numpy
-from mace.tools.utils import (
+from so3krates_torch.data.utils import KeySpecification
+from so3krates_torch.tools import torch_geometric, torch_tools
+from so3krates_torch.tools.torch_tools import to_numpy
+from so3krates_torch.tools.utils import (
     MetricsLogger,
     compute_mae,
     compute_q95,
@@ -34,7 +34,7 @@ def evaluate_model(
     compute_partial_charges: bool = False,
     return_att: bool = False,
     dtype: str = "float64",
-    key_spec: Optional[mace_data.utils.KeySpecification] = None,
+    key_spec: Optional[KeySpecification] = None,
 ) -> dict[str, Union[np.ndarray, List[np.ndarray]]]:
     """
     Evaluate a model on a list of ASE atoms objects.
@@ -44,7 +44,7 @@ def evaluate_model(
         model (torch.nn.Module): Trained model to evaluate.
         batch_size (int): Batch size for evaluation.
         device (str): Device to evaluate the model on (e.g., "cpu", "cuda").
-        model_type (str): Type of model ("so3lr", "so3krates", "mace").
+        model_type (str): Type of model ("so3lr", "so3krates").
         r_max_lr (float, optional): Long-range cutoff radius. Defaults to 12.0.
         multi_species (bool, optional): Whether molecules have different
                                        numbers of atoms. Defaults to False.
@@ -87,10 +87,9 @@ def evaluate_model(
     assert model_type.lower() in [
         "so3lr",
         "so3krates",
-        "mace",
     ], f"Unknown model type: {model_type}"
     key_spec = (
-        mace_data.utils.KeySpecification() if key_spec is None else key_spec
+        KeySpecification() if key_spec is None else key_spec
     )
 
     data_loader = create_dataloader_from_list(
@@ -252,7 +251,7 @@ def ensemble_prediction(
     compute_hirshfeld: bool = False,
     compute_dipole: bool = False,
     compute_partial_charges: bool = False,
-    key_spec: Optional[mace_data.utils.KeySpecification] = None,
+    key_spec: Optional[KeySpecification] = None,
 ) -> np.array:
     """
     Generate ensemble predictions for a list of ASE atoms objects using
@@ -266,7 +265,7 @@ def ensemble_prediction(
         models (list): List of trained models (torch.nn.Module objects).
         atoms_list (list): List of ASE atoms objects to evaluate on.
         device (str): Device to evaluate the models on (e.g., "cpu", "cuda").
-        model_type (str): Type of model ("so3lr", "so3krates", "mace").
+        model_type (str): Type of model ("so3lr", "so3krates").
         dtype (str, optional): Data type for model computations.
                               Defaults to "float64".
         batch_size (int, optional): Batch size for evaluation. Defaults to 1.
@@ -317,7 +316,7 @@ def ensemble_prediction(
     if compute_partial_charges:
         all_partial_charges = []
     key_spec = (
-        mace_data.utils.KeySpecification() if key_spec is None else key_spec
+        KeySpecification() if key_spec is None else key_spec
     )
     i = 0
     for model in models:
@@ -722,7 +721,7 @@ def test_ensemble(
         raise ValueError("Either atoms_list or path_to_data must be provided")
 
     # Create KeySpecification from the provided keys
-    keyspec = mace_data.utils.KeySpecification(
+    keyspec = KeySpecification(
         info_keys={
             "energy": energy_key,
             "dipole": dipole_key,

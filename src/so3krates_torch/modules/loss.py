@@ -1,14 +1,74 @@
+###########################################################################
+# Parts taken from MACE package: https://github.com/ACEsuit/mace
+###########################################################################
+
 import torch
 from typing import Optional, Dict
-from mace.modules.loss import (
-    weighted_mean_squared_error_energy,
-    mean_squared_error_forces,
-    weighted_mean_squared_error_dipole,
-    reduce_loss,
-)
 from torch_geometric.data import Batch
+import torch.distributed as dist
 
 TensorDict = Dict[str, torch.Tensor]
+def is_ddp_enabled():
+    return dist.is_initialized() and dist.get_world_size() > 1
+
+
+def reduce_loss(raw_loss: torch.Tensor, ddp: Optional[bool] = None) -> torch.Tensor:
+    """
+    Reduces an element-wise loss tensor.
+
+    If ddp is True and distributed is initialized, the function computes:
+
+        loss = (local_sum * world_size) / global_num_elements
+
+    Otherwise, it returns the regular mean.
+    """
+    ddp = is_ddp_enabled() if ddp is None else ddp
+    if ddp and dist.is_initialized():
+        world_size = dist.get_world_size()
+        n_local = raw_loss.numel()
+        loss_sum = raw_loss.sum()
+        total_samples = torch.tensor(
+            n_local, device=raw_loss.device, dtype=raw_loss.dtype
+        )
+        dist.all_reduce(total_samples, op=dist.ReduceOp.SUM)
+        return loss_sum * world_size / total_samples
+    return raw_loss.mean()
+
+def weighted_mean_squared_error_energy(
+    ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
+) -> torch.Tensor:
+    # Calculate per-graph number of atoms.
+    num_atoms = ref.ptr[1:] - ref.ptr[:-1]  # shape: [n_graphs]
+    raw_loss = (
+        ref.weight
+        * ref.energy_weight
+        * torch.square((ref["energy"] - pred["energy"]) / num_atoms)
+    )
+    return reduce_loss(raw_loss, ddp)
+
+def mean_squared_error_forces(
+    ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
+) -> torch.Tensor:
+    # Repeat per-graph weights to per-atom level.
+    configs_weight = torch.repeat_interleave(
+        ref.weight, ref.ptr[1:] - ref.ptr[:-1]
+    ).unsqueeze(-1)
+    configs_forces_weight = torch.repeat_interleave(
+        ref.forces_weight, ref.ptr[1:] - ref.ptr[:-1]
+    ).unsqueeze(-1)
+    raw_loss = (
+        configs_weight
+        * configs_forces_weight
+        * torch.square(ref["forces"] - pred["forces"])
+    )
+    return reduce_loss(raw_loss, ddp)
+
+def weighted_mean_squared_error_dipole(
+    ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
+) -> torch.Tensor:
+    num_atoms = (ref.ptr[1:] - ref.ptr[:-1]).unsqueeze(-1)
+    raw_loss = torch.square((ref["dipole"] - pred["dipole"]) / num_atoms)
+    return reduce_loss(raw_loss, ddp)
 
 
 def weighted_mean_squared_error_hirshfeld(

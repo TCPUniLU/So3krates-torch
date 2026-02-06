@@ -12,9 +12,8 @@ from ase.calculators.calculator import Calculator, all_changes
 from ase.stress import full_3x3_to_voigt_6_stress
 import numpy as np
 from so3krates_torch.data.atomic_data import AtomicData as So3Data
-from mace.tools import torch_geometric, torch_tools, utils
-from mace import data
-from mace.data.utils import KeySpecification
+from so3krates_torch.tools import torch_geometric, torch_tools,  utils
+from so3krates_torch.data.utils import KeySpecification, config_from_atoms
 import importlib.resources as resources
 
 
@@ -160,7 +159,10 @@ class TorchkratesCalculator(Calculator):
         self.r_max = float(r_maxs[0])
         self.r_max_lr = r_max_lr
         for model in self.models:
-            model.r_max_lr = r_max_lr
+            if r_max_lr is not None and getattr(
+                model, "use_lr", False
+            ):
+                model.r_max_lr = r_max_lr
 
         self.device = torch_tools.init_device(device)
         self.energy_units_to_eV = energy_units_to_eV
@@ -227,7 +229,7 @@ class TorchkratesCalculator(Calculator):
     def _atoms_to_batch(self, atoms, batch_size=1):
         self.key_specification.update(arrays_keys={self.charges_key: "Qs"})
 
-        config = data.config_from_atoms(
+        config = config_from_atoms(
             atoms, key_specification=self.key_specification
         )
         data_loader = torch_geometric.dataloader.DataLoader(
@@ -430,8 +432,8 @@ class SO3LRCalculator(TorchkratesCalculator):
         self,
         model_paths: Union[list, str, None] = None,
         models: Union[List[torch.nn.Module], torch.nn.Module, None] = None,
-        r_max_lr: Optional[float] = None,
-        dispersion_energy_cutoff_lr_damping: Optional[float] = None,
+        r_max_lr: Optional[float] = 12.0,
+        dispersion_energy_cutoff_lr_damping: Optional[float] = 2.0,
         compute_stress: bool = False,
         device: str = "cpu",
         energy_units_to_eV: float = 1.0,

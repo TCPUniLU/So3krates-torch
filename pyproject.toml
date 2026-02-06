@@ -41,7 +41,6 @@ classifiers = [
 dependencies = [
     "ase>=3.26.0",
     "h5py>=3.14.0",
-    "mace-torch>=0.3.14",
     "numpy>=1.26.4",
     "pyyaml>=6.0.2",
     "torch>=2.8.0",

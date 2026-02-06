@@ -1,6 +1,5 @@
 # Taken from MACE package: https://github.com/ACEsuit/mace
-# and modified by: Tobias Henkes
-
+# and modified for SO3Krates, SO3LR
 
 ###########################################################################################
 # Training script
@@ -24,12 +23,12 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch_ema import ExponentialMovingAverage
 
-from mace.cli.visualise_train import TrainingPlotter
+from so3krates_torch.cli.visualise_train import TrainingPlotter
 
-from mace.tools import torch_geometric
-from mace.tools.checkpoint import CheckpointHandler, CheckpointState
-from mace.tools.torch_tools import to_numpy
-from mace.tools.utils import (
+from so3krates_torch.tools import torch_geometric
+from so3krates_torch.tools.checkpoint import CheckpointHandler, CheckpointState
+from so3krates_torch.tools.torch_tools import to_numpy
+from so3krates_torch.tools.utils import (
     MetricsLogger,
 )
 from so3krates_torch.tools.eval import ModelEval

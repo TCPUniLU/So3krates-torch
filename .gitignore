@@ -41,3 +41,6 @@ dist/
 *.sh
 
 /development_junk
+
+CLAUDE.md
+/docs

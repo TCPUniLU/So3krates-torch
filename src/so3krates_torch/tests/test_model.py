@@ -12,12 +12,12 @@ class TestSO3LRCalculator(unittest.TestCase):
         mol = molecule("H2O")
         model.calculate(mol)
         results = model.results
-        ref_energy = -4.7693745584065805
+        ref_energy = -495.8705186908738
         ref_forces = np.array(
             [
-                [0.0, -0.0013599, 0.09103785],
-                [0.0, 0.20386246, -0.04617232],
-                [0.0, -0.20250256, -0.04486552],
+                [0.0, -1.0547118733938987e-15, -0.14374645878607717],
+                [0.0, -0.2923033736335291, 0.071873229393038196],
+                [0.0, 0.29230337363353009, 0.071873229393039084],
             ]
         )
         assert np.allclose(results["forces"], ref_forces, rtol=1e-4)

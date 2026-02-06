@@ -20,10 +20,17 @@ from so3krates_torch.modules.loss import (
     WeightedEnergyForcesHirshfeldLoss,
     WeightedEnergyForcesDipoleHirshfeldLoss,
 )
-from mace.data.utils import KeySpecification, compute_average_E0s
-from mace.modules.utils import compute_avg_num_neighbors
-from mace.tools.utils import MetricsLogger, setup_logger, AtomicNumberTable
-from mace.tools.checkpoint import CheckpointHandler, CheckpointState
+from so3krates_torch.data.utils import KeySpecification, compute_average_E0s
+from so3krates_torch.tools.utils import (
+    AtomicNumberTable,
+    MetricsLogger,
+    compute_avg_num_neighbors,
+    setup_logger,
+)
+from so3krates_torch.tools.checkpoint import (
+    CheckpointHandler,
+    CheckpointState,
+)
 from torch_ema import ExponentialMovingAverage
 from so3krates_torch.tools.train import train
 from so3krates_torch.tools.finetune import fuse_lora_weights, setup_finetuning

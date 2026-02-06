@@ -12,16 +12,14 @@ from typing import Optional, Sequence
 
 import torch.utils.data
 
-from mace.tools import (
+from so3krates_torch.tools.utils import (
     AtomicNumberTable,
     atomic_numbers_to_indices,
-    to_one_hot,
-    torch_geometric,
-    voigt_to_matrix,
 )
-
+from so3krates_torch.tools.torch_tools import to_one_hot, voigt_to_matrix
+from so3krates_torch.tools import torch_geometric
 from .neighborhood import get_neighborhood
-from mace.data.utils import Configuration
+from .utils import Configuration
 
 
 class AtomicData(torch_geometric.data.Data):
