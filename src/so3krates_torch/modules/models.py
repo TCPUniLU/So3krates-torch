@@ -429,7 +429,7 @@ class So3krates(torch.nn.Module):
             compute_edge_forces=compute_edge_forces,
         )
         return self._create_output_dict(
-            energy=total_energy,
+            total_energy=total_energy,
             forces=forces,
             virials=virials,
             stress=stress,

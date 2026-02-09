@@ -61,3 +61,5 @@ TRAINING:
 
 MISC:
   device: cpu
+  distributed: false  # set true for multi-GPU DDP training
+  # launcher: torchrun  # slurm | torchrun | mpi (required when distributed: true)

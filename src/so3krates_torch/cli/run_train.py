@@ -14,6 +14,7 @@ from so3krates_torch.tools.utils import (
     create_configs_from_list,
     create_data_from_configs,
 )
+from so3krates_torch.tools.distributed_tools import init_distributed
 from so3krates_torch.modules.loss import (
     WeightedEnergyForcesLoss,
     WeightedEnergyForcesDipoleLoss,
@@ -35,6 +36,8 @@ from torch_ema import ExponentialMovingAverage
 from so3krates_torch.tools.train import train
 from so3krates_torch.tools.finetune import fuse_lora_weights, setup_finetuning
 import os
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 
 
 DTYPE_MAP = {
@@ -174,8 +177,18 @@ def select_valid_subset(
     return data[:n_train], data[n_train : n_train + n_valid]
 
 
-def setup_data_loaders(config: dict) -> tuple:
-    """Setup training and validation data loaders."""
+def setup_data_loaders(
+    config: dict,
+    distributed: bool = False,
+    rank: int = 0,
+    world_size: int = 1,
+) -> tuple:
+    """Setup training and validation data loaders.
+
+    Returns (train_loader, valid_loaders, train_sampler,
+             avg_num_neighbors, num_elements,
+             average_atomic_energy_shifts).
+    """
     # Key specification for data loading
     keyspec = KeySpecification(
         info_keys={
@@ -212,10 +225,12 @@ def setup_data_loaders(config: dict) -> tuple:
                     head_data, valid_ratio, num_train, num_valid
                 )
             logging.info(
-                f"Head {head_name} - Training set size: {len(head_train_data)}"
+                f"Head {head_name} - Training set size: "
+                f"{len(head_train_data)}"
             )
             logging.info(
-                f"Head {head_name} - Validation set size: {len(head_val_data)}"
+                f"Head {head_name} - Validation set size: "
+                f"{len(head_val_data)}"
             )
 
             head_config_list_train = create_configs_from_list(
@@ -241,7 +256,9 @@ def setup_data_loaders(config: dict) -> tuple:
 
         average_atomic_energy_shifts = compute_average_E0s(
             collections_train=train_configs,
-            z_table=AtomicNumberTable([int(z) for z in range(1, 119)]),
+            z_table=AtomicNumberTable(
+                [int(z) for z in range(1, 119)]
+            ),
         )
         train_data = create_data_from_configs(
             train_configs,
@@ -250,21 +267,33 @@ def setup_data_loaders(config: dict) -> tuple:
             all_heads=list(heads.keys()),
         )
 
+        train_sampler = None
+        if distributed:
+            train_sampler = DistributedSampler(
+                train_data,
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=True,
+            )
+
         train_loader = create_dataloader_from_data(
             config_list=train_data,
             batch_size=batch_size,
             shuffle=True,
+            sampler=train_sampler,
         )
         num_elements = determine_num_elements(train_loader)
         avg_num_neighbors = compute_avg_num_neighbors(train_loader)
         logging.info(f"Training set size: {len(train_data)}")
         logging.info(f"Validation set size: {len(val_data)}")
         logging.info(
-            f"Number of unique elements in training set: {num_elements}"
+            f"Number of unique elements in training set: "
+            f"{num_elements}"
         )
         return (
             train_loader,
             val_data,
+            train_sampler,
             avg_num_neighbors,
             num_elements,
             average_atomic_energy_shifts,
@@ -282,7 +311,8 @@ def setup_data_loaders(config: dict) -> tuple:
             val_data = read(val_data_path, index=":")
             train_data = data
             logging.info(
-                f"Using separate validation data from {val_data_path}"
+                f"Using separate validation data from "
+                f"{val_data_path}"
             )
         else:
             valid_ratio = config["TRAINING"].get("valid_ratio", 0.1)
@@ -291,7 +321,10 @@ def setup_data_loaders(config: dict) -> tuple:
             train_data, val_data = select_valid_subset(
                 data, valid_ratio, num_train, num_valid
             )
-            logging.info(f"Splitting data with validation ratio {valid_ratio}")
+            logging.info(
+                f"Splitting data with validation ratio "
+                f"{valid_ratio}"
+            )
 
         train_configs = create_configs_from_list(
             atoms_list=train_data,
@@ -300,7 +333,9 @@ def setup_data_loaders(config: dict) -> tuple:
 
         average_atomic_energy_shifts = compute_average_E0s(
             collections_train=train_configs,
-            z_table=AtomicNumberTable([int(z) for z in range(1, 119)]),
+            z_table=AtomicNumberTable(
+                [int(z) for z in range(1, 119)]
+            ),
         )
         train_atomic_data = create_data_from_configs(
             train_configs,
@@ -308,10 +343,20 @@ def setup_data_loaders(config: dict) -> tuple:
             r_max_lr=r_max_lr,
         )
 
+        train_sampler = None
+        if distributed:
+            train_sampler = DistributedSampler(
+                train_atomic_data,
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=True,
+            )
+
         train_loader = create_dataloader_from_data(
             config_list=train_atomic_data,
             batch_size=batch_size,
             shuffle=True,
+            sampler=train_sampler,
         )
 
         num_elements = determine_num_elements(train_loader)
@@ -328,11 +373,13 @@ def setup_data_loaders(config: dict) -> tuple:
         logging.info(f"Training set size: {len(train_data)}")
         logging.info(f"Validation set size: {len(val_data)}")
         logging.info(
-            f"Number of unique elements in training set: {num_elements}"
+            f"Number of unique elements in training set: "
+            f"{num_elements}"
         )
         return (
             train_loader,
             {"main": valid_loader},
+            train_sampler,
             avg_num_neighbors,
             num_elements,
             average_atomic_energy_shifts,
@@ -813,29 +860,35 @@ def set_dtype_model(model: torch.nn.Module, dtype_str: str) -> None:
 
 
 def run_training(config: dict) -> None:
-    """
-    Execute the complete training pipeline.
+    """Execute the complete training pipeline."""
+    # ---- distributed init (must come first) ----
+    rank, local_rank, world_size, distributed = (
+        init_distributed_from_config(config)
+    )
 
-    Args:
-        config: Configuration dictionary containing all training parameters
-    """
     # Setup logging
-    # Clear all handlers from root
     logging.getLogger().handlers.clear()
-
-    # Clear all existing loggers
     logging.Logger.manager.loggerDict.clear()
     setup_logging(config)
+
+    if distributed:
+        logging.info(
+            f"Distributed training: rank={rank}, "
+            f"local_rank={local_rank}, world_size={world_size}"
+        )
 
     dtype_str = config["GENERAL"].get("default_dtype", "float32")
     torch.set_default_dtype(DTYPE_MAP[dtype_str])
 
     # Get pretrained model settings from config
-    pretrained_weights = config["TRAINING"].get("pretrained_weights", None)
-    pretrained_model = config["TRAINING"].get("pretrained_model", None)
+    pretrained_weights = config["TRAINING"].get(
+        "pretrained_weights", None
+    )
+    pretrained_model = config["TRAINING"].get(
+        "pretrained_model", None
+    )
     no_checkpoint = config["MISC"].get("no_checkpoint", False)
 
-    # Validate pretrained settings
     if pretrained_weights and pretrained_model:
         raise ValueError(
             "Cannot specify both 'pretrained_weights' and "
@@ -844,27 +897,26 @@ def run_training(config: dict) -> None:
             "'pretrained_model' for complete model."
         )
 
-    # Override checkpoint loading if specified in config
     if no_checkpoint:
         config["MISC"]["restart_latest"] = False
 
-    # Setup device
-    device_name = config["MISC"].get("device", "cuda")
-    device = torch.device(device_name)
+    # ---- device ----
+    if distributed:
+        device = torch.device(f"cuda:{local_rank}")
+        torch.cuda.set_device(device)
+    else:
+        device_name = config["MISC"].get("device", "cuda")
+        device = torch.device(device_name)
     logging.info(f"Using device: {device}")
 
-    # Handle model creation and pretrained loading
+    # ---- model creation ----
     warm_start = False
     if pretrained_model:
-        # Load complete pretrained model (ignores config architecture)
         model = load_pretrained_model_direct(pretrained_model, device)
         logging.info("Using complete pretrained model.")
         warm_start = True
     else:
-        # Create model from config
         model = create_model(config, device)
-
-        # Load pretrained weights if specified
         if pretrained_weights:
             load_pretrained_weights(model, pretrained_weights, device)
             warm_start = True
@@ -873,36 +925,50 @@ def run_training(config: dict) -> None:
         f"Model r_max ({model.r_max}) does not match config "
         f"r_max ({config['ARCHITECTURE'].get('r_max', 4.5)})"
     )
-
-    assert model.r_max_lr == config["ARCHITECTURE"].get("r_max_lr", None), (
-        f"Model r_max_lr ({model.r_max_lr}) does not match config "
-        f"r_max_lr ({config['ARCHITECTURE'].get('r_max_lr', None)})"
+    assert model.r_max_lr == config["ARCHITECTURE"].get(
+        "r_max_lr", None
+    ), (
+        f"Model r_max_lr ({model.r_max_lr}) does not match "
+        f"config r_max_lr "
+        f"({config['ARCHITECTURE'].get('r_max_lr', None)})"
     )
 
-    # Setup data loaders
+    # ---- data loaders (with DistributedSampler when needed) ----
     (
         train_loader,
         valid_loaders,
+        train_sampler,
         avg_num_neighbors,
         num_elements,
         average_atomic_energy_shifts,
-    ) = setup_data_loaders(config)
+    ) = setup_data_loaders(
+        config,
+        distributed=distributed,
+        rank=rank,
+        world_size=world_size,
+    )
 
     if warm_start:
-        if config["TRAINING"].get("ft_update_avg_num_neighbors", False):
+        if config["TRAINING"].get(
+            "ft_update_avg_num_neighbors", False
+        ):
             logging.info(
-                "Updating average number of neighbors from training data "
-                "for fine-tuning."
+                "Updating average number of neighbors from "
+                "training data for fine-tuning."
             )
             model.avg_num_neighbors = avg_num_neighbors
         else:
             logging.info(
-                "Retaining average number of neighbors from pretrained model "
-                "for fine-tuning."
+                "Retaining average number of neighbors from "
+                "pretrained model for fine-tuning."
             )
             avg_num_neighbors = model.avg_num_neighbors
-        atomic_energy_shifts = model.atomic_energy_output_block.energy_shifts
-        if config["TRAINING"].get("force_use_average_shifts", False):
+        atomic_energy_shifts = (
+            model.atomic_energy_output_block.energy_shifts
+        )
+        if config["TRAINING"].get(
+            "force_use_average_shifts", False
+        ):
             atomic_energy_shifts = average_atomic_energy_shifts
             logging.info(
                 "Forcing use of average atomic energy shifts "
@@ -913,42 +979,55 @@ def run_training(config: dict) -> None:
         atomic_shifts_config = config["ARCHITECTURE"].get(
             "atomic_energy_shifts", None
         )
-        # sort the shifts by atomic number and add all remaining elements as 0
         if atomic_shifts_config is not None:
             atomic_energy_shifts = process_config_atomic_energies(
                 atomic_shifts_config
             )
-            logging.info("Using provided atomic energy shifts for training.")
-
+            logging.info(
+                "Using provided atomic energy shifts for "
+                "training."
+            )
         else:
             atomic_energy_shifts = average_atomic_energy_shifts
             logging.info(
-                "Using average atomic energy shifts computed from training data for training."
+                "Using average atomic energy shifts computed "
+                "from training data for training."
             )
 
     # Setup finetuning if specified
     if config["TRAINING"].get("finetune_choice", None):
-        model = handle_finetuning(config, model, num_elements, device_name)
+        model = handle_finetuning(
+            config, model, num_elements, str(device)
+        )
 
     logging.info(f"Atomic energy shifts: {atomic_energy_shifts}")
     set_atomic_energy_shifts_in_model(model, atomic_energy_shifts)
     set_avg_num_neighbors_in_model(model, avg_num_neighbors)
+    set_dtype_model(
+        model, config["GENERAL"].get("default_dtype", "float32")
+    )
 
-    set_dtype_model(model, config["GENERAL"].get("default_dtype", "float32"))
+    # ---- wrap model in DDP (after all weight mutations) ----
+    ddp_model = None
+    if distributed:
+        ddp_model = wrap_model_ddp(model, local_rank)
 
     # Setup loss function
     loss_fn = setup_loss_function(config)
 
     # Setup optimizer and scheduler
-    optimizer, lr_scheduler = setup_optimizer_and_scheduler(model, config)
+    optimizer, lr_scheduler = setup_optimizer_and_scheduler(
+        model, config
+    )
 
     # Setup training tools
-    logger, checkpoint_handler, ema = setup_training_tools(config, model)
+    logger, checkpoint_handler, ema = setup_training_tools(
+        config, model
+    )
 
-    # Load checkpoint if exists (unless pretrained model was loaded)
+    # Load checkpoint if exists
     start_epoch = 0
     if not pretrained_weights and not pretrained_model:
-        # Skip checkpoint if any pretrained model was loaded
         start_epoch = load_checkpoint_if_exists(
             model=model,
             optimizer=optimizer,
@@ -959,37 +1038,42 @@ def run_training(config: dict) -> None:
             config=config,
         )
 
-    logging.info("Model, data loaders, and training components initialized")
+    logging.info(
+        "Model, data loaders, and training components initialized"
+    )
     if start_epoch > 0:
-        logging.info(f"Resuming training from epoch {start_epoch}")
+        logging.info(
+            f"Resuming training from epoch {start_epoch}"
+        )
     else:
         logging.info("Starting fresh training.")
 
-    # Setup training parameters
+    # Training parameters
     max_num_epochs = config["TRAINING"]["num_epochs"]
     eval_interval = config["TRAINING"].get("eval_interval", 1)
     patience = config["TRAINING"].get("patience", 50)
     max_grad_norm = config["TRAINING"].get("clip_grad", 10.0)
     log_wandb = config["MISC"].get("log_wandb", False)
-    save_all_checkpoints = config["MISC"].get("keep_checkpoints", False)
+    save_all_checkpoints = config["MISC"].get(
+        "keep_checkpoints", False
+    )
 
-    # Setup output arguments for model evaluation
     output_args = {
-        "forces": True,  # Always compute forces for training
+        "forces": True,
         "virials": config["GENERAL"].get("compute_stress", False),
         "stress": config["GENERAL"].get("compute_stress", False),
     }
 
-    # Get error logging type
     log_errors = config["MISC"].get("error_table", "PerAtomMAE")
 
     if config["ARCHITECTURE"].get("use_multihead", False):
         logging.info(
-            "Enabling head selection for multi-head model during training."
+            "Enabling head selection for multi-head model "
+            "during training."
         )
         model.select_heads = True
+
     logging.info("Starting training loop...")
-    # Start training
     train(
         model=model,
         loss_fn=loss_fn,
@@ -1010,18 +1094,19 @@ def run_training(config: dict) -> None:
         ema=ema,
         max_grad_norm=max_grad_norm,
         log_wandb=log_wandb,
-        distributed=False,  # Single GPU training for now
+        distributed=distributed,
         save_all_checkpoints=save_all_checkpoints,
-        plotter=None,  # No plotting for now
-        distributed_model=None,
-        train_sampler=None,
-        rank=0,
+        plotter=None,
+        distributed_model=ddp_model,
+        train_sampler=train_sampler,
+        rank=rank,
     )
     logging.info("Training completed successfully!")
 
     if config["ARCHITECTURE"].get("use_multihead", False):
         logging.info(
-            "Disabling head selection for multi-head model after training."
+            "Disabling head selection for multi-head model "
+            "after training."
         )
         model.select_heads = False
 
@@ -1030,16 +1115,46 @@ def run_training(config: dict) -> None:
         "lora",
         "vera",
     ]:
-        logging.info("Fusing LoRA weights into base model for saving...")
+        logging.info(
+            "Fusing LoRA weights into base model for saving..."
+        )
         model = fuse_lora_weights(model)
         logging.info("LoRA weights fused successfully.")
-    # TODO: use EMA weights if enabled before saving
 
-    # save the model in the working directory
-    final_model_path = f'{config["GENERAL"]["name_exp"]}.pth'
+    # Only rank 0 saves the final model
+    if rank == 0:
+        final_model_path = (
+            f'{config["GENERAL"]["name_exp"]}.pth'
+        )
+        torch.save(model.state_dict(), final_model_path)
+        torch.save(
+            model, final_model_path.replace(".pth", ".model")
+        )
 
-    torch.save(model.state_dict(), final_model_path)
-    torch.save(model, final_model_path.replace(".pth", ".model"))
+def init_distributed_from_config(config: dict):
+    """Initialise distributed training and return rank info.
+
+    Returns (rank, local_rank, world_size, distributed_flag).
+    When distributed is disabled the process group is *not* created
+    and all ranks default to 0 / world_size 1.
+    """
+    distributed = config["MISC"].get("distributed", False)
+    rank, local_rank, world_size = init_distributed(
+        distributed=distributed,
+        launcher=config["MISC"].get("launcher", None),
+    )
+    is_distributed = distributed and world_size > 1
+    return rank, local_rank, world_size, is_distributed
+
+
+def wrap_model_ddp(model, local_rank):
+    """Wrap an already-device-placed model in DDP."""
+    device = torch.device(f"cuda:{local_rank}")
+    model = model.to(device)
+    return DDP(model, device_ids=[local_rank])
+
+
+
 
 
 def main():

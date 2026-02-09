@@ -51,6 +51,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pre-commit", "pytest"]
+slurm = ["python-hostlist"]
 
 [project.urls]
 homepage = "https://github.com/tohenkes/So3krates-torch"

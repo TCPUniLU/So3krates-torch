@@ -793,6 +793,7 @@ def create_dataloader_from_list(
     drop_last: bool = False,
     z_table: AtomicNumberTable = None,
     head_name: str = None,
+    sampler=None,
 ):
     data_loader = DataLoader(
         dataset=create_data_from_list(
@@ -804,8 +805,9 @@ def create_dataloader_from_list(
             head_name=head_name,
         ),
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=(shuffle if sampler is None else False),
         drop_last=drop_last,
+        sampler=sampler,
     )
     return data_loader
 
@@ -815,12 +817,14 @@ def create_dataloader_from_data(
     batch_size: int,
     shuffle: bool = False,
     drop_last: bool = False,
+    sampler=None,
 ):
     data_loader = DataLoader(
         dataset=config_list,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=(shuffle if sampler is None else False),
         drop_last=drop_last,
+        sampler=sampler,
     )
     return data_loader
 

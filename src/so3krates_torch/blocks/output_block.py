@@ -208,11 +208,15 @@ class MultiAtomicEnergyOutputHead(AtomicEnergyOutputHead):
 
         self.layers_weights = nn.ParameterList()
         self.layers_bias = nn.ParameterList()
-        for _ in range(layers - 1):
+        for i in range(layers - 1):
+            in_dim = (
+                num_features if i == 0
+                else energy_regression_dim
+            )
             multi_head_weights = nn.Parameter(
                 torch.empty(
                     self.num_output_heads,
-                    num_features,
+                    in_dim,
                     energy_regression_dim,
                     dtype=torch.get_default_dtype(),
                     device=device,
@@ -235,10 +239,13 @@ class MultiAtomicEnergyOutputHead(AtomicEnergyOutputHead):
             self.layers_weights.append(multi_head_weights)
             self.layers_bias.append(multi_head_bias)
 
+        final_input_dim = (
+            num_features if layers == 1 else energy_regression_dim
+        )
         multi_head_final_weights = nn.Parameter(
             torch.empty(
                 self.num_output_heads,
-                energy_regression_dim,
+                final_input_dim,
                 final_output_features,
                 dtype=torch.get_default_dtype(),
                 device=device,
@@ -315,21 +322,43 @@ class MultiAtomicEnergyOutputHead(AtomicEnergyOutputHead):
         atomic_numbers: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
 
-        for layer_weights, layer_bias in zip(
-            self.layers_weights, self.layers_bias
+        for i, (layer_weights, layer_bias) in enumerate(
+            zip(self.layers_weights, self.layers_bias)
         ):
-            # inv_features shape: (num_nodes, num_features)
-            # layer_weights shape: (num_heads, num_features, energy_regression_dim)
-            # layer_bias shape: (num_heads, energy_regression_dim)
-            inv_features = torch.einsum(
-                "nf, hfd -> nhd", inv_features, layer_weights
-            ) + layer_bias.unsqueeze(0)
+            if i == 0:
+                # First layer: 2D→3D expansion
+                # (n,f) @ (h,f,d) → (n,h,d)
+                inv_features = torch.einsum(
+                    "nf, hfd -> nhd",
+                    inv_features,
+                    layer_weights,
+                ) + layer_bias.unsqueeze(0)
+            else:
+                # Subsequent layers: 3D→3D
+                # (n,h,d) @ (h,d,f) → (n,h,f)
+                inv_features = torch.einsum(
+                    "nhd, hdf -> nhf",
+                    inv_features,
+                    layer_weights,
+                ) + layer_bias.unsqueeze(0)
             if self.use_non_linearity:
                 inv_features = self.non_linearity(inv_features)
 
-        atomic_energies = torch.einsum(
-            "nhd, hdf -> nhf", inv_features, self.final_layer_weights
-        ) + self.final_layer_bias.unsqueeze(0)
+        if len(self.layers_weights) == 0:
+            # layers=1: no intermediate layers, 2D→3D
+            # (n,f) @ (h,f,d) → (n,h,d)
+            atomic_energies = torch.einsum(
+                "nf, hfd -> nhd",
+                inv_features,
+                self.final_layer_weights,
+            ) + self.final_layer_bias.unsqueeze(0)
+        else:
+            # (n,h,d) @ (h,d,f) → (n,h,f)
+            atomic_energies = torch.einsum(
+                "nhd, hdf -> nhf",
+                inv_features,
+                self.final_layer_weights,
+            ) + self.final_layer_bias.unsqueeze(0)
         if self.final_non_linearity:
             atomic_energies = self.non_linearity(atomic_energies)
 
