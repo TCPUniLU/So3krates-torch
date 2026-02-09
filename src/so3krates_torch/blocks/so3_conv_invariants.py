@@ -3,7 +3,7 @@ from typing import Callable, List, Dict, Optional
 import torch.nn as nn
 import itertools as it
 import numpy as np
-import pkg_resources
+import importlib.resources
 from so3krates_torch.tools.scatter import scatter_sum
 
 
@@ -38,8 +38,10 @@ indx_fn = lambda x: int((x + 1) ** 2) if x >= 0 else 0
 
 
 def load_cgmatrix():
-    stream = pkg_resources.resource_stream(__name__, "cgmatrix.npz")
-    return np.load(stream)["cg"]
+    """Load the precomputed Clebsch-Gordan matrix from the bundled resource file."""
+    ref = importlib.resources.files(__package__).joinpath("cgmatrix.npz")
+    with importlib.resources.as_file(ref) as path:
+        return np.load(path)["cg"]
 
 
 def init_clebsch_gordan_matrix(degrees, l_out_max=0):
