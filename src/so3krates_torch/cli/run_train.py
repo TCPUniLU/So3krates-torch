@@ -21,7 +21,15 @@ from so3krates_torch.modules.loss import (
     WeightedEnergyForcesHirshfeldLoss,
     WeightedEnergyForcesDipoleHirshfeldLoss,
 )
-from so3krates_torch.data.utils import KeySpecification, compute_average_E0s
+from so3krates_torch.data.utils import (
+    KeySpecification,
+    compute_average_E0s,
+)
+from so3krates_torch.data.hdf5_utils import (
+    detect_file_format,
+    PreprocessedHDF5Dataset,
+    validate_preprocessed_hdf5,
+)
 from so3krates_torch.tools.utils import (
     AtomicNumberTable,
     MetricsLogger,
@@ -300,49 +308,138 @@ def setup_data_loaders(
         )
 
     else:
-        # Load data
-        data_path = config["TRAINING"]["path_to_train_data"]
-        logging.info(f"Loading data from {data_path}")
-        data = read(data_path, index=":")
+        # Load training data
+        train_path = config["TRAINING"]["path_to_train_data"]
+        logging.info(f"Loading training data from {train_path}")
 
-        # Split data
-        val_data_path = config["TRAINING"].get("path_to_val_data")
-        if val_data_path:
-            val_data = read(val_data_path, index=":")
-            train_data = data
+        # Check if data is preprocessed (explicit config or auto-detect)
+        is_train_preprocessed = config["TRAINING"].get(
+            "data_preprocessed", None
+        )
+
+        if is_train_preprocessed is None:
+            # Auto-detect from file format
+            file_format = detect_file_format(train_path)
+            is_train_preprocessed = file_format == "hdf5_preprocessed"
+            logging.info(f"Auto-detected train format: {file_format}")
+        else:
+            # User explicitly specified
             logging.info(
-                f"Using separate validation data from "
-                f"{val_data_path}"
+                f"Using config-specified train "
+                f"data_preprocessed={is_train_preprocessed}"
+            )
+            # Validate that file matches expectation
+            if is_train_preprocessed:
+                if not train_path.endswith((".h5", ".hdf5")):
+                    raise ValueError(
+                        f"data_preprocessed=true but file is not HDF5: "
+                        f"{train_path}"
+                    )
+                # Validate it actually contains preprocessed data
+                validate_preprocessed_hdf5(
+                    train_path,
+                    expected_r_max=r_max,
+                    expected_r_max_lr=r_max_lr,
+                )
+
+        # Load training data based on format
+        if is_train_preprocessed:
+            # Load preprocessed HDF5 directly (fast path)
+            logging.info(
+                "Loading preprocessed HDF5 training data "
+                "(with neighbor lists)"
+            )
+            train_dataset = PreprocessedHDF5Dataset(
+                hdf5_path=train_path,
+                validate_cutoffs=True,
+                expected_r_max=r_max,
+                expected_r_max_lr=r_max_lr,
+            )
+            z_table = train_dataset.z_table
+            avg_num_neighbors = train_dataset.metadata.get(
+                "avg_num_neighbors", None
+            )
+
+            # For preprocessed data, we don't need to split
+            # (assume already split)
+            train_atomic_data = train_dataset
+            train_configs = None  # Not available for preprocessed
+
+        else:
+            # Load via Configuration pathway (XYZ or raw HDF5)
+            if train_path.endswith(".xyz"):
+                logging.info("Loading XYZ training data")
+                data = read(train_path, index=":")
+            elif train_path.endswith((".h5", ".hdf5")):
+                logging.info("Loading raw HDF5 training data")
+                from so3krates_torch.data.hdf5_utils import (
+                    load_atoms_from_hdf5,
+                )
+
+                data = load_atoms_from_hdf5(train_path, index=None)
+            else:
+                raise ValueError(
+                    f"Unsupported training file format: {train_path}"
+                )
+
+            # Split data if needed
+            val_data_path = config["TRAINING"].get("path_to_val_data")
+            if val_data_path:
+                train_data = data
+                logging.info(
+                    f"Using separate validation data from "
+                    f"{val_data_path}"
+                )
+            else:
+                valid_ratio = config["TRAINING"].get("valid_ratio", 0.1)
+                num_train = config["TRAINING"].get("num_train", None)
+                num_valid = config["TRAINING"].get("num_valid", None)
+                train_data, _ = select_valid_subset(
+                    data, valid_ratio, num_train, num_valid
+                )
+                logging.info(
+                    f"Splitting training data with validation ratio "
+                    f"{valid_ratio}"
+                )
+
+            # Create configurations
+            train_configs = create_configs_from_list(
+                atoms_list=train_data,
+                key_specification=keyspec,
+            )
+
+            # Create z_table
+            all_zs = set()
+            for config in train_configs:
+                all_zs.update(config.atomic_numbers)
+            z_table = AtomicNumberTable(sorted(list(all_zs)))
+
+            # Preprocess (compute neighbor lists)
+            logging.info("Preprocessing training data (computing neighbor lists)")
+            train_atomic_data = create_data_from_configs(
+                train_configs,
+                r_max=r_max,
+                r_max_lr=r_max_lr,
+            )
+            avg_num_neighbors = None  # Will be computed below
+
+        # Compute average atomic energy shifts
+        if train_configs is not None:
+            average_atomic_energy_shifts = compute_average_E0s(
+                collections_train=train_configs,
+                z_table=z_table,
             )
         else:
-            valid_ratio = config["TRAINING"].get("valid_ratio", 0.1)
-            num_train = config["TRAINING"].get("num_train", None)
-            num_valid = config["TRAINING"].get("num_valid", None)
-            train_data, val_data = select_valid_subset(
-                data, valid_ratio, num_train, num_valid
+            # For preprocessed data, we can't compute E0s
+            logging.warning(
+                "Using preprocessed data: cannot compute atomic "
+                "energy shifts (E0s). Using zeros."
             )
-            logging.info(
-                f"Splitting data with validation ratio "
-                f"{valid_ratio}"
-            )
+            average_atomic_energy_shifts = {
+                z: 0.0 for z in z_table.zs
+            }
 
-        train_configs = create_configs_from_list(
-            atoms_list=train_data,
-            key_specification=keyspec,
-        )
-
-        average_atomic_energy_shifts = compute_average_E0s(
-            collections_train=train_configs,
-            z_table=AtomicNumberTable(
-                [int(z) for z in range(1, 119)]
-            ),
-        )
-        train_atomic_data = create_data_from_configs(
-            train_configs,
-            r_max=r_max,
-            r_max_lr=r_max_lr,
-        )
-
+        # Create training sampler and loader
         train_sampler = None
         if distributed:
             train_sampler = DistributedSampler(
@@ -355,30 +452,124 @@ def setup_data_loaders(
         train_loader = create_dataloader_from_data(
             config_list=train_atomic_data,
             batch_size=batch_size,
-            shuffle=True,
+            shuffle=(train_sampler is None),
             sampler=train_sampler,
         )
 
+        # Compute metrics
         num_elements = determine_num_elements(train_loader)
-        avg_num_neighbors = compute_avg_num_neighbors(train_loader)
+        if avg_num_neighbors is None:
+            avg_num_neighbors = compute_avg_num_neighbors(train_loader)
 
-        valid_loader = create_dataloader_from_list(
-            val_data,
-            batch_size=valid_batch_size,
-            r_max=r_max,
-            r_max_lr=r_max_lr,
-            key_specification=keyspec,
-            shuffle=False,
-        )
-        logging.info(f"Training set size: {len(train_data)}")
-        logging.info(f"Validation set size: {len(val_data)}")
+        # Load validation data
+        val_data_path = config["TRAINING"].get("path_to_val_data")
+        if val_data_path:
+            logging.info(f"Loading validation data from {val_data_path}")
+
+            # Check if validation data is preprocessed
+            is_valid_preprocessed = config["TRAINING"].get(
+                "valid_data_preprocessed", None
+            )
+
+            if is_valid_preprocessed is None:
+                # Auto-detect
+                valid_format = detect_file_format(val_data_path)
+                is_valid_preprocessed = (
+                    valid_format == "hdf5_preprocessed"
+                )
+                logging.info(
+                    f"Auto-detected validation format: {valid_format}"
+                )
+            else:
+                logging.info(
+                    f"Using config-specified validation "
+                    f"data_preprocessed={is_valid_preprocessed}"
+                )
+                if is_valid_preprocessed:
+                    validate_preprocessed_hdf5(
+                        val_data_path,
+                        expected_r_max=r_max,
+                        expected_r_max_lr=r_max_lr,
+                    )
+
+            if is_valid_preprocessed:
+                # Load preprocessed validation data
+                valid_dataset = PreprocessedHDF5Dataset(
+                    hdf5_path=val_data_path,
+                    validate_cutoffs=True,
+                    expected_r_max=r_max,
+                    expected_r_max_lr=r_max_lr,
+                )
+                valid_loader = create_dataloader_from_data(
+                    config_list=valid_dataset,
+                    batch_size=valid_batch_size,
+                    shuffle=False,
+                )
+            else:
+                # Load validation data via Configuration pathway
+                if val_data_path.endswith(".xyz"):
+                    val_data = read(val_data_path, index=":")
+                elif val_data_path.endswith((".h5", ".hdf5")):
+                    from so3krates_torch.data.hdf5_utils import (
+                        load_atoms_from_hdf5,
+                    )
+
+                    val_data = load_atoms_from_hdf5(
+                        val_data_path, index=None
+                    )
+                else:
+                    raise ValueError(
+                        f"Unsupported validation file format: "
+                        f"{val_data_path}"
+                    )
+
+                valid_loader = create_dataloader_from_list(
+                    val_data,
+                    batch_size=valid_batch_size,
+                    r_max=r_max,
+                    r_max_lr=r_max_lr,
+                    key_specification=keyspec,
+                    shuffle=False,
+                )
+        else:
+            # Use split from training data
+            if is_train_preprocessed:
+                logging.warning(
+                    "Using preprocessed training data without separate "
+                    "validation set. Validation will be disabled."
+                )
+                valid_loader = None
+            else:
+                # Re-split to get validation data
+                valid_ratio = config["TRAINING"].get("valid_ratio", 0.1)
+                num_train = config["TRAINING"].get("num_train", None)
+                num_valid = config["TRAINING"].get("num_valid", None)
+                _, val_data = select_valid_subset(
+                    data, valid_ratio, num_train, num_valid
+                )
+
+                valid_loader = create_dataloader_from_list(
+                    val_data,
+                    batch_size=valid_batch_size,
+                    r_max=r_max,
+                    r_max_lr=r_max_lr,
+                    key_specification=keyspec,
+                    shuffle=False,
+                )
+
+        logging.info(f"Training set size: {len(train_atomic_data)}")
+        if valid_loader is not None:
+            logging.info(
+                f"Validation set size: "
+                f"{len(valid_loader.dataset)}"
+            )
         logging.info(
             f"Number of unique elements in training set: "
             f"{num_elements}"
         )
         return (
             train_loader,
-            {"main": valid_loader},
+            {"main": valid_loader} if valid_loader else {},
             train_sampler,
             avg_num_neighbors,
             num_elements,

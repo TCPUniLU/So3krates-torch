@@ -47,6 +47,7 @@ dependencies = [
     "torchvision>=0.23.0",
     "torchaudio>=2.8.0",
     "torch-geometric==2.7.0",
+    "tqdm>=4.66.0",
 ]
 
 [project.optional-dependencies]
@@ -78,3 +79,4 @@ torchkrates-torch2jax = "so3krates_torch.cli.torch_to_jax:main"
 torchkrates-eval = "so3krates_torch.cli.run_eval:main"
 torchkrates-metric = "so3krates_torch.cli.run_metric:main"
 torchkrates-train = "so3krates_torch.cli.run_train:main"
+torchkrates-preprocess = "so3krates_torch.cli.run_preprocess:main"

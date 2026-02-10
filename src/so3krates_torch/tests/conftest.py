@@ -188,3 +188,114 @@ def make_batch_list(device):
         return next(iter(data_loader)).to(device)
 
     return _make
+
+
+@pytest.fixture
+def example_xyz_with_data(tmp_path):
+    """Create XYZ file with energy/forces for testing."""
+    from ase.build import molecule
+    import ase.io
+
+    # Create a few molecules with properties
+    atoms_list = []
+    for mol_name in ["H2O", "NH3", "CH4"]:
+        atoms = molecule(mol_name)
+        # Add fake energy and forces
+        atoms.info["REF_energy"] = -10.0 * len(atoms)
+        atoms.arrays["REF_forces"] = np.random.randn(
+            len(atoms), 3
+        ) * 0.1
+        atoms_list.append(atoms)
+
+    # Write to XYZ
+    xyz_path = tmp_path / "test_data.xyz"
+    ase.io.write(xyz_path, atoms_list)
+    return str(xyz_path)
+
+
+@pytest.fixture
+def example_raw_hdf5(tmp_path):
+    """Create raw HDF5 file for testing."""
+    from ase.build import molecule
+    from so3krates_torch.data.hdf5_utils import save_atoms_to_hdf5
+    from so3krates_torch.data.utils import KeySpecification
+
+    # Create molecules with properties
+    atoms_list = []
+    for mol_name in ["H2O", "NH3", "CH4"]:
+        atoms = molecule(mol_name)
+        atoms.info["REF_energy"] = -10.0 * len(atoms)
+        atoms.arrays["REF_forces"] = np.random.randn(
+            len(atoms), 3
+        ) * 0.1
+        atoms_list.append(atoms)
+
+    # Save to raw HDF5
+    hdf5_path = tmp_path / "test_raw.h5"
+    keyspec = KeySpecification(
+        info_keys={"energy": "REF_energy"},
+        arrays_keys={"forces": "REF_forces"},
+    )
+    save_atoms_to_hdf5(atoms_list, str(hdf5_path), keyspec)
+    return str(hdf5_path)
+
+
+@pytest.fixture
+def example_preprocessed_hdf5(tmp_path):
+    """Create preprocessed HDF5 file for testing."""
+    from ase.build import molecule
+    from so3krates_torch.data.hdf5_utils import (
+        save_preprocessed_hdf5,
+    )
+    from so3krates_torch.data.utils import (
+        KeySpecification,
+        config_from_atoms,
+    )
+    from so3krates_torch.data.atomic_data import AtomicData
+    from so3krates_torch.tools.utils import AtomicNumberTable
+
+    # Create molecules with properties
+    atoms_list = []
+    for mol_name in ["H2O", "NH3", "CH4"]:
+        atoms = molecule(mol_name)
+        atoms.info["REF_energy"] = -10.0 * len(atoms)
+        atoms.arrays["REF_forces"] = np.random.randn(
+            len(atoms), 3
+        ) * 0.1
+        atoms_list.append(atoms)
+
+    # Convert to AtomicData
+    keyspec = KeySpecification(
+        info_keys={"energy": "REF_energy"},
+        arrays_keys={"forces": "REF_forces"},
+    )
+    configs = [
+        config_from_atoms(atoms, keyspec) for atoms in atoms_list
+    ]
+
+    # Create z_table
+    all_zs = set()
+    for config in configs:
+        all_zs.update(config.atomic_numbers)
+    z_table = AtomicNumberTable(sorted(list(all_zs)))
+
+    # Preprocess
+    r_max = 5.0
+    r_max_lr = None
+    data_list = [
+        AtomicData.from_config(
+            config, z_table=z_table, cutoff=r_max, cutoff_lr=r_max_lr
+        )
+        for config in configs
+    ]
+
+    # Save to preprocessed HDF5
+    hdf5_path = tmp_path / "test_preprocessed.h5"
+    save_preprocessed_hdf5(
+        data_list,
+        str(hdf5_path),
+        r_max=r_max,
+        r_max_lr=r_max_lr,
+        z_table=z_table,
+    )
+    return str(hdf5_path)
