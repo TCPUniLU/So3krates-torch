@@ -392,35 +392,6 @@ class TestCLIPreprocess:
         assert result.returncode == 0, f"stderr: {result.stderr}"
         assert output_h5.exists()
 
-    def test_parallel_preprocessing(self, tmp_path):
-        """Test parallel preprocessing with multiple workers."""
-        data_dir = Path(__file__).parent / "data"
-        input_xyz = data_dir / "aqm_small.xyz"
-        output_h5 = tmp_path / "parallel.h5"
-
-        # Run with 2 workers
-        result = subprocess.run(
-            [
-                "python",
-                "-m",
-                "so3krates_torch.cli.run_preprocess",
-                "--input",
-                str(input_xyz),
-                "--output",
-                str(output_h5),
-                "--mode",
-                "preprocessed",
-                "--r-max",
-                "6.0",
-                "--num-workers",
-                "2",
-            ],
-            capture_output=True,
-            text=True,
-        )
-
-        assert result.returncode == 0
-        assert output_h5.exists()
 
     def test_validation_flag(self, tmp_path):
         """Test --validate flag."""

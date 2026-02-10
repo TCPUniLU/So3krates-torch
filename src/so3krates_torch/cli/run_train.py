@@ -262,12 +262,22 @@ def setup_data_loaders(
                 shuffle=False,
             )
 
-        average_atomic_energy_shifts = compute_average_E0s(
+        # Find elements actually present in data
+        present_zs = set()
+        for cfg in train_configs:
+            present_zs.update(cfg.atomic_numbers)
+        present_z_table = AtomicNumberTable(sorted(list(present_zs)))
+
+        # Compute E0s for present elements only
+        present_e0s = compute_average_E0s(
             collections_train=train_configs,
-            z_table=AtomicNumberTable(
-                [int(z) for z in range(1, 119)]
-            ),
+            z_table=present_z_table,
         )
+
+        # Expand to full 118 elements (fill missing with 0)
+        average_atomic_energy_shifts = {
+            z: present_e0s.get(z, 0.0) for z in range(1, 119)
+        }
         train_data = create_data_from_configs(
             train_configs,
             r_max=r_max,
@@ -408,11 +418,8 @@ def setup_data_loaders(
                 key_specification=keyspec,
             )
 
-            # Create z_table
-            all_zs = set()
-            for config in train_configs:
-                all_zs.update(config.atomic_numbers)
-            z_table = AtomicNumberTable(sorted(list(all_zs)))
+            # Create z_table (use all 118 elements for compatibility)
+            z_table = AtomicNumberTable([int(z) for z in range(1, 119)])
 
             # Preprocess (compute neighbor lists)
             logging.info("Preprocessing training data (computing neighbor lists)")
@@ -425,10 +432,22 @@ def setup_data_loaders(
 
         # Compute average atomic energy shifts
         if train_configs is not None:
-            average_atomic_energy_shifts = compute_average_E0s(
+            # Find elements actually present in data
+            present_zs = set()
+            for cfg in train_configs:
+                present_zs.update(cfg.atomic_numbers)
+            present_z_table = AtomicNumberTable(sorted(list(present_zs)))
+
+            # Compute E0s for present elements only
+            present_e0s = compute_average_E0s(
                 collections_train=train_configs,
-                z_table=z_table,
+                z_table=present_z_table,
             )
+
+            # Expand to full 118 elements (fill missing with 0)
+            average_atomic_energy_shifts = {
+                z: present_e0s.get(z, 0.0) for z in range(1, 119)
+            }
         else:
             # For preprocessed data, we can't compute E0s
             logging.warning(
@@ -438,6 +457,33 @@ def setup_data_loaders(
             average_atomic_energy_shifts = {
                 z: 0.0 for z in z_table.zs
             }
+
+        # For preprocessed data, perform train/valid split BEFORE creating loaders
+        val_data_path = config["TRAINING"].get("path_to_val_data")
+        if is_train_preprocessed and not val_data_path:
+            # Split preprocessed dataset using PyTorch Subset
+            from torch.utils.data import Subset
+
+            valid_ratio = config["TRAINING"].get("valid_ratio", 0.1)
+            total_size = len(train_dataset)
+            indices = list(range(total_size))
+            random.shuffle(indices)
+
+            # Split: valid_ratio goes to validation, rest to training
+            n_valid = int(total_size * valid_ratio)
+            n_train = total_size - n_valid
+
+            train_indices = indices[:n_train]
+            valid_indices = indices[n_train:]
+
+            # Update train_atomic_data to use subset
+            train_atomic_data = Subset(train_dataset, train_indices)
+            valid_dataset_subset = Subset(train_dataset, valid_indices)
+
+            logging.info(
+                f"Split preprocessed data: {n_train} train, "
+                f"{n_valid} valid (ratio={valid_ratio})"
+            )
 
         # Create training sampler and loader
         train_sampler = None
@@ -462,7 +508,6 @@ def setup_data_loaders(
             avg_num_neighbors = compute_avg_num_neighbors(train_loader)
 
         # Load validation data
-        val_data_path = config["TRAINING"].get("path_to_val_data")
         if val_data_path:
             logging.info(f"Loading validation data from {val_data_path}")
 
@@ -534,14 +579,14 @@ def setup_data_loaders(
         else:
             # Use split from training data
             if is_train_preprocessed:
-                logging.warning(
-                    "Using preprocessed training data without separate "
-                    "validation set. Validation will be disabled."
+                # Preprocessed split was already done above
+                valid_loader = create_dataloader_from_data(
+                    config_list=valid_dataset_subset,
+                    batch_size=valid_batch_size,
+                    shuffle=False,
                 )
-                valid_loader = None
             else:
                 # Re-split to get validation data
-                valid_ratio = config["TRAINING"].get("valid_ratio", 0.1)
                 num_train = config["TRAINING"].get("num_train", None)
                 num_valid = config["TRAINING"].get("num_valid", None)
                 _, val_data = select_valid_subset(

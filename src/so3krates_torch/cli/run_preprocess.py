@@ -5,20 +5,17 @@ Supports:
 - XYZ → raw HDF5
 - XYZ → preprocessed HDF5
 - Raw HDF5 → preprocessed HDF5
-- Parallel preprocessing with multiprocessing
 """
 
 import argparse
 import logging
-import multiprocessing as mp
 import sys
-from functools import partial
+import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import ase.io
 import torch
-from tqdm import tqdm
 
 from so3krates_torch.data.atomic_data import AtomicData
 from so3krates_torch.data.hdf5_utils import (
@@ -28,10 +25,7 @@ from so3krates_torch.data.hdf5_utils import (
     save_preprocessed_hdf5,
     validate_preprocessed_hdf5,
 )
-from so3krates_torch.data.utils import (
-    Configuration,
-    KeySpecification,
-)
+from so3krates_torch.data.utils import KeySpecification
 from so3krates_torch.tools.default_keys import DefaultKeys
 from so3krates_torch.tools.utils import (
     AtomicNumberTable,
@@ -44,62 +38,23 @@ logging.basicConfig(
 )
 
 
-def _preprocess_single_config(args_tuple) -> AtomicData:
+def _log_progress(current, total, start_time, log_interval=100):
     """
-    Worker function for preprocessing a single configuration.
+    Log progress at regular intervals for HPC-friendly output.
 
     Args:
-        args_tuple: (config, z_table, r_max, r_max_lr)
-
-    Returns:
-        AtomicData: Preprocessed atomic data
+        current: Current item number (1-indexed)
+        total: Total number of items
+        start_time: Start time from time.time()
+        log_interval: Log every N items
     """
-    config, z_table, r_max, r_max_lr = args_tuple
-    return AtomicData.from_config(
-        config, z_table=z_table, cutoff=r_max, cutoff_lr=r_max_lr
-    )
-
-
-def preprocess_configs_parallel(
-    configs: List[Configuration],
-    z_table: AtomicNumberTable,
-    r_max: float,
-    r_max_lr: Optional[float],
-    num_workers: int = 0,
-) -> List[AtomicData]:
-    """
-    Preprocess configurations in parallel using multiprocessing.
-
-    Args:
-        configs: List of configurations to preprocess
-        z_table: Atomic number table
-        r_max: Short-range cutoff
-        r_max_lr: Long-range cutoff (optional)
-        num_workers: Number of worker processes (0=auto-detect CPUs)
-
-    Returns:
-        List of preprocessed AtomicData objects (in same order as input)
-    """
-    # Determine number of workers
-    if num_workers == 0:
-        num_workers = mp.cpu_count()
-
-    logging.info(f"Preprocessing with {num_workers} workers...")
-
-    # Prepare arguments for worker function
-    args_list = [(config, z_table, r_max, r_max_lr) for config in configs]
-
-    # Use multiprocessing pool with imap for progress tracking
-    with mp.Pool(processes=num_workers) as pool:
-        data_list = list(
-            tqdm(
-                pool.imap(_preprocess_single_config, args_list),
-                total=len(configs),
-                desc="Preprocessing",
-            )
+    if current % log_interval == 0 or current == total:
+        elapsed = time.time() - start_time
+        rate = current / elapsed if elapsed > 0 else 0
+        logging.info(
+            f"Progress: {current}/{total} configurations "
+            f"({rate:.1f} configs/s)"
         )
-
-    return data_list
 
 
 def process_xyz_input(args):
@@ -127,34 +82,23 @@ def process_xyz_input(args):
         )
         logging.info(f"Created {len(configs)} configurations")
 
-        # Create z_table
-        all_zs = set()
-        for config in configs:
-            all_zs.update(config.atomic_numbers)
-        z_table = AtomicNumberTable(sorted(list(all_zs)))
-        logging.info(f"Atomic number table: {z_table.zs}")
+        # Create z_table (use all 118 elements for compatibility)
+        z_table = AtomicNumberTable([int(z) for z in range(1, 119)])
+        logging.info(f"Using full atomic number table (Z=1-118)")
 
-        # Preprocess with optional parallelization
-        if args.num_workers == 1:
-            # Sequential processing
-            data_list = []
-            for config in tqdm(configs, desc="Preprocessing"):
-                data = AtomicData.from_config(
-                    config,
-                    z_table=z_table,
-                    cutoff=args.r_max,
-                    cutoff_lr=args.r_max_lr,
-                )
-                data_list.append(data)
-        else:
-            # Parallel processing
-            data_list = preprocess_configs_parallel(
-                configs,
-                z_table,
-                args.r_max,
-                args.r_max_lr,
-                num_workers=args.num_workers,
+        # Preprocess sequentially
+        logging.info("Preprocessing configurations...")
+        data_list = []
+        start_time = time.time()
+        for idx, config in enumerate(configs, start=1):
+            data = AtomicData.from_config(
+                config,
+                z_table=z_table,
+                cutoff=args.r_max,
+                cutoff_lr=args.r_max_lr,
             )
+            data_list.append(data)
+            _log_progress(idx, len(configs), start_time)
 
         # Save
         save_preprocessed_hdf5(
@@ -197,34 +141,23 @@ def process_hdf5_input(args):
     )
     logging.info(f"Loaded {len(configs)} configurations")
 
-    # Create z_table
-    all_zs = set()
-    for config in configs:
-        all_zs.update(config.atomic_numbers)
-    z_table = AtomicNumberTable(sorted(list(all_zs)))
-    logging.info(f"Atomic number table: {z_table.zs}")
+    # Create z_table (use all 118 elements for compatibility)
+    z_table = AtomicNumberTable([int(z) for z in range(1, 119)])
+    logging.info(f"Using full atomic number table (Z=1-118)")
 
-    # Preprocess with optional parallelization
-    if args.num_workers == 1:
-        # Sequential processing
-        data_list = []
-        for config in tqdm(configs, desc="Preprocessing"):
-            data = AtomicData.from_config(
-                config,
-                z_table=z_table,
-                cutoff=args.r_max,
-                cutoff_lr=args.r_max_lr,
-            )
-            data_list.append(data)
-    else:
-        # Parallel processing
-        data_list = preprocess_configs_parallel(
-            configs,
-            z_table,
-            args.r_max,
-            args.r_max_lr,
-            num_workers=args.num_workers,
+    # Preprocess sequentially
+    logging.info("Preprocessing configurations...")
+    data_list = []
+    start_time = time.time()
+    for idx, config in enumerate(configs, start=1):
+        data = AtomicData.from_config(
+            config,
+            z_table=z_table,
+            cutoff=args.r_max,
+            cutoff_lr=args.r_max_lr,
         )
+        data_list.append(data)
+        _log_progress(idx, len(configs), start_time)
 
     # Save
     save_preprocessed_hdf5(
@@ -334,19 +267,6 @@ def main():
         "--validate",
         action="store_true",
         help="Validate output after creation",
-    )
-    parser.add_argument(
-        "--num-workers",
-        type=int,
-        default=1,
-        help="Number of parallel workers (0=auto-detect CPUs, "
-        "1=sequential)",
-    )
-    parser.add_argument(
-        "--chunk-size",
-        type=int,
-        default=1000,
-        help="Chunk size for batched processing (not yet implemented)",
     )
 
     args = parser.parse_args()

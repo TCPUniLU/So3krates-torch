@@ -176,20 +176,51 @@ def _read_atoms_from_hdf5_group(group: h5py.Group) -> ase.Atoms:
         pbc=pbc,
     )
 
-    # Read properties
+    # Create default keyspec for reverse mapping
+    from so3krates_torch.tools.default_keys import DefaultKeys
+    default_keydict = DefaultKeys.keydict()
+    default_keyspec = KeySpecification(
+        info_keys={
+            k: v for k, v in {
+                "energy": default_keydict.get("energy_key", "REF_energy"),
+                "dipole": default_keydict.get("dipole_key", "REF_dipole"),
+                "total_charge": default_keydict.get("charges_key", "charge"),
+            }.items()
+        },
+        arrays_keys={
+            k: v for k, v in {
+                "forces": default_keydict.get("forces_key", "REF_forces"),
+                "hirshfeld_ratios": default_keydict.get("hirshfeld_key", "REF_hirsh_ratios"),
+            }.items()
+        },
+    )
+
+    # Create reverse mapping (HDF5 name -> ASE name)
+    # keyspec maps: internal_name -> ASE_key
+    # We stored as: properties[internal_name]
+    # We need to load as: atoms.info[ASE_key]
+    reverse_info_keys = {k: v for k, v in default_keyspec.info_keys.items()}
+    reverse_arrays_keys = {k: v for k, v in default_keyspec.arrays_keys.items()}
+
+    # Read properties with reverse mapping
     if "properties" in group:
-        for key in group["properties"].keys():
-            value = np.array(group["properties"][key])
+        for hdf5_key in group["properties"].keys():
+            value = np.array(group["properties"][hdf5_key])
+
+            # Apply reverse mapping to get ASE key name
+            ase_key = reverse_info_keys.get(hdf5_key, hdf5_key)
+            ase_array_key = reverse_arrays_keys.get(hdf5_key, hdf5_key)
+
             # Store as info or arrays depending on shape
             if value.ndim == 0 or (
                 value.ndim == 1 and len(value) == 1
             ):
-                atoms.info[key] = value.item() if value.ndim == 0 else value
+                atoms.info[ase_key] = value.item() if value.ndim == 0 else value
             else:
                 if len(value) == len(atoms):
-                    atoms.arrays[key] = value
+                    atoms.arrays[ase_array_key] = value
                 else:
-                    atoms.info[key] = value
+                    atoms.info[ase_key] = value
 
     # Read metadata
     if "config_type" in group:
@@ -356,6 +387,12 @@ def _write_atomic_data_to_hdf5_group(
         props_grp["hirshfeld_ratios"] = (
             data.hirshfeld_ratios.cpu().numpy()
         )
+    if data.total_charge is not None:
+        props_grp["total_charge"] = data.total_charge.cpu().numpy()
+    if data.total_spin is not None:
+        props_grp["total_spin"] = data.total_spin.cpu().numpy()
+    if data.elec_temp is not None:
+        props_grp["elec_temp"] = data.elec_temp.cpu().numpy()
 
     # Property weights
     weights_grp = group.create_group("weights")
@@ -465,6 +502,21 @@ def _read_atomic_data_from_hdf5_group(
         if "hirshfeld_ratios" in props_grp
         else None
     )
+    total_charge = (
+        torch.from_numpy(np.array(props_grp["total_charge"]))
+        if "total_charge" in props_grp
+        else torch.tensor(0.0)
+    )
+    total_spin = (
+        torch.from_numpy(np.array(props_grp["total_spin"]))
+        if "total_spin" in props_grp
+        else torch.tensor(0.0)
+    )
+    elec_temp = (
+        torch.from_numpy(np.array(props_grp["elec_temp"]))
+        if "elec_temp" in props_grp
+        else torch.tensor(0.0)
+    )
 
     # Property weights
     weights_grp = group["weights"]
@@ -531,7 +583,9 @@ def _read_atomic_data_from_hdf5_group(
         dipole=dipole,
         hirshfeld_ratios=hirshfeld_ratios,
         charges=charges,
-        elec_temp=None,
+        total_charge=total_charge,
+        total_spin=total_spin,
+        elec_temp=elec_temp,
         edge_index_lr=edge_index_lr,
         shifts_lr=shifts_lr,
         unit_shifts_lr=unit_shifts_lr,
