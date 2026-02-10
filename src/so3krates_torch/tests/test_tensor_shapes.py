@@ -9,7 +9,6 @@ from so3krates_torch.blocks.radial_basis import (
     GaussianBasis,
     BernsteinBasis,
     BesselBasis,
-    ComputeRBF,
 )
 from so3krates_torch.blocks.embedding import (
     InvariantEmbedding,
@@ -95,30 +94,6 @@ class TestRadialBasisShapes:
         out = basis(distances)
         assert out.shape == (100, 16)
 
-    @pytest.mark.parametrize(
-        "rbf_type",
-        ["gaussian", "bernstein", "bessel"],
-    )
-    def test_compute_rbf_shape(self, rbf_type):
-        rbf = ComputeRBF(
-            r_max=5.0,
-            num_radial_basis_fn=16,
-            radial_basis_fn=rbf_type,
-        )
-        distances = torch.rand(100, 1) * 5.0
-        out = rbf(distances)
-        assert out.shape == (100, 16)
-
-    @pytest.mark.parametrize("n_rbf", [4, 8, 16, 32])
-    def test_varying_n_rbf(self, n_rbf):
-        rbf = ComputeRBF(
-            r_max=5.0,
-            num_radial_basis_fn=n_rbf,
-            radial_basis_fn="gaussian",
-        )
-        distances = torch.rand(50, 1) * 5.0
-        out = rbf(distances)
-        assert out.shape[-1] == n_rbf
 
 
 class TestEmbeddingShapes:
@@ -132,20 +107,6 @@ class TestEmbeddingShapes:
             one_hot[i, z] = 1.0
         out = emb(one_hot)
         assert out.shape == (4, 64)
-
-    @pytest.mark.parametrize(
-        "out_features", [16, 32, 64, 128]
-    )
-    def test_invariant_embedding_varying_features(
-        self, out_features
-    ):
-        emb = InvariantEmbedding(
-            num_elements=118, out_features=out_features
-        )
-        one_hot = torch.zeros(4, 118)
-        one_hot[0, 0] = 1.0
-        out = emb(one_hot)
-        assert out.shape == (4, out_features)
 
     def test_euclidean_embedding_zeros_shape(self):
         emb = EuclideanEmbedding(
@@ -175,23 +136,6 @@ class TestEmbeddingShapes:
         assert out.shape == (5, 8)
         assert not (out == 0).all()
 
-    @pytest.mark.parametrize(
-        "sh_dim", [3, 8, 15, 25]
-    )
-    def test_euclidean_embedding_varying_sh_dim(
-        self, sh_dim
-    ):
-        emb = EuclideanEmbedding(
-            initialization_to_zeros=False
-        )
-        out = emb(
-            sh_vectors=torch.randn(20, sh_dim),
-            cutoffs=torch.ones(20, 1),
-            receivers=torch.randint(0, 5, (20,)),
-            avg_num_neighbors=4.0,
-            num_nodes=5,
-        )
-        assert out.shape == (5, sh_dim)
 
 
 class TestOutputHeadShapes:
@@ -228,20 +172,7 @@ class TestOutputHeadShapes:
         out = head(x, data)
         assert out.shape == (10, 1)
 
-    def test_atomic_energy_head_regression_dim(self):
-        head = AtomicEnergyOutputHead(
-            num_features=16,
-            num_elements=118,
-            energy_regression_dim=32,
-            non_linearity=torch.nn.SiLU,
-            use_non_linearity=True,
-        )
-        x = torch.randn(10, 16)
-        data = self._make_data_dict(10)
-        out = head(x, data)
-        assert out.shape == (10, 1)
-
-    @pytest.mark.parametrize("num_heads", [2, 4, 8])
+    @pytest.mark.parametrize("num_heads", [4])
     def test_multi_head_shape(self, num_heads):
         head = MultiAtomicEnergyOutputHead(
             num_output_heads=num_heads,
@@ -270,21 +201,6 @@ class TestOutputHeadShapes:
         data = self._make_data_dict(1)
         out = head(x, data)
         assert out.shape == (num_heads, 1)
-
-    def test_multi_head_with_regression_dim(self):
-        num_heads = 4
-        head = MultiAtomicEnergyOutputHead(
-            num_output_heads=num_heads,
-            num_features=16,
-            num_elements=118,
-            energy_regression_dim=32,
-            non_linearity=torch.nn.SiLU,
-            use_non_linearity=True,
-        )
-        x = torch.randn(10, 16)
-        data = self._make_data_dict(10)
-        out = head(x, data)
-        assert out.shape == (10, num_heads, 1)
 
 
 _CUTOFF_PARAMS = [

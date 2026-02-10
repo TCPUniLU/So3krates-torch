@@ -1,0 +1,16 @@
+{
+  "so3krates_energy_forces": {
+    "avg_loss": 365162.8236566777,
+    "total_param_norm": 50.16247851562207,
+    "first_batch_energy_0": -1.2496325758648021,
+    "first_batch_forces_norm": 0.00024067881004198366
+  },
+  "so3lr_full_properties": {
+    "avg_loss": 365510.8961429829,
+    "total_param_norm": 115.20250990754714,
+    "first_batch_energy_0": -0.17687853420598731,
+    "first_batch_forces_norm": 21.96079303874792,
+    "first_batch_dipole_norm": 13.670091305601046,
+    "first_batch_hirshfeld_norm": 5.831401298527947
+  }
+}

@@ -60,12 +60,6 @@ def si_bulk():
 
 
 @pytest.fixture
-def si_supercell(si_bulk):
-    """2x2x2 silicon supercell for larger periodic tests."""
-    return si_bulk * (2, 2, 2)
-
-
-@pytest.fixture
 def random_batch_atoms():
     """Create a batch of 3 random small molecules."""
     return [molecule(name) for name in ["H2O", "NH3", "CH4"]]

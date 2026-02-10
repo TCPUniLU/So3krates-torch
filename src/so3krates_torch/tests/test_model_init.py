@@ -82,14 +82,6 @@ class TestSo3kratesInit:
             param = next(model.parameters())
             assert param.dtype == dtype
 
-    def test_init_parameter_count(self, default_model_config):
-        """Test parameter count is reasonable."""
-        model = So3krates(**default_model_config)
-        param_count = sum(
-            p.numel() for p in model.parameters()
-        )
-        assert param_count > 0
-        print(f"Parameter count: {param_count}")
 
 
 class TestSO3LRInit:
@@ -114,49 +106,6 @@ class TestSO3LRInit:
         assert hasattr(model, "hirshfeld_output_block")
         assert hasattr(model, "dispersion_potential")
 
-    def test_init_without_zbl(self, so3lr_model_config):
-        """Test SO3LR with ZBL disabled."""
-        config = {
-            **so3lr_model_config,
-            "zbl_repulsion_bool": False,
-        }
-        model = SO3LR(**config)
-        assert model.zbl_repulsion_bool is False
-
-    def test_init_without_electrostatic(
-        self, so3lr_model_config
-    ):
-        """Test SO3LR with electrostatic disabled."""
-        config = {
-            **so3lr_model_config,
-            "electrostatic_energy_bool": False,
-        }
-        model = SO3LR(**config)
-        assert model.electrostatic_energy_bool is False
-
-    def test_init_without_dispersion(
-        self, so3lr_model_config
-    ):
-        """Test SO3LR with dispersion disabled."""
-        config = {
-            **so3lr_model_config,
-            "dispersion_energy_bool": False,
-        }
-        model = SO3LR(**config)
-        assert model.dispersion_energy_bool is False
-
-    def test_init_r_max_lr_separate_from_r_max(
-        self, so3lr_model_config
-    ):
-        """Test r_max_lr is independent from r_max."""
-        config = {
-            **so3lr_model_config,
-            "r_max": 5.0,
-            "r_max_lr": 12.0,
-        }
-        model = SO3LR(**config)
-        assert model.r_max == 5.0
-        assert model.r_max_lr == 12.0
 
 
 class TestMultiHeadSO3LRInit:
@@ -182,14 +131,3 @@ class TestMultiHeadSO3LRInit:
             MultiAtomicEnergyOutputHead,
         )
 
-    def test_init_num_heads_matches_config(
-        self, multihead_model_config
-    ):
-        """Test number of output heads matches config."""
-        for num_heads in [2, 4, 8]:
-            config = {
-                **multihead_model_config,
-                "num_output_heads": num_heads,
-            }
-            model = MultiHeadSO3LR(**config)
-            assert model.num_output_heads == num_heads

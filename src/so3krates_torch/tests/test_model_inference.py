@@ -13,7 +13,7 @@ from so3krates_torch.modules.models import (
 class TestSo3kratesInference:
     """Test So3krates base model inference."""
 
-    def test_forward_returns_energy(
+    def test_forward_returns_energy_and_forces(
         self, default_model_config, make_batch, h2o_atoms
     ):
         model = So3krates(**default_model_config)
@@ -22,14 +22,6 @@ class TestSo3kratesInference:
         out = model(batch.to_dict(), compute_stress=False)
         assert out["energy"].shape == (1,)
         assert torch.isfinite(out["energy"]).all()
-
-    def test_forward_returns_forces(
-        self, default_model_config, make_batch, h2o_atoms
-    ):
-        model = So3krates(**default_model_config)
-        model.eval()
-        batch = make_batch(h2o_atoms, r_max=5.0)
-        out = model(batch.to_dict(), compute_stress=False)
         assert out["forces"].shape == (3, 3)
         assert torch.isfinite(out["forces"]).all()
 
@@ -108,16 +100,6 @@ class TestSO3LRInference:
         assert out["dipole"].shape == (1, 3)
         assert out["hirshfeld_ratios"].shape == (3,)
         assert out["zbl_repulsion"].shape == (3, 1)
-
-    def test_energy_components_finite(
-        self, so3lr_model_config, make_batch, h2o_atoms
-    ):
-        model = SO3LR(**so3lr_model_config)
-        model.eval()
-        batch = make_batch(
-            h2o_atoms, r_max=5.0, cutoff_lr=10.0
-        )
-        out = model(batch.to_dict(), compute_stress=False)
         assert torch.isfinite(out["energy"]).all()
         assert torch.isfinite(out["zbl_repulsion"]).all()
 
@@ -160,7 +142,7 @@ class TestSO3LRInference:
 class TestMultiHeadSO3LRInference:
     """Test MultiHeadSO3LR model inference."""
 
-    def test_multihead_energy_shape(
+    def test_multihead_output_shapes(
         self, multihead_model_config, make_batch, h2o_atoms
     ):
         model = MultiHeadSO3LR(**multihead_model_config)
@@ -170,16 +152,6 @@ class TestMultiHeadSO3LRInference:
         )
         out = model(batch.to_dict(), compute_stress=False)
         assert out["energy"].shape == (4, 1)
-
-    def test_multihead_forces_shape(
-        self, multihead_model_config, make_batch, h2o_atoms
-    ):
-        model = MultiHeadSO3LR(**multihead_model_config)
-        model.eval()
-        batch = make_batch(
-            h2o_atoms, r_max=5.0, cutoff_lr=10.0
-        )
-        out = model(batch.to_dict(), compute_stress=False)
         assert out["forces"].shape == (4, 3, 3)
 
     def test_multihead_head_selection(
