@@ -15,6 +15,7 @@ class DefaultKeys(Enum):
     TOTAL_CHARGE = "total_charge"
     TOTAL_SPIN = "total_spin"
     ELEC_TEMP = "elec_temp"
+    HIRSHFELD_RATIOS = "REF_hirsh_ratios"
 
     @staticmethod
     def keydict() -> dict[str, str]:

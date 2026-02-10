@@ -6,6 +6,7 @@ This module provides comprehensive HDF5 support for atomic structure data:
 - Preprocessed HDF5: Cache fully preprocessed AtomicData with neighbor lists
 """
 
+import json
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -62,6 +63,14 @@ def save_atoms_to_hdf5(
         if description:
             f.attrs["description"] = description
 
+        # Store keyspec so it can be recovered on load
+        f.attrs["keyspec_info"] = json.dumps(
+            key_specification.info_keys
+        )
+        f.attrs["keyspec_arrays"] = json.dumps(
+            key_specification.arrays_keys
+        )
+
         # Write each configuration
         for i, atoms in enumerate(atoms_list):
             group = f.create_group(f"config_{i}")
@@ -87,22 +96,22 @@ def _write_atoms_to_hdf5_group(
     group["cell"] = np.array(atoms.get_cell()).astype(np.float64)
     group["pbc"] = np.array(atoms.get_pbc(), dtype=bool)
 
-    # Properties subgroup
+    # Properties subgroup — store using original ASE keys
     properties_grp = group.create_group("properties")
 
-    # Store info dict properties
+    # Store info dict properties with ASE key names
     for prop_name, key in key_spec.info_keys.items():
         if key in atoms.info:
             value = atoms.info[key]
             if value is not None:
-                properties_grp[prop_name] = value
+                properties_grp[key] = value
 
-    # Store arrays dict properties
+    # Store arrays dict properties with ASE key names
     for prop_name, key in key_spec.arrays_keys.items():
         if key in atoms.arrays:
             value = atoms.arrays[key]
             if value is not None:
-                properties_grp[prop_name] = value
+                properties_grp[key] = value
 
     # Store config metadata if present
     if "config_type" in atoms.info:
@@ -143,6 +152,8 @@ def load_atoms_from_hdf5(
         if index is None:
             indices = list(range(num_configs))
         elif isinstance(index, int):
+            if index < 0:
+                index = num_configs + index
             indices = [index]
         elif isinstance(index, slice):
             indices = list(range(*index.indices(num_configs)))
@@ -176,51 +187,23 @@ def _read_atoms_from_hdf5_group(group: h5py.Group) -> ase.Atoms:
         pbc=pbc,
     )
 
-    # Create default keyspec for reverse mapping
-    from so3krates_torch.tools.default_keys import DefaultKeys
-    default_keydict = DefaultKeys.keydict()
-    default_keyspec = KeySpecification(
-        info_keys={
-            k: v for k, v in {
-                "energy": default_keydict.get("energy_key", "REF_energy"),
-                "dipole": default_keydict.get("dipole_key", "REF_dipole"),
-                "total_charge": default_keydict.get("charges_key", "charge"),
-            }.items()
-        },
-        arrays_keys={
-            k: v for k, v in {
-                "forces": default_keydict.get("forces_key", "REF_forces"),
-                "hirshfeld_ratios": default_keydict.get("hirshfeld_key", "REF_hirsh_ratios"),
-            }.items()
-        },
-    )
-
-    # Create reverse mapping (HDF5 name -> ASE name)
-    # keyspec maps: internal_name -> ASE_key
-    # We stored as: properties[internal_name]
-    # We need to load as: atoms.info[ASE_key]
-    reverse_info_keys = {k: v for k, v in default_keyspec.info_keys.items()}
-    reverse_arrays_keys = {k: v for k, v in default_keyspec.arrays_keys.items()}
-
-    # Read properties with reverse mapping
+    # Read properties — stored with original ASE key names
     if "properties" in group:
-        for hdf5_key in group["properties"].keys():
-            value = np.array(group["properties"][hdf5_key])
-
-            # Apply reverse mapping to get ASE key name
-            ase_key = reverse_info_keys.get(hdf5_key, hdf5_key)
-            ase_array_key = reverse_arrays_keys.get(hdf5_key, hdf5_key)
+        for key in group["properties"].keys():
+            value = np.array(group["properties"][key])
 
             # Store as info or arrays depending on shape
             if value.ndim == 0 or (
                 value.ndim == 1 and len(value) == 1
             ):
-                atoms.info[ase_key] = value.item() if value.ndim == 0 else value
+                atoms.info[key] = (
+                    value.item() if value.ndim == 0 else value
+                )
             else:
                 if len(value) == len(atoms):
-                    atoms.arrays[ase_array_key] = value
+                    atoms.arrays[key] = value
                 else:
-                    atoms.info[ase_key] = value
+                    atoms.info[key] = value
 
     # Read metadata
     if "config_type" in group:
@@ -257,7 +240,21 @@ def configs_from_hdf5(
         List of Configuration objects
     """
     if key_specification is None:
-        key_specification = KeySpecification()
+        # Try to read stored keyspec from HDF5 metadata
+        with h5py.File(hdf5_path, "r") as f:
+            if "keyspec_info" in f.attrs:
+                info_keys = json.loads(f.attrs["keyspec_info"])
+                arrays_keys = json.loads(
+                    f.attrs["keyspec_arrays"]
+                )
+                key_specification = KeySpecification(
+                    info_keys=info_keys,
+                    arrays_keys=arrays_keys,
+                )
+            else:
+                key_specification = (
+                    KeySpecification.from_defaults()
+                )
 
     # Load atoms first
     atoms_list = load_atoms_from_hdf5(hdf5_path, index=None)
@@ -419,7 +416,7 @@ def _write_atomic_data_to_hdf5_group(
 
 
 def _read_atomic_data_from_hdf5_group(
-    group: h5py.Group, z_table: AtomicNumberTable
+    group: h5py.Group,
 ) -> AtomicData:
     """Read single AtomicData from HDF5 group."""
     # Basic structure
@@ -658,7 +655,7 @@ class PreprocessedHDF5Dataset(torch.utils.data.Dataset):
         """Lazy load single AtomicData from HDF5."""
         with h5py.File(self.hdf5_path, "r") as f:
             group = f[f"config_{idx}"]
-            return _read_atomic_data_from_hdf5_group(group, self.z_table)
+            return _read_atomic_data_from_hdf5_group(group)
 
 
 # ============================================================================

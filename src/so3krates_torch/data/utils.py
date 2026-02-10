@@ -67,7 +67,7 @@ def update_keyspec_from_kwargs(
         "polarizability_key",
         "total_spin_key",
     ]
-    arrays = ["forces_key", "charges_key"]
+    arrays = ["forces_key", "charges_key", "hirshfeld_ratios_key"]
     info_keys = {}
     arrays_keys = {}
     for key in infos:
@@ -363,6 +363,45 @@ def compute_average_E0s(
     except np.linalg.LinAlgError:
         logging.error(
             "Failed to compute E0s using least squares regression, using the same for all atoms"
+        )
+        atomic_energies_dict = {}
+        for i, z in enumerate(z_table.zs):
+            atomic_energies_dict[z] = 0.0
+    return atomic_energies_dict
+
+
+def compute_average_E0s_from_dataset(
+    dataset, z_table: "AtomicNumberTable"
+) -> Dict[int, float]:
+    """Compute average atomic energy shifts from a dataset
+    of AtomicData objects (e.g. PreprocessedHDF5Dataset).
+
+    Uses the same least-squares approach as
+    compute_average_E0s but works directly with
+    AtomicData tensors instead of Configuration objects.
+    """
+    from so3krates_torch.tools.utils import AtomicNumberTable
+
+    len_train = len(dataset)
+    len_zs = len(z_table)
+    A = np.zeros((len_train, len_zs))
+    B = np.zeros(len_train)
+    for i in range(len_train):
+        data = dataset[i]
+        B[i] = data.energy.item()
+        for j, z in enumerate(z_table.zs):
+            A[i, j] = (
+                (data.atomic_numbers == z).sum().item()
+            )
+    try:
+        E0s = np.linalg.lstsq(A, B, rcond=None)[0]
+        atomic_energies_dict = {}
+        for i, z in enumerate(z_table.zs):
+            atomic_energies_dict[z] = E0s[i]
+    except np.linalg.LinAlgError:
+        logging.error(
+            "Failed to compute E0s using least squares "
+            "regression, using zeros"
         )
         atomic_energies_dict = {}
         for i, z in enumerate(z_table.zs):

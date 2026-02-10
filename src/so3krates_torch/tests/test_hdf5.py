@@ -62,13 +62,13 @@ class TestRawHDF5:
         # Load back
         loaded = load_atoms_from_hdf5(str(hdf5_path), index=0)
 
-        # Verify
+        # Verify — loaded atoms have original ASE keys
         assert len(loaded) == len(h2o_atoms)
         assert np.allclose(
             loaded.get_positions(), h2o_atoms.get_positions()
         )
-        assert "energy" in loaded.info
-        assert np.isclose(loaded.info["energy"], -10.0)
+        assert "REF_energy" in loaded.info
+        assert np.isclose(loaded.info["REF_energy"], -10.0)
 
     def test_save_load_multiple_configs(self, tmp_path):
         """Test save and load multiple configurations."""
@@ -114,13 +114,16 @@ class TestRawHDF5:
         save_atoms_to_hdf5([atoms], str(hdf5_path), keyspec)
         loaded = load_atoms_from_hdf5(str(hdf5_path), index=0)
 
-        # Check properties
-        assert np.isclose(loaded.info["energy"], atoms.info["REF_energy"])
-        assert np.allclose(
-            loaded.arrays["forces"], atoms.arrays["REF_forces"]
+        # Check properties — loaded with original ASE keys
+        assert np.isclose(
+            loaded.info["REF_energy"], atoms.info["REF_energy"]
         )
         assert np.allclose(
-            loaded.info["stress"], atoms.info["REF_stress"]
+            loaded.arrays["REF_forces"],
+            atoms.arrays["REF_forces"],
+        )
+        assert np.allclose(
+            loaded.info["REF_stress"], atoms.info["REF_stress"]
         )
 
     def test_configs_from_hdf5(self, example_raw_hdf5):

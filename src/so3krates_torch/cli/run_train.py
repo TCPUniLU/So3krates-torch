@@ -197,17 +197,15 @@ def setup_data_loaders(
              avg_num_neighbors, num_elements,
              average_atomic_energy_shifts).
     """
-    # Key specification for data loading
-    keyspec = KeySpecification(
-        info_keys={
-            "energy": "REF_energy",
-            "dipole": "REF_dipole",
-            "total_charge": "charge",
-        },
-        arrays_keys={
-            "hirshfeld_ratios": "REF_hirsh_ratios",
-            "forces": "REF_forces",
-        },
+    # Key specification from defaults, with optional overrides
+    from so3krates_torch.tools.default_keys import DefaultKeys
+    from so3krates_torch.data.utils import update_keyspec_from_kwargs
+
+    keydict = DefaultKeys.keydict()
+    config_keys = config["TRAINING"].get("keys", {})
+    keydict.update(config_keys)
+    keyspec = update_keyspec_from_kwargs(
+        KeySpecification(), keydict
     )
     # Create data loaders
     batch_size = config["TRAINING"]["batch_size"]
@@ -370,8 +368,7 @@ def setup_data_loaders(
                 "avg_num_neighbors", None
             )
 
-            # For preprocessed data, we don't need to split
-            # (assume already split)
+            # Splitting happens below if no separate val path
             train_atomic_data = train_dataset
             train_configs = None  # Not available for preprocessed
 
@@ -401,15 +398,23 @@ def setup_data_loaders(
                     f"{val_data_path}"
                 )
             else:
-                valid_ratio = config["TRAINING"].get("valid_ratio", 0.1)
-                num_train = config["TRAINING"].get("num_train", None)
-                num_valid = config["TRAINING"].get("num_valid", None)
-                train_data, _ = select_valid_subset(
-                    data, valid_ratio, num_train, num_valid
+                valid_ratio = config["TRAINING"].get(
+                    "valid_ratio", 0.1
+                )
+                num_train = config["TRAINING"].get(
+                    "num_train", None
+                )
+                num_valid = config["TRAINING"].get(
+                    "num_valid", None
+                )
+                train_data, val_data_split = (
+                    select_valid_subset(
+                        data, valid_ratio, num_train, num_valid
+                    )
                 )
                 logging.info(
-                    f"Splitting training data with validation ratio "
-                    f"{valid_ratio}"
+                    f"Splitting training data with validation "
+                    f"ratio {valid_ratio}"
                 )
 
             # Create configurations
@@ -449,13 +454,21 @@ def setup_data_loaders(
                 z: present_e0s.get(z, 0.0) for z in range(1, 119)
             }
         else:
-            # For preprocessed data, we can't compute E0s
-            logging.warning(
-                "Using preprocessed data: cannot compute atomic "
-                "energy shifts (E0s). Using zeros."
+            # Compute E0s from preprocessed dataset
+            from so3krates_torch.data.utils import (
+                compute_average_E0s_from_dataset,
+            )
+
+            logging.info(
+                "Computing atomic energy shifts (E0s) from "
+                "preprocessed data..."
+            )
+            present_e0s = compute_average_E0s_from_dataset(
+                train_dataset, z_table
             )
             average_atomic_energy_shifts = {
-                z: 0.0 for z in z_table.zs
+                z: present_e0s.get(z, 0.0)
+                for z in range(1, 119)
             }
 
         # For preprocessed data, perform train/valid split BEFORE creating loaders
@@ -586,15 +599,9 @@ def setup_data_loaders(
                     shuffle=False,
                 )
             else:
-                # Re-split to get validation data
-                num_train = config["TRAINING"].get("num_train", None)
-                num_valid = config["TRAINING"].get("num_valid", None)
-                _, val_data = select_valid_subset(
-                    data, valid_ratio, num_train, num_valid
-                )
-
+                # Use validation split from earlier
                 valid_loader = create_dataloader_from_list(
-                    val_data,
+                    val_data_split,
                     batch_size=valid_batch_size,
                     r_max=r_max,
                     r_max_lr=r_max_lr,
