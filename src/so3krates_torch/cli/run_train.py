@@ -298,8 +298,13 @@ def setup_data_loaders(
             shuffle=True,
             sampler=train_sampler,
         )
+        logging.info("Computing dataset statistics (num_elements, avg_num_neighbors)...")
         num_elements = determine_num_elements(train_loader)
         avg_num_neighbors = compute_avg_num_neighbors(train_loader)
+        logging.info(
+            f"Computed: num_elements={num_elements}, "
+            f"avg_num_neighbors={avg_num_neighbors:.2f}"
+        )
         logging.info(f"Training set size: {len(train_data)}")
         logging.info(f"Validation set size: {len(val_data)}")
         logging.info(
@@ -367,6 +372,7 @@ def setup_data_loaders(
             avg_num_neighbors = train_dataset.metadata.get(
                 "avg_num_neighbors", None
             )
+            num_elements = train_dataset.metadata.get("num_elements", None)
 
             # Splitting happens below if no separate val path
             train_atomic_data = train_dataset
@@ -529,10 +535,26 @@ def setup_data_loaders(
             sampler=train_sampler,
         )
 
-        # Compute metrics
-        num_elements = determine_num_elements(train_loader)
+        # Compute metrics (with fallback for backward compatibility)
+        if num_elements is None:
+            logging.info(
+                "num_elements not found in metadata, computing from data (slow)..."
+            )
+            num_elements = determine_num_elements(train_loader)
+        else:
+            logging.info(
+                f"Loaded num_elements={num_elements} from preprocessed metadata"
+            )
+
         if avg_num_neighbors is None:
+            logging.info(
+                "avg_num_neighbors not found in metadata, computing from data (slow)..."
+            )
             avg_num_neighbors = compute_avg_num_neighbors(train_loader)
+        else:
+            logging.info(
+                f"Loaded avg_num_neighbors={avg_num_neighbors:.2f} from preprocessed metadata"
+            )
 
         # Load validation data
         if val_data_path:

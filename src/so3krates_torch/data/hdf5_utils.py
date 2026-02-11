@@ -336,6 +336,20 @@ def save_preprocessed_hdf5(
         avg_num_neighbors = total_neighbors / max(total_atoms, 1)
         f.attrs["avg_num_neighbors"] = avg_num_neighbors
 
+        # Compute number of unique elements
+        unique_elements = set()
+        for data in data_list:
+            # Get atomic numbers from node_attrs one-hot encoding
+            elements = data.node_attrs.argmax(dim=-1).flatten().tolist()
+            unique_elements.update(elements)
+        num_elements = len(unique_elements)
+        f.attrs["num_elements"] = num_elements
+
+        logging.info(
+            f"Computed statistics: avg_num_neighbors={avg_num_neighbors:.2f}, "
+            f"num_elements={num_elements}"
+        )
+
         # Write each configuration
         for i, data in enumerate(data_list):
             group = f.create_group(f"config_{i}")
