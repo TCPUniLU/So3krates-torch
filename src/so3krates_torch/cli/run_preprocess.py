@@ -86,6 +86,14 @@ def process_xyz_input(args):
         z_table = AtomicNumberTable([int(z) for z in range(1, 119)])
         logging.info(f"Using full atomic number table (Z=1-118)")
 
+        # Compute E0s from configs
+        from so3krates_torch.data.hdf5_utils import (
+            compute_and_format_e0s,
+        )
+
+        atomic_energy_shifts = compute_and_format_e0s(configs, z_table)
+        logging.info("Computed atomic energy shifts (E0s)")
+
         # Preprocess sequentially
         logging.info("Preprocessing configurations...")
         data_list = []
@@ -108,6 +116,7 @@ def process_xyz_input(args):
             r_max_lr=args.r_max_lr,
             z_table=z_table,
             description=args.description,
+            atomic_energy_shifts=atomic_energy_shifts,
         )
         logging.info(f"Saved preprocessed HDF5 to: {args.output}")
 
@@ -145,6 +154,12 @@ def process_hdf5_input(args):
     z_table = AtomicNumberTable([int(z) for z in range(1, 119)])
     logging.info(f"Using full atomic number table (Z=1-118)")
 
+    # Compute E0s from configs
+    from so3krates_torch.data.hdf5_utils import compute_and_format_e0s
+
+    atomic_energy_shifts = compute_and_format_e0s(configs, z_table)
+    logging.info("Computed atomic energy shifts (E0s)")
+
     # Preprocess sequentially
     logging.info("Preprocessing configurations...")
     data_list = []
@@ -167,6 +182,7 @@ def process_hdf5_input(args):
         r_max_lr=args.r_max_lr,
         z_table=z_table,
         description=args.description,
+        atomic_energy_shifts=atomic_energy_shifts,
     )
     logging.info(f"Saved preprocessed HDF5 to: {args.output}")
 

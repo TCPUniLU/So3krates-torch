@@ -454,21 +454,35 @@ def setup_data_loaders(
                 z: present_e0s.get(z, 0.0) for z in range(1, 119)
             }
         else:
-            # Compute E0s from preprocessed dataset
-            from so3krates_torch.data.utils import (
-                compute_average_E0s_from_dataset,
-            )
+            # Try to load E0s from HDF5, fall back to computation if not
+            # available
+            if (
+                hasattr(train_dataset, "atomic_energy_shifts")
+                and train_dataset.atomic_energy_shifts is not None
+            ):
+                # Use stored E0s from preprocessing
+                present_e0s = train_dataset.atomic_energy_shifts
+                logging.info(
+                    "Using atomic energy shifts (E0s) loaded from "
+                    "preprocessed HDF5"
+                )
+            else:
+                # Fallback: compute from dataset (backward compatibility)
+                from so3krates_torch.data.utils import (
+                    compute_average_E0s_from_dataset,
+                )
 
-            logging.info(
-                "Computing atomic energy shifts (E0s) from "
-                "preprocessed data..."
-            )
-            present_e0s = compute_average_E0s_from_dataset(
-                train_dataset, z_table
-            )
+                logging.info(
+                    "Computing atomic energy shifts (E0s) from "
+                    "preprocessed data (not found in HDF5)..."
+                )
+                present_e0s = compute_average_E0s_from_dataset(
+                    train_dataset, z_table
+                )
+
+            # Expand to full 118 elements
             average_atomic_energy_shifts = {
-                z: present_e0s.get(z, 0.0)
-                for z in range(1, 119)
+                z: present_e0s.get(z, 0.0) for z in range(1, 119)
             }
 
         # For preprocessed data, perform train/valid split BEFORE creating loaders

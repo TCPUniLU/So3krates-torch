@@ -284,6 +284,7 @@ def save_preprocessed_hdf5(
     r_max_lr: Optional[float],
     z_table: AtomicNumberTable,
     description: Optional[str] = None,
+    atomic_energy_shifts: Optional[Dict[int, float]] = None,
 ) -> None:
     """
     Save preprocessed AtomicData list to HDF5.
@@ -295,6 +296,7 @@ def save_preprocessed_hdf5(
         r_max_lr: Long-range cutoff (optional)
         z_table: Atomic number table
         description: Optional dataset description
+        atomic_energy_shifts: Optional dict mapping atomic number to E0
     """
     with h5py.File(output_path, "w") as f:
         # Write metadata
@@ -308,6 +310,23 @@ def save_preprocessed_hdf5(
         f.attrs["timestamp"] = datetime.now().isoformat()
         if description:
             f.attrs["description"] = description
+
+        # Store atomic energy shifts if provided
+        if atomic_energy_shifts is not None:
+            import json
+
+            # Convert dict to JSON-serializable format (int keys → str)
+            e0s_serializable = {
+                str(z): float(e0)
+                for z, e0 in atomic_energy_shifts.items()
+            }
+            f.attrs["atomic_energy_shifts"] = json.dumps(
+                e0s_serializable
+            )
+            logging.info(
+                f"Stored atomic energy shifts for "
+                f"{len(atomic_energy_shifts)} elements"
+            )
 
         # Compute average number of neighbors
         total_neighbors = sum(
@@ -326,6 +345,52 @@ def save_preprocessed_hdf5(
         f"Saved {len(data_list)} preprocessed configurations to HDF5: "
         f"{output_path}"
     )
+
+
+def compute_and_format_e0s(
+    configs: "Configurations",
+    z_table: "AtomicNumberTable",
+) -> Dict[int, float]:
+    """
+    Compute E0s from configurations and format for full z_table.
+
+    Returns dict mapping atomic number (1-118) to E0 value.
+    Missing elements get 0.0.
+
+    Args:
+        configs: List of Configuration objects
+        z_table: Atomic number table (should be full 1-118)
+
+    Returns:
+        Dictionary mapping int(Z) -> float(E0) for all elements 1-118
+    """
+    from so3krates_torch.data.utils import compute_average_E0s
+
+    # Find elements actually present
+    present_zs = set()
+    for config in configs:
+        present_zs.update(config.atomic_numbers)
+
+    if not present_zs:
+        logging.warning("No atoms found in configs, returning zero E0s")
+        return {z: 0.0 for z in range(1, 119)}
+
+    present_z_table = AtomicNumberTable(sorted(list(present_zs)))
+
+    # Compute E0s for present elements only
+    present_e0s = compute_average_E0s(
+        collections_train=configs,
+        z_table=present_z_table,
+    )
+
+    # Expand to full 118 elements (fill missing with 0)
+    full_e0s = {z: present_e0s.get(z, 0.0) for z in range(1, 119)}
+
+    logging.info(
+        f"Computed E0s for {len(present_e0s)} elements present in data"
+    )
+
+    return full_e0s
 
 
 def _write_atomic_data_to_hdf5_group(
@@ -619,6 +684,43 @@ class PreprocessedHDF5Dataset(torch.utils.data.Dataset):
             z_table_zs = f.attrs["z_table"]
             self.z_table = AtomicNumberTable(z_table_zs.tolist())
             self.metadata = dict(f.attrs)
+
+            # Read E0s if present
+            if "atomic_energy_shifts" in f.attrs:
+                import json
+
+                try:
+                    e0s_json = f.attrs["atomic_energy_shifts"]
+                    if isinstance(e0s_json, bytes):
+                        e0s_json = e0s_json.decode()
+                    e0s_serialized = json.loads(e0s_json)
+                    # Convert string keys back to int
+                    self.atomic_energy_shifts = {
+                        int(z): float(e0)
+                        for z, e0 in e0s_serialized.items()
+                    }
+                    logging.info(
+                        f"Loaded atomic energy shifts (E0s) for "
+                        f"{len(self.atomic_energy_shifts)} elements from "
+                        f"HDF5"
+                    )
+                except (json.JSONDecodeError, KeyError, ValueError) as e:
+                    logging.warning(
+                        f"Failed to load atomic energy shifts from HDF5: "
+                        f"{e}. E0s will be computed during training."
+                    )
+                    self.atomic_energy_shifts = None
+            else:
+                self.atomic_energy_shifts = None
+                logging.info(
+                    "No atomic energy shifts found in HDF5 "
+                    "(will be computed during training)"
+                )
+
+            # Store in metadata dict for easy access
+            self.metadata["atomic_energy_shifts"] = (
+                self.atomic_energy_shifts
+            )
 
         # Validate cutoffs
         if validate_cutoffs:
