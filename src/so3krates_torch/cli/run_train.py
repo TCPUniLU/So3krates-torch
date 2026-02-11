@@ -1145,10 +1145,11 @@ def run_training(config: dict) -> None:
         init_distributed_from_config(config)
     )
 
-    # Setup logging
-    logging.getLogger().handlers.clear()
-    logging.Logger.manager.loggerDict.clear()
-    setup_logging(config)
+    # Setup logging (only on rank 0 to avoid duplicate logs)
+    if rank == 0:
+        logging.getLogger().handlers.clear()
+        logging.Logger.manager.loggerDict.clear()
+        setup_logging(config)
 
     if distributed:
         logging.info(
