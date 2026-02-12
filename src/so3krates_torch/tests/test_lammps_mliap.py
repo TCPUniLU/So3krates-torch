@@ -936,6 +936,10 @@ class TestEndToEndForward:
         For periodic systems, LAMMPS creates ghost atoms for periodic images.
         This mock reproduces that behavior by creating ghost atoms for
         neighbors that cross periodic boundaries.
+
+        The mock also provides ``forward_exchange`` / ``reverse_exchange``
+        callables that mimic the LAMMPS Kokkos ghost-communication routines
+        (used by ``LAMMPS_MP``).
         """
         import numpy as np
         from ase.neighborlist import neighbor_list
@@ -983,6 +987,11 @@ class TestEndToEndForward:
         nghosts = len(ghost_map)
         ntotal = natoms + nghosts
 
+        # Build ghost→real parent index mapping (for forward/reverse exchange)
+        ghost_to_real = torch.zeros(nghosts, dtype=torch.long)
+        for (real_atom, _shift), ghost_idx in ghost_map.items():
+            ghost_to_real[ghost_idx - natoms] = real_atom
+
         # Build element types: real atoms + ghost atoms
         real_types = [z_to_type[z] for z in atomic_numbers]
         all_types = real_types + ghost_types
@@ -1001,6 +1010,35 @@ class TestEndToEndForward:
         mock.__class__ = type(
             "RegularModule", (), {"__module__": "regular_module"}
         )
+
+        # -- Mock LAMMPS ghost communication (forward/reverse exchange) ------
+        # In real LAMMPS these are Kokkos-level MPI calls. Here we just
+        # copy features from real parents to their ghost copies (forward)
+        # and accumulate ghost gradients back onto parents (reverse).
+        _n_real = natoms
+        _g2r = ghost_to_real  # captured by closures
+
+        def _forward_exchange(feats, out, vec_len):
+            """Copy real atom features → out; copy parent features → ghost."""
+            out.copy_(feats)
+            if nghosts > 0:
+                out[_n_real:] = feats[_g2r]
+
+        def _reverse_exchange(grad, gout, vec_len):
+            """Accumulate ghost gradients onto parents; zero ghosts."""
+            gout.copy_(grad)
+            if nghosts > 0:
+                gout[:_n_real].scatter_add_(
+                    0,
+                    _g2r.unsqueeze(1).expand_as(grad[_n_real:]),
+                    grad[_n_real:],
+                )
+                gout[_n_real:] = 0.0
+
+        mock.forward_exchange = _forward_exchange
+        mock.reverse_exchange = _reverse_exchange
+        mock.ghost_to_real = ghost_to_real  # for test force accumulation
+
         return mock
 
     def test_forces_match_ase_periodic(
@@ -1054,11 +1092,14 @@ class TestEndToEndForward:
             f"Energy mismatch: LAMMPS={lammps_energy}, ASE={ase_energy}"
         )
 
-        # Convert edge forces to atomic forces
+        # Convert edge forces to atomic forces (Newton's 3rd law).
+        # Ghost atom forces must be mapped back to their real parent atoms,
+        # mirroring what LAMMPS does via reverse communication.
         pair_forces = mock_data.update_pair_forces_gpu.call_args[0][0]
         pair_i = mock_data.pair_i
         pair_j = mock_data.pair_j
         natoms = mock_data.nlocal
+        g2r = mock_data.ghost_to_real
 
         lammps_atomic_forces = torch.zeros(natoms, 3, dtype=torch.float64)
         for n in range(len(pair_i)):
@@ -1067,6 +1108,10 @@ class TestEndToEndForward:
             lammps_atomic_forces[i] += pair_forces[n]
             if j < natoms:
                 lammps_atomic_forces[j] -= pair_forces[n]
+            else:
+                # Ghost j → map force to real parent
+                real_parent = g2r[j - natoms].item()
+                lammps_atomic_forces[real_parent] -= pair_forces[n]
 
         print(f"\nASE forces:\n{ase_forces}")
         print(f"\nLAMMPS atomic forces:\n{lammps_atomic_forces}")
@@ -1075,6 +1120,6 @@ class TestEndToEndForward:
 
         torch.testing.assert_close(
             lammps_atomic_forces, ase_forces,
-            atol=1e-5, rtol=1e-5,
+            atol=1e-10, rtol=1e-10,
             msg=f"Force mismatch (periodic)!\nASE: {ase_forces}\nLAMMPS: {lammps_atomic_forces}"
         )

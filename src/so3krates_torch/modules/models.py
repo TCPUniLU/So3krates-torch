@@ -341,9 +341,22 @@ class So3krates(torch.nn.Module):
         rbf = self.radial_embedding(self.lengths)
 
         ######### TRANSFORMER #########
+        n_real = self.lammps_natoms[0] if self.is_lammps else 0
+        n_total = self.lammps_natoms[1] if self.is_lammps else 0
+        has_ghosts = self.is_lammps and n_total > n_real
+
         if return_att:
             att_scores = {"inv": {}, "ev": {}}
         for layer_idx, transformer in enumerate(self.euclidean_transformers):
+            # Sync ghost atom features before each layer (except the first,
+            # where all n_total features are already correct from embedding).
+            # After each layer we truncate to n_real; here we pad back to
+            # n_total and use LAMMPS reverse-communication to copy the real
+            # atom features into their ghost copies.
+            if has_ghosts and layer_idx > 0:
+                inv_features = self._lammps_pad_and_sync(inv_features)
+                ev_features = self._lammps_pad_and_sync(ev_features)
+
             transformer_output = transformer(
                 inv_features=inv_features,
                 ev_features=ev_features,
@@ -364,10 +377,46 @@ class So3krates(torch.nn.Module):
             else:
                 inv_features, ev_features = transformer_output
 
+            # After each layer, truncate to real atoms only.  Ghost atom
+            # features are stale (they never receive messages because they
+            # only appear as senders, never receivers).  Keeping them would
+            # pollute the next layer.
+            if has_ghosts:
+                inv_features = inv_features[:n_real]
+                ev_features = ev_features[:n_real]
+
+        if has_ghosts:
+            # Final pad+sync so downstream code (output block, energy sum)
+            # sees n_total features.  The output block only reads [:n_real],
+            # but the autograd graph for edge_forces needs features at ghost
+            # indices to be connected to the real atom features.
+            inv_features = self._lammps_pad_and_sync(inv_features)
+            ev_features = self._lammps_pad_and_sync(ev_features)
+
         if return_att:
             return inv_features, ev_features, att_scores
         else:
             return inv_features, ev_features
+
+    def _lammps_pad_and_sync(self, features: torch.Tensor) -> torch.Tensor:
+        """Pad real-atom features with zeros for ghosts, then sync via LAMMPS.
+
+        After truncation to n_real atoms, ghost atoms have no features.
+        This pads the tensor back to n_total and calls LAMMPS
+        forward_exchange to copy real atom features to their ghost copies.
+        The backward pass (reverse_exchange) accumulates ghost gradients
+        back onto the real atoms, which is essential for correct edge forces.
+        """
+        n_real, n_total = self.lammps_natoms
+        n_ghost = n_total - n_real
+        pad = torch.zeros(
+            (n_ghost, features.shape[1]),
+            dtype=features.dtype,
+            device=features.device,
+        )
+        features = torch.cat((features, pad), dim=0)
+        features = utils.LAMMPS_MP.apply(features, self.lammps_class)
+        return features
 
     def _create_output_dict(
         self,
