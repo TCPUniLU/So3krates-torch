@@ -904,7 +904,7 @@ def load_pretrained_model_direct(
     logging.info(f"Loading complete pretrained model from: {pretrained_path}")
 
     # Load the pretrained model
-    loaded_object = torch.load(pretrained_path, map_location=device)
+    loaded_object = torch.load(pretrained_path, map_location=device, weights_only=False)
 
     if isinstance(loaded_object, torch.nn.Module):
         # If it's a complete model object, return it directly
@@ -1145,6 +1145,7 @@ def run_training(config: dict) -> None:
         init_distributed_from_config(config)
     )
 
+    print(f"Distributed setup: rank={rank}, local_rank={local_rank}, world_size={world_size}, distributed={distributed}")
     # Setup logging (only on rank 0 to avoid duplicate logs)
     if rank == 0:
         logging.getLogger().handlers.clear()
@@ -1431,7 +1432,11 @@ def wrap_model_ddp(model, local_rank):
     """Wrap an already-device-placed model in DDP."""
     device = torch.device(f"cuda:{local_rank}")
     model = model.to(device)
-    return DDP(model, device_ids=[local_rank])
+    return DDP(
+        model, 
+        device_ids=[local_rank],
+        find_unused_parameters=True,
+        )
 
 
 

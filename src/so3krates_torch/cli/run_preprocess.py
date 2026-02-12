@@ -109,6 +109,7 @@ def process_xyz_input(args):
             _log_progress(idx, len(configs), start_time)
 
         # Save
+        logging.info("Saving...")
         save_preprocessed_hdf5(
             data_list,
             args.output,
