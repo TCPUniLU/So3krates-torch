@@ -286,10 +286,10 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
             ),
             "atomic_numbers": actual_z,
             "batch": torch.zeros(
-                natoms, dtype=torch.int64, device=self.device
+                ntotal, dtype=torch.int64, device=self.device
             ),
             "ptr": torch.tensor(
-                [0, natoms], dtype=torch.long, device=self.device
+                [0, ntotal], dtype=torch.long, device=self.device
             ),
             "total_charge": torch.zeros(
                 1, dtype=self.dtype, device=self.device
