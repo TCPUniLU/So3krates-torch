@@ -407,9 +407,10 @@ class EuclideanAttentionBlock(torch.nn.Module):
         except TypeError:
             self.qk_non_linearity = qk_non_linearity
 
-        self.degree_repeats = torch.tensor(
-            [2 * y + 1 for y in degrees],
-        ).to(device)
+        self.register_buffer(
+            "degree_repeats",
+            torch.tensor([2 * y + 1 for y in degrees]),
+        )
 
     def _get_qkv(
         self,
@@ -564,9 +565,10 @@ class InteractionBlock(torch.nn.Module):
         )
         # repeat the b_ev_features for each degree
         # e.g. for degrees=[0,1,2], we have repeats = [1, 3, 5]
-        self.degree_repeats = torch.tensor(
-            [2 * y + 1 for y in degrees],
-        ).to(device)
+        self.register_buffer(
+            "degree_repeats",
+            torch.tensor([2 * y + 1 for y in degrees]),
+        )
 
     def reset_parameters(self):
         # JAX init (lecun normal)
@@ -1130,14 +1132,10 @@ class EuclideanAttentionBlockVeRA(EuclideanAttentionBlockLORA):
             lora_rank,
             self.ev_head_dim,
         )
-        vera_A_matrix_inv.requires_grad = False
-        vera_B_matrix_inv.requires_grad = False
-        vera_A_matrix_ev.requires_grad = False
-        vera_B_matrix_ev.requires_grad = False
-        self.vera_A_matrix_inv = vera_A_matrix_inv.to(device)
-        self.vera_B_matrix_inv = vera_B_matrix_inv.to(device)
-        self.vera_A_matrix_ev = vera_A_matrix_ev.to(device)
-        self.vera_B_matrix_ev = vera_B_matrix_ev.to(device)
+        self.register_buffer("vera_A_matrix_inv", vera_A_matrix_inv)
+        self.register_buffer("vera_B_matrix_inv", vera_B_matrix_inv)
+        self.register_buffer("vera_A_matrix_ev", vera_A_matrix_ev)
+        self.register_buffer("vera_B_matrix_ev", vera_B_matrix_ev)
 
         self.d_k_inv = torch.nn.Parameter(
             torch.ones(self.inv_heads, self.rank, device=device)
