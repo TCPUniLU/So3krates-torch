@@ -589,6 +589,7 @@ class SO3LR(So3krates):
         hirshfeld_ratios: torch.Tensor,
         inv_features: torch.Tensor,
         att_scores: torch.Tensor,
+        node_energy: Optional[torch.Tensor] = None,
         training: bool = False,
     ) -> Dict[str, Optional[torch.Tensor]]:
 
@@ -599,6 +600,7 @@ class SO3LR(So3krates):
             "stress": stress,
             "hessian": hessian,
             "edge_forces": edge_forces,
+            "node_energy": node_energy,
             "zbl_repulsion": zbl_atomic_energies,
             "partial_charges": partial_charges,
             "dipole": dipole,
@@ -752,6 +754,7 @@ class SO3LR(So3krates):
             ),
             inv_features=inv_features if return_descriptors else None,
             att_scores=att_scores if return_att else None,
+            node_energy=atomic_energies,
             training=training,
         )
 
@@ -884,6 +887,7 @@ class MultiHeadSO3LR(SO3LR):
         hirshfeld_ratios: torch.Tensor,
         inv_features: torch.Tensor,
         att_scores: torch.Tensor,
+        node_energy: Optional[torch.Tensor] = None,
         training: bool = False,
     ) -> Dict[str, Optional[torch.Tensor]]:
 
@@ -897,6 +901,7 @@ class MultiHeadSO3LR(SO3LR):
             "stress": stress,
             "hessian": hessian,
             "edge_forces": edge_forces,
+            "node_energy": node_energy,
             "zbl_repulsion": zbl_atomic_energies,
             "partial_charges": partial_charges,
             "dipole": dipole,

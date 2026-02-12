@@ -564,9 +564,8 @@ def prepare_graph(
     )
 
     if lammps_mliap:
-        raise NotImplementedError("LAMMPS MLIAP support is not implemented")
         n_real, n_total = data["natoms"][0], data["natoms"][1]
-        num_graphs = 2
+        num_graphs = 1  # LAMMPS always calls per-structure, no batching
         num_atoms_arange = torch.arange(
             n_real, device=data["node_attrs"].device
         )
@@ -583,6 +582,7 @@ def prepare_graph(
         )
         vectors = data["vectors"].requires_grad_(True)
         lengths = torch.linalg.vector_norm(vectors, dim=1, keepdim=True)
+        vectors_lr, lengths_lr = None, None  # No long-range in MLIAP mode
         ikw = InteractionKwargs(data["lammps_class"], (n_real, n_total))
     else:
         data["positions"].requires_grad_(True)
