@@ -149,8 +149,10 @@ class ChargeSpinEmbedding(torch.nn.Module):
         """
         q = self.Wq(elements_one_hot)
         idx = (psi // torch.inf).type(torch.int)
-        k = self.Wk[idx][batch_segments]
-        v = self.Wv[idx][batch_segments]
+        # Expand graph-level idx to atom-level using batch_segments
+        idx_per_atom = idx[batch_segments]
+        k = self.Wk[idx_per_atom]
+        v = self.Wv[idx_per_atom]
         q_x_k = (q * k).sum(dim=-1) / self.sqrt_dim
         y = torch.nn.functional.softplus(q_x_k)
         # Use batch size information to avoid FX specialization
