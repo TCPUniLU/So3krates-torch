@@ -414,7 +414,7 @@ class TestLAMMPS_MLIAP_SO3:
         assert batch["node_attrs"].shape == (natoms + nghosts, 118)
         assert batch["edge_index"].shape == (2, npairs)
         assert batch["atomic_numbers"].shape == (natoms + nghosts,)
-        assert batch["batch"].shape == (natoms,)
+        assert batch["batch"].shape == (natoms + nghosts,)
         assert batch["ptr"].shape == (2,)
         assert batch["natoms"] == (natoms, natoms + nghosts)
 

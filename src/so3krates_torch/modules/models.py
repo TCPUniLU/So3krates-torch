@@ -433,18 +433,27 @@ class So3krates(torch.nn.Module):
             data,
         )
 
-        total_energy = scatter.scatter_sum(
-            src=atomic_energies,
-            index=self.batch_segments,
-            dim=0,
-            dim_size=self.data_ptr.shape[0] - 1,
-        ).squeeze(-1)
+        if self.is_lammps:
+            n_real = self.lammps_natoms[0]
+            total_energy = scatter.scatter_sum(
+                src=atomic_energies[:n_real],
+                index=self.batch_segments[:n_real],
+                dim=0,
+                dim_size=1,
+            ).squeeze(-1)
+        else:
+            total_energy = scatter.scatter_sum(
+                src=atomic_energies,
+                index=self.batch_segments,
+                dim=0,
+                dim_size=self.data_ptr.shape[0] - 1,
+            ).squeeze(-1)
 
         forces, virials, stress, hessian, edge_forces = utils.get_outputs(
             energy=total_energy,
             positions=self.positions,
             displacement=self.displacement,
-            vectors=self.vectors,
+            vectors=self.ctx.vectors,
             cell=self.cell,
             training=training,
             compute_force=compute_force,
@@ -766,17 +775,31 @@ class SO3LR(So3krates):
             electrostatic_energies=electrostatic_energies,
             dispersion_energies=dispersion_energies,
         )
-        total_energy = scatter.scatter_sum(
-            src=atomic_energies,
-            index=self.batch_segments,
-            dim=0,
-            dim_size=self.data_ptr.shape[0] - 1,
-        ).squeeze(-1)
+        # In LAMMPS mode, only sum real (non-ghost) atom energies so that
+        # edge forces derived via autograd do not include ghost contributions.
+        if self.is_lammps:
+            n_real = self.lammps_natoms[0]
+            total_energy = scatter.scatter_sum(
+                src=atomic_energies[:n_real],
+                index=self.batch_segments[:n_real],
+                dim=0,
+                dim_size=1,
+            ).squeeze(-1)
+        else:
+            total_energy = scatter.scatter_sum(
+                src=atomic_energies,
+                index=self.batch_segments,
+                dim=0,
+                dim_size=self.data_ptr.shape[0] - 1,
+            ).squeeze(-1)
         forces, virials, stress, hessian, edge_forces = self._get_outputs(
             energy=total_energy,
             positions=self.positions,
             displacement=self.displacement,
-            vectors=self.vectors,
+            # Use original (non-negated) vectors for correct edge force sign.
+            # self.vectors is negated (-1 * ctx.vectors) for So3krates' internal
+            # convention, but edge forces must be w.r.t. the original LAMMPS vectors.
+            vectors=self.ctx.vectors,
             cell=self.cell,
             training=training,
             compute_force=compute_force,
