@@ -439,6 +439,7 @@ def setup_data_loaders(
                 r_max=r_max,
                 r_max_lr=r_max_lr,
             )
+            num_elements = None  # Will be computed below
             avg_num_neighbors = None  # Will be computed below
 
         # Compute average atomic energy shifts
