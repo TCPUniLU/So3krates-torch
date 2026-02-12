@@ -273,12 +273,16 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
             .to(self.dtype)
             .to(self.device),
             "node_attrs": node_attrs,
+            # So3krates convention: edge_index[0] = receivers (scatter target),
+            # edge_index[1] = senders (message source).
+            # pair_i = central (always real), pair_j = neighbor (may be ghost).
+            # Place pair_i at [0] so messages aggregate at real atoms.
             "edge_index": torch.stack(
                 [
-                    torch.as_tensor(data.pair_j, dtype=torch.int64).to(
+                    torch.as_tensor(data.pair_i, dtype=torch.int64).to(
                         self.device
                     ),
-                    torch.as_tensor(data.pair_i, dtype=torch.int64).to(
+                    torch.as_tensor(data.pair_j, dtype=torch.int64).to(
                         self.device
                     ),
                 ],

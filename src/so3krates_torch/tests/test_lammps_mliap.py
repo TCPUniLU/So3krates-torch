@@ -770,8 +770,8 @@ class TestEndToEndForward:
             "node_attrs": node_attrs,
             "edge_index": torch.stack(
                 [
-                    mock_data.pair_j.to(torch.int64),
                     mock_data.pair_i.to(torch.int64),
+                    mock_data.pair_j.to(torch.int64),
                 ],
                 dim=0,
             ),
@@ -859,4 +859,222 @@ class TestEndToEndForward:
         # Energies should match within numerical precision
         assert lammps_energy == pytest.approx(ase_energy, rel=1e-5), (
             f"Energy mismatch: LAMMPS={lammps_energy}, ASE={ase_energy}"
+        )
+
+    def test_forces_match_ase_calculator(
+        self,
+        so3lr_short_range_no_zbl_model,
+        make_batch,
+        water_atomic_numbers,
+    ):
+        """Compare atomic forces from LAMMPS edge forces vs ASE forces.
+
+        Converts LAMMPS pair forces to atomic forces:
+            f_i = sum_{j: pair_i=i} pair_forces_ij - sum_{j: pair_j=i} pair_forces_ji
+        and checks they match ASE-path forces.
+        """
+        atoms = molecule("H2O")
+        model = so3lr_short_range_no_zbl_model
+        model.double()
+
+        # --- ASE path: compute forces via positions gradient ---
+        batch = make_batch(atoms, r_max=model.r_max)
+        ase_output = model(
+            batch,
+            training=False,
+            compute_force=True,
+        )
+        ase_forces = ase_output["forces"].detach()
+
+        # --- LAMMPS mock path: compute edge forces ---
+        calc = LAMMPS_MLIAP_SO3(
+            model, atomic_numbers=water_atomic_numbers
+        )
+        calc.device = torch.device("cpu")
+        calc.initialized = True
+        calc.model = calc.model.to("cpu")
+
+        mock_data = self._atoms_to_mock_lammps_data(
+            atoms, model, water_atomic_numbers
+        )
+        calc.compute_forces(mock_data)
+
+        # Get the pair forces that were passed to LAMMPS
+        pair_forces = mock_data.update_pair_forces_gpu.call_args[0][0]
+        pair_i = mock_data.pair_i
+        pair_j = mock_data.pair_j
+        natoms = mock_data.nlocal
+
+        # Convert pair forces to atomic forces (LAMMPS convention):
+        # f[i] += pair_forces[n] for all n where pair_i[n] == i
+        # f[j] -= pair_forces[n] for all n where pair_j[n] == j
+        lammps_atomic_forces = torch.zeros(natoms, 3, dtype=torch.float64)
+        for n in range(len(pair_i)):
+            i = pair_i[n].item()
+            j = pair_j[n].item()
+            lammps_atomic_forces[i] += pair_forces[n]
+            if j < natoms:  # Only real atoms
+                lammps_atomic_forces[j] -= pair_forces[n]
+
+        # Forces should match
+        print(f"\nASE forces:\n{ase_forces}")
+        print(f"\nLAMMPS atomic forces (from edge forces):\n{lammps_atomic_forces}")
+        print(f"\nDifference:\n{ase_forces - lammps_atomic_forces}")
+        print(f"\nMax abs diff: {(ase_forces - lammps_atomic_forces).abs().max().item()}")
+
+        torch.testing.assert_close(
+            lammps_atomic_forces, ase_forces,
+            atol=1e-5, rtol=1e-5,
+            msg=f"Force mismatch!\nASE: {ase_forces}\nLAMMPS: {lammps_atomic_forces}"
+        )
+
+    def _atoms_to_mock_lammps_data_periodic(
+        self, atoms, model, atomic_numbers_list, dtype=torch.float64
+    ):
+        """Convert periodic ASE Atoms to mock LAMMPS data WITH ghost atoms.
+
+        For periodic systems, LAMMPS creates ghost atoms for periodic images.
+        This mock reproduces that behavior by creating ghost atoms for
+        neighbors that cross periodic boundaries.
+        """
+        import numpy as np
+        from ase.neighborlist import neighbor_list
+
+        r_max = model.r_max
+        i_indices, j_indices, d_vectors, shifts = neighbor_list(
+            "ijDS", atoms, cutoff=r_max, self_interaction=False
+        )
+        natoms = len(atoms)
+
+        # Create ghost atoms for periodic images.
+        # Each unique (j_atom, shift) with shift != (0,0,0) needs a ghost.
+        ghost_map = {}  # (j_atom, shift_tuple) -> ghost_index
+        ghost_types = []   # LAMMPS type index for each ghost
+        next_ghost_idx = natoms
+
+        z_to_type = {z: idx for idx, z in enumerate(atomic_numbers_list)}
+        atomic_numbers = atoms.get_atomic_numbers()
+
+        new_pair_i = []
+        new_pair_j = []
+        new_rij = []
+
+        for n in range(len(i_indices)):
+            i = i_indices[n]
+            j = j_indices[n]
+            shift = tuple(shifts[n])
+            rij = d_vectors[n]
+
+            new_pair_i.append(i)
+            new_rij.append(rij)
+
+            if shift == (0, 0, 0):
+                # Same cell - j is a real atom
+                new_pair_j.append(j)
+            else:
+                # Periodic image - need a ghost atom
+                key = (j, shift)
+                if key not in ghost_map:
+                    ghost_map[key] = next_ghost_idx
+                    ghost_types.append(z_to_type[atomic_numbers[j]])
+                    next_ghost_idx += 1
+                new_pair_j.append(ghost_map[key])
+
+        nghosts = len(ghost_map)
+        ntotal = natoms + nghosts
+
+        # Build element types: real atoms + ghost atoms
+        real_types = [z_to_type[z] for z in atomic_numbers]
+        all_types = real_types + ghost_types
+
+        mock = Mock()
+        mock.nlocal = natoms
+        mock.ntotal = ntotal
+        mock.npairs = len(new_pair_i)
+        mock.elems = torch.tensor(all_types, dtype=torch.int64)
+        mock.rij = torch.tensor(np.array(new_rij), dtype=dtype)
+        mock.pair_i = torch.tensor(new_pair_i, dtype=torch.int64)
+        mock.pair_j = torch.tensor(new_pair_j, dtype=torch.int64)
+        mock.eatoms = torch.zeros(natoms, dtype=dtype)
+        mock.energy = torch.tensor(0.0, dtype=dtype)
+        mock.update_pair_forces_gpu = Mock()
+        mock.__class__ = type(
+            "RegularModule", (), {"__module__": "regular_module"}
+        )
+        return mock
+
+    def test_forces_match_ase_periodic(
+        self,
+        so3lr_short_range_no_zbl_model,
+        make_batch,
+        si_atomic_numbers,
+    ):
+        """Compare forces for PERIODIC system with ghost atoms.
+
+        This is the critical test: periodic systems require ghost atoms
+        in LAMMPS, and the edge force → atomic force conversion must
+        correctly handle ghost indices.
+        """
+        atoms = bulk("Si", "diamond", a=5.43)
+        model = so3lr_short_range_no_zbl_model
+        model.double()
+
+        # --- ASE path ---
+        batch = make_batch(atoms, r_max=model.r_max)
+        ase_output = model(
+            batch,
+            training=False,
+            compute_force=True,
+        )
+        ase_forces = ase_output["forces"].detach()
+        ase_energy = ase_output["energy"].squeeze().item()
+
+        # --- LAMMPS mock path (with ghost atoms) ---
+        calc = LAMMPS_MLIAP_SO3(
+            model, atomic_numbers=si_atomic_numbers
+        )
+        calc.device = torch.device("cpu")
+        calc.initialized = True
+        calc.model = calc.model.to("cpu")
+
+        mock_data = self._atoms_to_mock_lammps_data_periodic(
+            atoms, model, si_atomic_numbers
+        )
+        calc.compute_forces(mock_data)
+        lammps_energy = mock_data.energy.item()
+
+        print(f"\nPeriodic Si: natoms={mock_data.nlocal}, "
+              f"nghosts={mock_data.ntotal - mock_data.nlocal}, "
+              f"npairs={mock_data.npairs}")
+        print(f"ASE energy: {ase_energy}")
+        print(f"LAMMPS energy: {lammps_energy}")
+
+        # Energy should match
+        assert lammps_energy == pytest.approx(ase_energy, rel=1e-5), (
+            f"Energy mismatch: LAMMPS={lammps_energy}, ASE={ase_energy}"
+        )
+
+        # Convert edge forces to atomic forces
+        pair_forces = mock_data.update_pair_forces_gpu.call_args[0][0]
+        pair_i = mock_data.pair_i
+        pair_j = mock_data.pair_j
+        natoms = mock_data.nlocal
+
+        lammps_atomic_forces = torch.zeros(natoms, 3, dtype=torch.float64)
+        for n in range(len(pair_i)):
+            i = pair_i[n].item()
+            j = pair_j[n].item()
+            lammps_atomic_forces[i] += pair_forces[n]
+            if j < natoms:
+                lammps_atomic_forces[j] -= pair_forces[n]
+
+        print(f"\nASE forces:\n{ase_forces}")
+        print(f"\nLAMMPS atomic forces:\n{lammps_atomic_forces}")
+        print(f"\nDifference:\n{ase_forces - lammps_atomic_forces}")
+        print(f"\nMax abs diff: {(ase_forces - lammps_atomic_forces).abs().max().item()}")
+
+        torch.testing.assert_close(
+            lammps_atomic_forces, ase_forces,
+            atol=1e-5, rtol=1e-5,
+            msg=f"Force mismatch (periodic)!\nASE: {ase_forces}\nLAMMPS: {lammps_atomic_forces}"
         )
