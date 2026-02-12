@@ -222,6 +222,31 @@ class So3krates(torch.nn.Module):
             device=self.device,
         )
 
+    def load_state_dict(self, state_dict, strict=True):
+        """
+        Load state dict with backward compatibility for models saved before
+        degree_repeats and vera_* matrices were converted to buffers.
+        """
+        # Check if state dict is missing the new buffer keys
+        missing_buffer_keys = [
+            key for key in self.state_dict().keys()
+            if 'degree_repeats' in key or 'vera_' in key
+        ]
+
+        has_missing_buffers = any(
+            key not in state_dict for key in missing_buffer_keys
+        )
+
+        if has_missing_buffers and strict:
+            # Old state dict detected - load with strict=False
+            # The missing buffers are already initialized correctly in __init__
+            print("Loading old state dict format (missing degree_repeats/vera buffers). "
+                  "Using strict=False to skip non-trainable computed buffers.")
+            return super().load_state_dict(state_dict, strict=False)
+        else:
+            # New state dict or strict=False explicitly requested
+            return super().load_state_dict(state_dict, strict=strict)
+
     def _get_graph(
         self,
         data: Dict[str, torch.Tensor],
@@ -507,6 +532,31 @@ class SO3LR(So3krates):
         self.dispersion_potential = DispersionInteraction(
             neighborlist_format_lr=self.neighborlist_format_lr
         )
+
+    def load_state_dict(self, state_dict, strict=True):
+        """
+        Load state dict with backward compatibility for models saved before
+        degree_repeats and vera_* matrices were converted to buffers.
+        """
+        # Check if state dict is missing the new buffer keys
+        missing_buffer_keys = [
+            key for key in self.state_dict().keys()
+            if 'degree_repeats' in key or 'vera_' in key
+        ]
+
+        has_missing_buffers = any(
+            key not in state_dict for key in missing_buffer_keys
+        )
+
+        if has_missing_buffers and strict:
+            # Old state dict detected - load with strict=False
+            # The missing buffers are already initialized correctly in __init__
+            print("Loading old state dict format (missing degree_repeats/vera buffers). "
+                  "Using strict=False to skip non-trainable computed buffers.")
+            return super().load_state_dict(state_dict, strict=False)
+        else:
+            # New state dict or strict=False explicitly requested
+            return super().load_state_dict(state_dict, strict=strict)
 
     def _get_graph(
         self,
