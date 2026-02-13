@@ -440,13 +440,12 @@ class PartialChargesOutputHead(nn.Module):
             src=x_q, index=batch_segments, dim=0, dim_size=num_graphs
         )  # (num_graphs)
 
-        unique_batches, counts = torch.unique(
-            batch_segments, return_counts=True
+        number_of_atoms_in_molecule = scatter.scatter_sum(
+            src=torch.ones_like(batch_segments),
+            index=batch_segments,
+            dim=0,
+            dim_size=num_graphs,
         )
-        number_of_atoms_in_molecule = torch.zeros(
-            num_graphs, dtype=counts.dtype, device=inv_features.device
-        )
-        number_of_atoms_in_molecule[unique_batches] = counts
 
         charge_conservation = (1 / number_of_atoms_in_molecule) * (
             total_charge - total_charge_predicted
@@ -561,9 +560,9 @@ class HirshfeldOutputHead(nn.Module):
             inv_features
         )  # (num_nodes, num_features//2)
 
-        qk = (
-            q * k / torch.sqrt(torch.tensor(k.shape[-1], dtype=k.dtype))
-        ).sum(dim=-1)
+        qk = (q * k * (1.0 / math.sqrt(k.shape[-1]))).sum(
+            dim=-1
+        )
 
         v_eff = v_shift + qk  # (num_nodes)
 

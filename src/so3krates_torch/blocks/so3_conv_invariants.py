@@ -4,7 +4,6 @@ import torch.nn as nn
 import itertools as it
 import numpy as np
 import importlib.resources
-from so3krates_torch.tools.scatter import scatter_sum
 
 
 class SO3ConvolutionInvariants(torch.nn.Module):
@@ -89,13 +88,29 @@ class L0Contraction(nn.Module):
         # Segment IDs
         segment_ids = list(
             it.chain(
-                *[[n] * (2 * degrees[n] + 1) for n in range(len(degrees))]
+                *[
+                    [n] * (2 * degrees[n] + 1)
+                    for n in range(len(degrees))
+                ]
             )
         )
         self.register_buffer(
             "segment_ids",
-            torch.tensor(segment_ids, dtype=torch.long, device=device),
+            torch.tensor(
+                segment_ids, dtype=torch.long, device=device
+            ),
         )
+
+        # Segment sum matrix for efficient matmul
+        m_tot = len(segment_ids)
+        S = torch.zeros(
+            m_tot, self.num_segments, dtype=dtype, device=device
+        )
+        S[
+            torch.arange(m_tot, device=device),
+            self.segment_ids,
+        ] = 1.0
+        self.register_buffer("segment_sum_matrix", S)
 
     def forward(self, sphc: torch.Tensor) -> torch.Tensor:
         """
@@ -104,17 +119,20 @@ class L0Contraction(nn.Module):
         Returns:
             shape (B, len(degrees))
         """
-        B, m_tot = sphc.shape
-        weighted = sphc * sphc * self.cg_rep[None, :]  # (B, m_tot)
-
-        flat = weighted.reshape(-1)
-        batch_ids = torch.arange(B, device=sphc.device).repeat_interleave(
-            m_tot
+        if not hasattr(self, "segment_sum_matrix"):
+            m = self.segment_ids.shape[0]
+            S = torch.zeros(
+                m,
+                self.num_segments,
+                dtype=self.cg_rep.dtype,
+                device=self.cg_rep.device,
+            )
+            S[
+                torch.arange(m, device=S.device),
+                self.segment_ids,
+            ] = 1.0
+            self.register_buffer("segment_sum_matrix", S)
+        weighted = sphc * sphc * self.cg_rep
+        return weighted @ self.segment_sum_matrix.to(
+            weighted.dtype
         )
-        seg_ids = self.segment_ids.repeat(B)
-        scatter_ids = batch_ids * self.num_segments + seg_ids
-
-        out = scatter_sum(
-            flat, index=scatter_ids, dim=0, dim_size=B * self.num_segments
-        )
-        return out.view(B, self.num_segments)

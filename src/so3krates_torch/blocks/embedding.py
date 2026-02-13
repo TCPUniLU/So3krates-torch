@@ -176,6 +176,5 @@ class ChargeSpinEmbedding(torch.nn.Module):
         )
         att = psi[batch_segments] * y / denominator[batch_segments]
         v_att = att[:, None] * v
-        v_att_temp = v_att.clone()
-        e_psi = v_att_temp + self.mlp(v_att)
+        e_psi = v_att + self.mlp(v_att)
         return e_psi
