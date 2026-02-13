@@ -151,7 +151,10 @@ torchkrates-preprocess --input raw.h5 --output preprocessed.h5 --mode preprocess
 ### `torchkrates-lammps` — LAMMPS Model Export
 
 > [!NOTE]
-> More details and how to use the model in LAMMPS are coming ...
+> More details and how to use the model in LAMMPS are coming.
+
+> [!IMPORTANT]  
+> Only works with torch==2.6.0 for CUDA 12.6.0 on Meluxina!
 
 Convert a trained SO3LR model to a TorchScript model compatible with the LAMMPS ML-IAP interface.
 
