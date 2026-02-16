@@ -185,6 +185,255 @@ Convert model weights between the PyTorch and JAX (mlff) implementations. Requir
 
 ---
 
+## Training Configuration
+
+Training is configured via a YAML file with four sections: `GENERAL`, `ARCHITECTURE`, `TRAINING`, and `MISC`. Launch training with:
+
+```bash
+torchkrates-train --config config.yaml
+```
+
+A full example is provided in [examples/training/train_settings_example.yaml](examples/training/train_settings_example.yaml).
+
+
+### Model Architecture (`ARCHITECTURE`)
+
+These settings define the SO3LR neural network architecture.
+
+#### Core Transformer
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `degrees` | `list[int]` | *required* | Spherical harmonic degrees included in the equivariant features, e.g. `[1,2,3,4]`. Higher degrees capture more angular information but increase cost. |
+| `num_features` | `int` | `128` | Hidden feature dimension of invariant and equivariant representations. |
+| `num_heads` | `int` | `4` | Number of attention heads in each Euclidean transformer layer. |
+| `num_layers` | `int` | `3` | Number of stacked Euclidean transformer layers. |
+| `num_radial_basis_fn` | `int` | `32` | Number of radial basis functions used to expand interatomic distances. |
+| `energy_regression_dim` | `int` | `128` | Hidden dimension of the MLP in the atomic energy output head. |
+
+#### Cutoffs and Basis Functions
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `r_max` | `float` | `4.5` | Short-range cutoff radius in Angstrom. Atoms beyond this distance do not interact through the neural network. |
+| `r_max_lr` | `float` | `None` | Long-range cutoff for electrostatics and dispersion. Required when `electrostatic_energy_bool` or `dispersion_energy_bool` is enabled. |
+| `radial_basis_fn` | `str` | `"bernstein"` | Radial basis function type. Options: `bernstein`, `gaussian`, `bessel`. |
+| `cutoff_fn` | `str` | `"cosine"` | Envelope function that smoothly decays interactions to zero at the cutoff. Options: `cosine`, `phys`, `polynomial`, `exponential`. |
+| `trainable_rbf` | `bool` | `False` | Whether radial basis function parameters are trainable. |
+
+#### Activation Functions
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `activation_fn` | `str` | `"silu"` | Activation function in transformer layers. Options: `silu`, `relu`, `gelu`, `tanh`, `identity`. |
+| `energy_activation_fn` | `str` | `"silu"` | Activation function in the energy output head MLP. Same options as above. |
+| `qk_non_linearity` | `str` | `"identity"` | Non-linearity applied to query and key projections in attention. `identity` means linear attention. |
+
+#### Normalization and Residual Connections
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `message_normalization` | `str` | `"avg_num_neighbors"` | How messages are normalized after aggregation. Options: `avg_num_neighbors` (divide by mean neighbor count), `sqrt_num_features`, `identity`. |
+| `layer_normalization_1` | `bool` | `False` | Apply layer normalization after the first MLP in each transformer layer. |
+| `layer_normalization_2` | `bool` | `False` | Apply layer normalization after the second MLP in each transformer layer. |
+| `residual_mlp_1` | `bool` | `False` | Add a residual connection around the first MLP. |
+| `residual_mlp_2` | `bool` | `False` | Add a residual connection around the second MLP. |
+| `compute_avg_num_neighbors` | `bool` | `True` | Compute the average number of neighbors from the training data (used for `avg_num_neighbors` normalization). |
+
+#### Embeddings and Energy Output
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `use_charge_embed` | `bool` | `False` | Include total charge as an input embedding. Required when training on charged systems. |
+| `use_spin_embed` | `bool` | `False` | Include total spin as an input embedding. Required for spin-polarized systems. |
+| `energy_learn_atomic_type_shifts` | `bool` | `False` | Learn per-element energy shifts as trainable parameters. When `False`, shifts are fixed from the training data E0s. |
+| `energy_learn_atomic_type_scales` | `bool` | `False` | Learn per-element energy scales as trainable parameters. |
+| `atomic_energy_shifts` | `dict` | `None` | Manually specify per-element energy shifts, e.g. `{1: -13.6, 6: -1029.5}`. Overrides the values computed from training data. |
+
+#### SO3LR Physical Potentials
+
+These enable the physics-based long-range interactions that distinguish SO3LR from the base So3krates model.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `zbl_repulsion_bool` | `bool` | `True` | Enable the ZBL repulsion potential for short-range nuclear repulsion. |
+| `electrostatic_energy_bool` | `bool` | `True` | Enable electrostatic interactions via learned partial charges. Requires `r_max_lr` to be set. |
+| `electrostatic_energy_scale` | `float` | `4.0` | Scaling factor for the electrostatic energy contribution. |
+| `dispersion_energy_bool` | `bool` | `True` | Enable van der Waals dispersion interactions via learned Hirshfeld ratios. Requires `r_max_lr` to be set. |
+| `dispersion_energy_scale` | `float` | `1.2` | Scaling factor for the dispersion energy contribution. |
+| `dispersion_energy_cutoff_lr_damping` | `float` | `None` | Damping cutoff for dispersion interactions. |
+| `neighborlist_format_lr` | `str` | `"sparse"` | Storage format for the long-range neighbor list. |
+
+#### Multi-Head Ensemble
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `convert_to_multihead` | `bool` | `False` | Convert the single energy output head to multiple independent heads for ensemble predictions. |
+| `num_output_heads` | `int` | `None` | Number of output heads. Required when `convert_to_multihead: true`. |
+| `use_multihead` | `bool` | `False` | Enable head selection during multi-head training (each sample is assigned to a specific head). |
+
+
+### Training Procedure (`TRAINING`)
+
+#### Data
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `path_to_train_data` | `str` | *required* | Path to training data. Accepts `.xyz` files (ASE-readable) or `.h5`/`.hdf5` files. Preprocessed HDF5 files with pre-computed neighbor lists are auto-detected and loaded directly, which is significantly faster. |
+| `path_to_val_data` | `str` | `None` | Path to a separate validation dataset. If not provided, validation data is split from the training set using `valid_ratio`. |
+| `valid_ratio` | `float` | `0.1` | Fraction of training data to use for validation when `path_to_val_data` is not specified. |
+| `num_train` | `int` | `None` | Limit the number of training samples. Useful for debugging or ablation studies. |
+| `num_valid` | `int` | `None` | Limit the number of validation samples. |
+| `batch_size` | `int` | *required* | Number of structures per training batch. |
+| `valid_batch_size` | `int` | *required* | Number of structures per validation batch. Can be larger than `batch_size` since no gradients are computed. |
+
+For multi-head models, data can be specified per head instead of using `path_to_train_data`:
+
+```yaml
+TRAINING:
+  heads:
+    head_0:
+      path_to_train_data: /path/to/head0_train.xyz
+      path_to_val_data: /path/to/head0_val.xyz  # optional
+      valid_ratio: 0.1  # used if path_to_val_data not given
+    head_1:
+      path_to_train_data: /path/to/head1_train.xyz
+```
+
+#### Data Key Mapping
+
+By default, the trainer reads reference properties using these keys from the ASE `atoms.info` / `atoms.arrays` dictionaries:
+
+| Property | Default Key |
+|----------|-------------|
+| Energy | `REF_energy` |
+| Forces | `REF_forces` |
+| Stress | `REF_stress` |
+| Virials | `REF_virials` |
+| Dipole | `dipole` |
+| Charges | `REF_charges` |
+| Hirshfeld ratios | `REF_hirsh_ratios` |
+| Total charge | `total_charge` |
+| Total spin | `total_spin` |
+
+Override any of these via the `keys` dict:
+
+```yaml
+TRAINING:
+  keys:
+    energy_key: "energy"
+    forces_key: "forces"
+```
+
+#### Optimizer
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `optimizer` | `str` | `"adam"` | Optimizer. Currently only `adam` is supported. |
+| `lr` | `float` | *required* | Initial learning rate. |
+| `weight_decay` | `float` | `0.0` | L2 regularization weight. Applied to all parameters. |
+| `amsgrad` | `bool` | `False` | Use the AMSGrad variant of Adam, which keeps a running maximum of the second moment to prevent learning rate from increasing. |
+
+#### Learning Rate Scheduler
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `scheduler` | `str` | `"exponential_decay"` | Learning rate scheduler. Options: `exponential_decay`, `reduce_on_plateau`. |
+| `lr_scheduler_gamma` | `float` | `0.9993` | Multiplicative decay factor applied every epoch (for `exponential_decay`). An effective learning rate after *N* epochs is `lr * gamma^N`. |
+| `scheduler_patience` | `int` | `5` | Number of epochs with no improvement before reducing the learning rate (for `reduce_on_plateau`). |
+| `lr_factor` | `float` | `0.85` | Factor by which the learning rate is reduced when the plateau is reached (for `reduce_on_plateau`). |
+
+#### Loss Function
+
+The loss function is automatically determined based on which weights are non-zero, or can be set explicitly via `loss_type`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `energy_weight` | `float` | `1.0` | Weight of the energy MSE loss term. Energy loss is normalized per atom. |
+| `forces_weight` | `float` | `1000.0` | Weight of the forces MSE loss term. Typically much larger than `energy_weight` since force errors are smaller in magnitude. |
+| `dipole_weight` | `float` | `0.0` | Weight of the dipole loss term. Set > 0 to train dipole predictions (requires dipole labels in training data). |
+| `hirshfeld_weight` | `float` | `0.0` | Weight of the Hirshfeld ratios loss term. Set > 0 to train Hirshfeld volume ratio predictions. |
+| `loss_type` | `str` | `"auto"` | Explicit loss type selection. Options: `auto`, `energy_forces`, `energy_forces_dipole`, `energy_forces_hirshfeld`, `energy_forces_dipole_hirshfeld`. When `auto`, the loss is inferred from which weights are non-zero. |
+
+#### Training Loop
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `num_epochs` | `int` | *required* | Maximum number of training epochs. |
+| `eval_interval` | `int` | `1` | Run validation every N epochs. |
+| `patience` | `int` | `50` | Early stopping patience: training stops after this many consecutive epochs without improvement on the validation loss. |
+| `clip_grad` | `float` | `10.0` | Maximum gradient norm for gradient clipping. Set to `null` to disable. |
+
+#### Exponential Moving Average (EMA)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ema` | `bool` | `False` | Maintain an exponential moving average of model weights. The EMA weights are used for validation and the final saved model. |
+| `ema_decay` | `float` | `0.99` | EMA decay factor. Values closer to 1.0 average over more history. |
+
+#### Pre-trained Models
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `pretrained_model` | `str` | `None` | Path to a complete pre-trained model (`.model` file). The full model object is loaded, including architecture and weights. Cannot be combined with `pretrained_weights`. |
+| `pretrained_weights` | `str` | `None` | Path to pre-trained weights (state dict). Weights are loaded into the model defined by the `ARCHITECTURE` section. Cannot be combined with `pretrained_model`. |
+| `ft_update_avg_num_neighbors` | `bool` | `False` | Recompute the average number of neighbors from the new training data instead of keeping the value from the pre-trained model. |
+| `force_use_average_shifts` | `bool` | `False` | Use E0 shifts computed from the new training data instead of the pre-trained model's shifts. |
+
+#### Fine-Tuning Strategy
+
+When loading a pre-trained model, `finetune_choice` controls which parameters remain trainable.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `finetune_choice` | `str` | `None` | Fine-tuning strategy. Options: `naive` (all parameters trainable), `last_layer` (only last transformer layer), `mlp` (only MLP weights), `qkv` (only query/key/value projections), `lora` (low-rank adaptation), `dora` (weight-decomposed LoRA), `vera` (vector-based random matrix adaptation). Combinations with `+mlp` are also supported: `last_layer+mlp`, `qkv+mlp`, `lora+mlp`. |
+| `freeze_embedding` | `bool` | `True` | Freeze the atomic embedding layers during fine-tuning. |
+| `freeze_zbl` | `bool` | `True` | Freeze ZBL repulsion parameters. |
+| `freeze_partial_charges` | `bool` | `True` | Freeze the partial charges output head. |
+| `freeze_hirshfeld` | `bool` | `True` | Freeze the Hirshfeld ratios output head. |
+| `freeze_shifts` | `bool` | `False` | Freeze learned atomic energy shifts. |
+| `freeze_scales` | `bool` | `False` | Freeze learned atomic energy scales. |
+
+#### LoRA / DoRA / VeRA Parameters
+
+These apply when `finetune_choice` is one of `lora`, `dora`, `vera`, or their `+mlp` variants.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `lora_rank` | `int` | `4` | Rank of the low-rank adaptation matrices. Lower rank means fewer trainable parameters. |
+| `lora_alpha` | `float` | `8.0` | Scaling factor. The effective adaptation is scaled by `alpha / rank`. |
+| `lora_freeze_A` | `bool` | `False` | Freeze the A (down-projection) matrices and only train B. Reduces trainable parameters by half. |
+| `dora_scaling_to_one` | `bool` | `True` | Initialize DoRA magnitude vectors to normalize columns to unit norm. |
+
+
+### General Settings (`GENERAL`)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name_exp` | `str` | *required* | Experiment name. Used for checkpoint filenames, log files, and the final saved model. |
+| `checkpoints_dir` | `str` | *required* | Directory where training checkpoints are saved. |
+| `model_dir` | `str` | *required* | Directory for the final trained model. |
+| `log_dir` | `str` | *required* | Directory for training and validation log files. |
+| `default_dtype` | `str` | `"float64"` | Default floating-point precision. Options: `float32`, `float64`, `float16`, `bfloat16`. Training typically uses `float64` for numerical stability. |
+| `seed` | `int` | `42` | Random seed for reproducibility (weight initialization, data shuffling). |
+| `compute_stress` | `bool` | `False` | Compute stress tensors during training. Required when training with stress/virial labels. |
+
+
+### Runtime and Logging (`MISC`)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `device` | `str` | `"cpu"` | Device for training: `cpu`, `cuda`, `cuda:0`, etc. Ignored when `distributed: true`. |
+| `distributed` | `bool` | `False` | Enable multi-GPU training with DistributedDataParallel (DDP). |
+| `launcher` | `str` | `None` | Distributed launcher. Required when `distributed: true`. Options: `torchrun`, `slurm`, `mpi`. |
+| `log_level` | `str` | `"INFO"` | Python logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR`. |
+| `error_table` | `str` | `"PerAtomMAE"` | Format for validation error reporting. Options: `PerAtomMAE`, `TotalMAE`, `PerAtomRMSE`, `TotalRMSE`, `PerAtomMAEstressvirials`, `PerAtomRMSEstressvirials`, `EnergyForceDipoleMAE`, `EnergyForceHirshfeldMAE`, `EnergyForceDipoleHirshfeldMAE`. |
+| `log_wandb` | `bool` | `False` | Enable [Weights & Biases](https://wandb.ai) logging. Requires `wandb` to be installed and configured. |
+| `restart_latest` | `bool` | `True` | Automatically resume from the latest checkpoint in `checkpoints_dir` if one exists. |
+| `keep_checkpoints` | `bool` | `False` | Keep all checkpoints. When `False`, only the best checkpoint (lowest validation loss) is kept. |
+| `no_checkpoint` | `bool` | `False` | Disable checkpoint loading entirely (overrides `restart_latest`). Useful for forcing a fresh start. |
+
+
 ## Cite
 If you are using the models implemented here please cite:
 
