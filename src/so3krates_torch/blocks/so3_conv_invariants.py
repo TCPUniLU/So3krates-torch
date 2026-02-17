@@ -5,34 +5,6 @@ import itertools as it
 import numpy as np
 import importlib.resources
 
-
-class SO3ConvolutionInvariants(torch.nn.Module):
-    def __init__(
-        self,
-        degrees: List[int],
-    ):
-        super().__init__()
-        import e3nn.o3 as o3
-
-        irreps_list = []
-        for l in degrees:
-            standard_parity = "e" if l % 2 == 0 else "o"
-            irreps_list.append(o3.Irrep(f"{l}{standard_parity}"))
-        self.irreps_in = o3.Irreps(irreps_list)
-        self.tensor_product = o3.FullTensorProduct(
-            self.irreps_in,
-            self.irreps_in,
-            filter_ir_out=["0e"],
-            internal_weights=False,
-        )
-
-    def forward(
-        self, ev_features_1: torch.Tensor, ev_features_2: torch.Tensor
-    ) -> torch.Tensor:
-
-        return self.tensor_product(ev_features_1, ev_features_2)
-
-
 indx_fn = lambda x: int((x + 1) ** 2) if x >= 0 else 0
 
 

@@ -1,8 +1,12 @@
 ase==3.26
 h5py==3.14.0
+matscipy>=0.8.0
 numpy==1.26.4
+prettytable>=3.0.0
 pyyaml==6.0.2
 torch==2.8.0
+torch-ema>=0.3.0
+torch-geometric==2.7.0
+torchmetrics>=1.0.0
 torchvision==0.23.0
 torchaudio==2.8.0
-torch-geometric==2.7.0
