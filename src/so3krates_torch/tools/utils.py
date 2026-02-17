@@ -106,9 +106,9 @@ def compute_hessians_vmap(
     I_N = torch.eye(num_elements).to(forces.device)
     try:
         chunk_size = 1 if num_elements < 64 else 16
-        gradient = torch.vmap(get_vjp, in_dims=0, out_dims=0, chunk_size=chunk_size)(
-            I_N
-        )[0]
+        gradient = torch.vmap(
+            get_vjp, in_dims=0, out_dims=0, chunk_size=chunk_size
+        )(I_N)[0]
     except RuntimeError:
         gradient = compute_hessians_loop(forces, positions)
     if gradient is None:
@@ -131,7 +131,9 @@ def compute_hessians_loop(
             create_graph=False,
             allow_unused=False,
         )[0]
-        hess_row = hess_row.detach()  # this makes it very slow? but needs less memory
+        hess_row = (
+            hess_row.detach()
+        )  # this makes it very slow? but needs less memory
         if hess_row is None:
             hessian.append(torch.zeros_like(positions))
         else:
@@ -745,9 +747,7 @@ def create_data_from_configs(
     from so3krates_torch.data.atomic_data import AtomicData
 
     if z_table is None:
-        z_table = AtomicNumberTable(
-            [int(z) for z in range(1, 119)]
-        )
+        z_table = AtomicNumberTable([int(z) for z in range(1, 119)])
     return [
         AtomicData.from_config(
             config,
@@ -847,9 +847,7 @@ def compute_avg_num_neighbors(
         num_neighbors.append(counts)
 
     avg_num_neighbors = torch.mean(
-        torch.cat(num_neighbors, dim=0).type(
-            torch.get_default_dtype()
-        )
+        torch.cat(num_neighbors, dim=0).type(torch.get_default_dtype())
     )
     return to_numpy(avg_num_neighbors).item()
 
@@ -869,7 +867,9 @@ def compute_rmse(delta: np.ndarray) -> float:
 
 def compute_rel_rmse(delta: np.ndarray, target_val: np.ndarray) -> float:
     target_norm = np.sqrt(np.mean(np.square(target_val))).item()
-    return np.sqrt(np.mean(np.square(delta))).item() / (target_norm + 1e-9) * 100
+    return (
+        np.sqrt(np.mean(np.square(delta))).item() / (target_norm + 1e-9) * 100
+    )
 
 
 def compute_q95(delta: np.ndarray) -> float:
@@ -1006,7 +1006,10 @@ class LAMMPS_MP(torch.autograd.Function):
 
 def get_cache_dir() -> Path:
     # get cache dir from XDG_CACHE_HOME if set, otherwise appropriate default
-    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "torchkrates"
+    return (
+        Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+        / "torchkrates"
+    )
 
 
 def filter_nonzero_weight(

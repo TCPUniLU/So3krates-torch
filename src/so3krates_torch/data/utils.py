@@ -116,7 +116,9 @@ def random_train_valid_split(
         )
     else:
         # Save indices to file
-        with open(work_dir + f"/valid_indices_{seed}.txt", "w", encoding="utf-8") as f:
+        with open(
+            work_dir + f"/valid_indices_{seed}.txt", "w", encoding="utf-8"
+        ) as f:
             for index in indices[train_size:]:
                 f.write(f"{index}\n")
 
@@ -175,7 +177,9 @@ def config_from_atoms(
 
     properties = {}
     property_weights = {}
-    for name in list(key_specification.arrays_keys) + list(key_specification.info_keys):
+    for name in list(key_specification.arrays_keys) + list(
+        key_specification.info_keys
+    ):
         property_weights[name] = atoms.info.get(f"config_{name}_weight", 1.0)
 
     for name, atoms_key in key_specification.info_keys.items():
@@ -280,7 +284,9 @@ def load_from_xyz(
     if not has_energy and not has_forces and not has_dipole:
         msg = f"None of '{final_energy_key}', '{final_forces_key}', and '{final_dipole_key}' found in '{file_path}'."
         if no_data_ok:
-            logging.warning(msg + " Continuing because no_data_ok=True was passed in.")
+            logging.warning(
+                msg + " Continuing because no_data_ok=True was passed in."
+            )
         else:
             raise ValueError(
                 msg
@@ -305,12 +311,15 @@ def load_from_xyz(
         for idx, atoms in enumerate(atoms_list):
             atoms.info[head_key] = head_name
             isolated_atom_config = (
-                len(atoms) == 1 and atoms.info.get("config_type") == "IsolatedAtom"
+                len(atoms) == 1
+                and atoms.info.get("config_type") == "IsolatedAtom"
             )
             if isolated_atom_config:
                 atomic_number = int(atoms.get_atomic_numbers()[0])
                 if energy_key in atoms.info.keys():
-                    atomic_energies_dict[atomic_number] = float(atoms.info[energy_key])
+                    atomic_energies_dict[atomic_number] = float(
+                        atoms.info[energy_key]
+                    )
                 else:
                     logging.warning(
                         f"Configuration '{idx}' is marked as 'IsolatedAtom' "
@@ -354,7 +363,9 @@ def compute_average_E0s(
     for i in range(len_train):
         B[i] = collections_train[i].properties["energy"]
         for j, z in enumerate(z_table.zs):
-            A[i, j] = np.count_nonzero(collections_train[i].atomic_numbers == z)
+            A[i, j] = np.count_nonzero(
+                collections_train[i].atomic_numbers == z
+            )
     try:
         E0s = np.linalg.lstsq(A, B, rcond=None)[0]
         atomic_energies_dict = {}
@@ -390,9 +401,7 @@ def compute_average_E0s_from_dataset(
         data = dataset[i]
         B[i] = data.energy.item()
         for j, z in enumerate(z_table.zs):
-            A[i, j] = (
-                (data.atomic_numbers == z).sum().item()
-            )
+            A[i, j] = (data.atomic_numbers == z).sum().item()
     try:
         E0s = np.linalg.lstsq(A, B, rcond=None)[0]
         atomic_energies_dict = {}
@@ -439,7 +448,9 @@ def save_AtomicData_to_HDF5(data, i, h5_file) -> None:
     grp["head"] = data.head
 
 
-def save_configurations_as_HDF5(configurations: Configurations, _, h5_file) -> None:
+def save_configurations_as_HDF5(
+    configurations: Configurations, _, h5_file
+) -> None:
     grp = h5_file.create_group("config_batch_0")
     for j, config in enumerate(configurations):
         subgroup_name = f"config_{j}"

@@ -229,8 +229,9 @@ class So3krates(torch.nn.Module):
         """
         # Check if state dict is missing the new buffer keys
         missing_buffer_keys = [
-            key for key in self.state_dict().keys()
-            if 'degree_repeats' in key or 'vera_' in key
+            key
+            for key in self.state_dict().keys()
+            if "degree_repeats" in key or "vera_" in key
         ]
 
         has_missing_buffers = any(
@@ -240,8 +241,10 @@ class So3krates(torch.nn.Module):
         if has_missing_buffers and strict:
             # Old state dict detected - load with strict=False
             # The missing buffers are already initialized correctly in __init__
-            print("Loading old state dict format (missing degree_repeats/vera buffers). "
-                  "Using strict=False to skip non-trainable computed buffers.")
+            print(
+                "Loading old state dict format (missing degree_repeats/vera buffers). "
+                "Using strict=False to skip non-trainable computed buffers."
+            )
             return super().load_state_dict(state_dict, strict=False)
         else:
             # New state dict or strict=False explicitly requested
@@ -598,8 +601,9 @@ class SO3LR(So3krates):
         """
         # Check if state dict is missing the new buffer keys
         missing_buffer_keys = [
-            key for key in self.state_dict().keys()
-            if 'degree_repeats' in key or 'vera_' in key
+            key
+            for key in self.state_dict().keys()
+            if "degree_repeats" in key or "vera_" in key
         ]
 
         has_missing_buffers = any(
@@ -609,8 +613,10 @@ class SO3LR(So3krates):
         if has_missing_buffers and strict:
             # Old state dict detected - load with strict=False
             # The missing buffers are already initialized correctly in __init__
-            print("Loading old state dict format (missing degree_repeats/vera buffers). "
-                  "Using strict=False to skip non-trainable computed buffers.")
+            print(
+                "Loading old state dict format (missing degree_repeats/vera buffers). "
+                "Using strict=False to skip non-trainable computed buffers."
+            )
             return super().load_state_dict(state_dict, strict=False)
         else:
             # New state dict or strict=False explicitly requested

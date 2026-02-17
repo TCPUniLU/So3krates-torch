@@ -262,9 +262,7 @@ class EuclideanTransformer(torch.nn.Module):
             att_inv_features = self.layer_norm_inv_1(att_inv_features)
 
         if self.residual_mlp_1:
-            att_inv_features = att_inv_features + self.mlp_1(
-                att_inv_features
-            )
+            att_inv_features = att_inv_features + self.mlp_1(att_inv_features)
 
         d_inv_features, d_ev_features = self.interaction_block(
             att_inv_features, att_ev_features
@@ -274,9 +272,7 @@ class EuclideanTransformer(torch.nn.Module):
         new_ev_features = att_ev_features + d_ev_features
 
         if self.residual_mlp_2:
-            new_inv_features = new_inv_features + self.mlp_2(
-                new_inv_features
-            )
+            new_inv_features = new_inv_features + self.mlp_2(new_inv_features)
 
         if self.layer_normalization_2:
             new_inv_features = self.layer_norm_inv_2(new_inv_features)
@@ -422,27 +418,19 @@ class EuclideanAttentionBlock(torch.nn.Module):
         # computing the queries, keys, and values and immediately
         # selecting receivers (i) and senders (j) (Eq. 21 https://doi.org/10.1038/s41467-024-50620-6)
         q_inv = self.qk_non_linearity(
-            torch.einsum(
-                "nhd,hde->nhe", inv_features_inv, self.W_q_inv
-            )
+            torch.einsum("nhd,hde->nhe", inv_features_inv, self.W_q_inv)
         )[receivers]
         k_inv = self.qk_non_linearity(
-            torch.einsum(
-                "nhd,hde->nhe", inv_features_inv, self.W_k_inv
-            )
+            torch.einsum("nhd,hde->nhe", inv_features_inv, self.W_k_inv)
         )[senders]
-        v_inv = torch.einsum(
-            "nhd,hde->nhe", inv_features_inv, self.W_v_inv
-        )[senders]
+        v_inv = torch.einsum("nhd,hde->nhe", inv_features_inv, self.W_v_inv)[
+            senders
+        ]
         q_ev = self.qk_non_linearity(
-            torch.einsum(
-                "nhd,hde->nhe", inv_features_ev, self.W_q_ev
-            )
+            torch.einsum("nhd,hde->nhe", inv_features_ev, self.W_q_ev)
         )[receivers]
         k_ev = self.qk_non_linearity(
-            torch.einsum(
-                "nhd,hde->nhe", inv_features_ev, self.W_k_ev
-            )
+            torch.einsum("nhd,hde->nhe", inv_features_ev, self.W_k_ev)
         )[senders]
         return q_inv, k_inv, v_inv, q_ev, k_ev
 
@@ -468,9 +456,7 @@ class EuclideanAttentionBlock(torch.nn.Module):
             -1, self.inv_heads, self.inv_head_dim
         )
         # now has shape [neighbors, len(degrees), ev_head_dim]
-        filter_w_ev = filter_w_ev.reshape(
-            -1, self.ev_heads, self.ev_head_dim
-        )
+        filter_w_ev = filter_w_ev.reshape(-1, self.ev_heads, self.ev_head_dim)
         # split features into heads
         # first for invariants; has shape [nodes, num_heads, inv_head_dim] now
         inv_features_inv = inv_features.view(
@@ -1165,16 +1151,12 @@ class EuclideanAttentionBlockVeRA(EuclideanAttentionBlockLORA):
         )
 
     def _use_lora(self, features, W, lora_A, lora_B, vera_b, vera_d):
-        features_lora = torch.einsum(
-            "nhd,hdr->nhr", features, lora_A
-        )
+        features_lora = torch.einsum("nhd,hdr->nhr", features, lora_A)
 
         features_lora = features_lora * vera_d[None, :, :]
         B_scaled = lora_B * vera_b[:, :, None]
 
-        features_lora = torch.einsum(
-            "nhr,hre->nhe", features_lora, B_scaled
-        )
+        features_lora = torch.einsum("nhr,hre->nhe", features_lora, B_scaled)
 
         return (
             torch.einsum("nhd,hde->nhe", features, W)

@@ -82,7 +82,11 @@ def validate_model(model):
             "Retrain with dispersion_energy_bool=False."
         )
 
-    zbl_status = "enabled" if getattr(model, "zbl_repulsion_bool", False) else "disabled"
+    zbl_status = (
+        "enabled"
+        if getattr(model, "zbl_repulsion_bool", False)
+        else "disabled"
+    )
     print(f"Model validation passed. ZBL repulsion: {zbl_status}")
 
 
@@ -94,7 +98,9 @@ def select_head(model):
         heads = [None]
 
     if len(heads) == 1:
-        print(f"Only one head found in the model: {heads[0]}. Skipping selection.")
+        print(
+            f"Only one head found in the model: {heads[0]}. Skipping selection."
+        )
         return heads[0]
 
     print("Available heads in the model:")

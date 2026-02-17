@@ -1,4 +1,5 @@
 """Tests for training functionality."""
+
 import json
 from pathlib import Path
 
@@ -81,9 +82,7 @@ def test_single_epoch_training_deterministic(
         },
     )
 
-    z_table = AtomicNumberTable(
-        [int(z) for z in range(1, 119)]
-    )
+    z_table = AtomicNumberTable([int(z) for z in range(1, 119)])
 
     train_loader = create_dataloader_from_list(
         atoms_list=atoms_list,
@@ -111,25 +110,23 @@ def test_single_epoch_training_deterministic(
     }
 
     if use_lr:
-        model_config.update({
-            "r_max_lr": r_max_lr,
-            "zbl_repulsion_bool": True,
-            "electrostatic_energy_bool": True,
-            "dispersion_energy_bool": True,
-            "dispersion_energy_cutoff_lr_damping": 2.0,
-        })
+        model_config.update(
+            {
+                "r_max_lr": r_max_lr,
+                "zbl_repulsion_bool": True,
+                "electrostatic_energy_bool": True,
+                "dispersion_energy_bool": True,
+                "dispersion_energy_cutoff_lr_damping": 2.0,
+            }
+        )
 
     model = model_class(**model_config).to(device)
     model.train()
 
-    optimizer = torch.optim.Adam(
-        model.parameters(), lr=0.001
-    )
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
     if loss_class == WeightedEnergyForcesLoss:
-        loss_fn = loss_class(
-            energy_weight=1.0, forces_weight=100.0
-        )
+        loss_fn = loss_class(energy_weight=1.0, forces_weight=100.0)
     else:
         loss_fn = loss_class(
             energy_weight=1.0,
@@ -149,9 +146,7 @@ def test_single_epoch_training_deterministic(
 
         optimizer.zero_grad()
 
-        output = model(
-            batch_dict, training=True, compute_force=True
-        )
+        output = model(batch_dict, training=True, compute_force=True)
 
         loss = loss_fn(pred=output, ref=batch)
         loss.backward()
@@ -173,20 +168,14 @@ def test_single_epoch_training_deterministic(
     )
 
     total_param_norm = sum(
-        p.norm().item()
-        for p in model.parameters()
-        if p.requires_grad
+        p.norm().item() for p in model.parameters() if p.requires_grad
     )
 
     metrics = {
         "avg_loss": avg_loss,
         "total_param_norm": total_param_norm,
-        "first_batch_energy_0": (
-            first_output["energy"][0].item()
-        ),
-        "first_batch_forces_norm": (
-            first_output["forces"].norm().item()
-        ),
+        "first_batch_energy_0": (first_output["energy"][0].item()),
+        "first_batch_forces_norm": (first_output["forces"].norm().item()),
     }
 
     if "dipole" in first_output:
@@ -204,9 +193,7 @@ def test_single_epoch_training_deterministic(
     if reference_key not in references:
         references[reference_key] = metrics
         _save_references(references)
-        pytest.skip(
-            f"Generated reference for '{reference_key}'"
-        )
+        pytest.skip(f"Generated reference for '{reference_key}'")
 
     ref = references[reference_key]
     rtol = 1e-6
@@ -248,7 +235,9 @@ def test_create_model_validates_lr_cutoff_missing(device):
         },
     }
 
-    with pytest.raises(ValueError, match="Long-range cutoff.*must be specified"):
+    with pytest.raises(
+        ValueError, match="Long-range cutoff.*must be specified"
+    ):
         create_model(config, device)
 
 
@@ -270,7 +259,9 @@ def test_create_model_validates_lr_cutoff_with_dispersion(device):
         },
     }
 
-    with pytest.raises(ValueError, match="Long-range cutoff.*must be specified"):
+    with pytest.raises(
+        ValueError, match="Long-range cutoff.*must be specified"
+    ):
         create_model(config, device)
 
 

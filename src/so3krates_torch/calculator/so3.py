@@ -12,7 +12,7 @@ from ase.calculators.calculator import Calculator, all_changes
 from ase.stress import full_3x3_to_voigt_6_stress
 import numpy as np
 from so3krates_torch.data.atomic_data import AtomicData as So3Data
-from so3krates_torch.tools import torch_geometric, torch_tools,  utils
+from so3krates_torch.tools import torch_geometric, torch_tools, utils
 from so3krates_torch.data.utils import KeySpecification, config_from_atoms
 import importlib.resources as resources
 
@@ -159,9 +159,7 @@ class TorchkratesCalculator(Calculator):
         self.r_max = float(r_maxs[0])
         self.r_max_lr = r_max_lr
         for model in self.models:
-            if r_max_lr is not None and getattr(
-                model, "use_lr", False
-            ):
+            if r_max_lr is not None and getattr(model, "use_lr", False):
                 model.r_max_lr = r_max_lr
 
         self.device = torch_tools.init_device(device)

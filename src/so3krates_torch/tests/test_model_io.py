@@ -1,4 +1,5 @@
 """Tests for model save/load functionality."""
+
 import pytest
 import torch
 import tempfile

@@ -1,4 +1,5 @@
 """Tests for data pipeline components."""
+
 import pytest
 import torch
 import numpy as np
@@ -36,12 +37,8 @@ class TestAtomicDataConstruction:
         data = AtomicData(
             edge_index=torch.tensor(edge_index, dtype=torch.long),
             node_attrs=node_attrs,
-            atomic_numbers=torch.tensor(
-                atomic_numbers, dtype=torch.long
-            ),
-            positions=torch.tensor(
-                positions, dtype=torch.get_default_dtype()
-            ),
+            atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),
+            positions=torch.tensor(positions, dtype=torch.get_default_dtype()),
             shifts=torch.tensor(shifts, dtype=torch.get_default_dtype()),
             unit_shifts=torch.tensor(
                 unit_shifts, dtype=torch.get_default_dtype()
@@ -93,22 +90,14 @@ class TestAtomicDataConstruction:
 
         # Add target properties
         energy = torch.tensor(1.5, dtype=torch.get_default_dtype())
-        forces = torch.randn(
-            (num_atoms, 3), dtype=torch.get_default_dtype()
-        )
-        stress = torch.randn(
-            (1, 3, 3), dtype=torch.get_default_dtype()
-        )
+        forces = torch.randn((num_atoms, 3), dtype=torch.get_default_dtype())
+        stress = torch.randn((1, 3, 3), dtype=torch.get_default_dtype())
 
         data = AtomicData(
             edge_index=torch.tensor(edge_index, dtype=torch.long),
             node_attrs=node_attrs,
-            atomic_numbers=torch.tensor(
-                atomic_numbers, dtype=torch.long
-            ),
-            positions=torch.tensor(
-                positions, dtype=torch.get_default_dtype()
-            ),
+            atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),
+            positions=torch.tensor(positions, dtype=torch.get_default_dtype()),
             shifts=torch.tensor(shifts, dtype=torch.get_default_dtype()),
             unit_shifts=torch.tensor(
                 unit_shifts, dtype=torch.get_default_dtype()
@@ -170,32 +159,28 @@ class TestAtomicDataConstruction:
         data = AtomicData(
             edge_index=torch.tensor(edge_index, dtype=torch.long),
             node_attrs=node_attrs,
-            atomic_numbers=torch.tensor(
-                atomic_numbers, dtype=torch.long
-            ),
-            positions=torch.tensor(
-                positions, dtype=torch.get_default_dtype()
-            ),
+            atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),
+            positions=torch.tensor(positions, dtype=torch.get_default_dtype()),
             shifts=torch.tensor(shifts, dtype=torch.get_default_dtype()),
             unit_shifts=torch.tensor(
                 unit_shifts, dtype=torch.get_default_dtype()
             ),
             cell=torch.tensor(cell, dtype=torch.get_default_dtype()),
-            edge_index_lr=torch.tensor(
-                edge_index_lr, dtype=torch.long
-            )
-            if edge_index_lr is not None
-            else None,
-            shifts_lr=torch.tensor(
-                shifts_lr, dtype=torch.get_default_dtype()
-            )
-            if shifts_lr is not None
-            else None,
-            unit_shifts_lr=torch.tensor(
-                unit_shifts_lr, dtype=torch.get_default_dtype()
-            )
-            if unit_shifts_lr is not None
-            else None,
+            edge_index_lr=(
+                torch.tensor(edge_index_lr, dtype=torch.long)
+                if edge_index_lr is not None
+                else None
+            ),
+            shifts_lr=(
+                torch.tensor(shifts_lr, dtype=torch.get_default_dtype())
+                if shifts_lr is not None
+                else None
+            ),
+            unit_shifts_lr=(
+                torch.tensor(unit_shifts_lr, dtype=torch.get_default_dtype())
+                if unit_shifts_lr is not None
+                else None
+            ),
             weight=None,
             head=None,
             energy_weight=None,
@@ -245,9 +230,7 @@ class TestAtomicDataConstruction:
         data = AtomicData(
             edge_index=torch.tensor(edge_index, dtype=torch.long),
             node_attrs=node_attrs,
-            atomic_numbers=torch.tensor(
-                atomic_numbers, dtype=torch.long
-            ),
+            atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),
             positions=torch.tensor(positions, dtype=dtype),
             shifts=torch.tensor(shifts, dtype=dtype),
             unit_shifts=torch.tensor(unit_shifts, dtype=dtype),
@@ -308,32 +291,28 @@ class TestAtomicDataBatching:
         return AtomicData(
             edge_index=torch.tensor(edge_index, dtype=torch.long),
             node_attrs=node_attrs,
-            atomic_numbers=torch.tensor(
-                atomic_numbers, dtype=torch.long
-            ),
-            positions=torch.tensor(
-                positions, dtype=torch.get_default_dtype()
-            ),
+            atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),
+            positions=torch.tensor(positions, dtype=torch.get_default_dtype()),
             shifts=torch.tensor(shifts, dtype=torch.get_default_dtype()),
             unit_shifts=torch.tensor(
                 unit_shifts, dtype=torch.get_default_dtype()
             ),
             cell=torch.tensor(cell, dtype=torch.get_default_dtype()),
-            edge_index_lr=torch.tensor(
-                edge_index_lr, dtype=torch.long
-            )
-            if edge_index_lr is not None
-            else None,
-            shifts_lr=torch.tensor(
-                shifts_lr, dtype=torch.get_default_dtype()
-            )
-            if shifts_lr is not None
-            else None,
-            unit_shifts_lr=torch.tensor(
-                unit_shifts_lr, dtype=torch.get_default_dtype()
-            )
-            if unit_shifts_lr is not None
-            else None,
+            edge_index_lr=(
+                torch.tensor(edge_index_lr, dtype=torch.long)
+                if edge_index_lr is not None
+                else None
+            ),
+            shifts_lr=(
+                torch.tensor(shifts_lr, dtype=torch.get_default_dtype())
+                if shifts_lr is not None
+                else None
+            ),
+            unit_shifts_lr=(
+                torch.tensor(unit_shifts_lr, dtype=torch.get_default_dtype())
+                if unit_shifts_lr is not None
+                else None
+            ),
             weight=None,
             head=None,
             energy_weight=None,
@@ -378,9 +357,7 @@ class TestAtomicDataBatching:
         # H2O without long-range
         data_h2o = self._make_atomic_data(h2o_atoms, cutoff=5.0)
         # Si bulk with long-range
-        data_si = self._make_atomic_data(
-            si_bulk, cutoff=3.0, cutoff_lr=6.0
-        )
+        data_si = self._make_atomic_data(si_bulk, cutoff=3.0, cutoff_lr=6.0)
 
         # Batch them together
         batch = Batch.from_data_list([data_h2o, data_si])
@@ -388,7 +365,6 @@ class TestAtomicDataBatching:
         assert batch.num_nodes == len(h2o_atoms) + len(si_bulk)
         assert batch.edge_index is not None
         # Check that batching succeeded without errors
-
 
 
 class TestAtomicDataDeviceTransfer:
@@ -418,12 +394,8 @@ class TestAtomicDataDeviceTransfer:
         return AtomicData(
             edge_index=torch.tensor(edge_index, dtype=torch.long),
             node_attrs=node_attrs,
-            atomic_numbers=torch.tensor(
-                atomic_numbers, dtype=torch.long
-            ),
-            positions=torch.tensor(
-                positions, dtype=torch.get_default_dtype()
-            ),
+            atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),
+            positions=torch.tensor(positions, dtype=torch.get_default_dtype()),
             shifts=torch.tensor(shifts, dtype=torch.get_default_dtype()),
             unit_shifts=torch.tensor(
                 unit_shifts, dtype=torch.get_default_dtype()
@@ -496,12 +468,8 @@ class TestAtomicDataDeviceTransfer:
         data = AtomicData(
             edge_index=torch.tensor(edge_index, dtype=torch.long),
             node_attrs=node_attrs,
-            atomic_numbers=torch.tensor(
-                atomic_numbers, dtype=torch.long
-            ),
-            positions=torch.tensor(
-                positions, dtype=torch.get_default_dtype()
-            ),
+            atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),
+            positions=torch.tensor(positions, dtype=torch.get_default_dtype()),
             shifts=torch.tensor(shifts, dtype=torch.get_default_dtype()),
             unit_shifts=torch.tensor(
                 unit_shifts, dtype=torch.get_default_dtype()
@@ -565,12 +533,8 @@ class TestAtomicDataEdgeCases:
         return AtomicData(
             edge_index=torch.tensor(edge_index, dtype=torch.long),
             node_attrs=node_attrs,
-            atomic_numbers=torch.tensor(
-                atomic_numbers, dtype=torch.long
-            ),
-            positions=torch.tensor(
-                positions, dtype=torch.get_default_dtype()
-            ),
+            atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),
+            positions=torch.tensor(positions, dtype=torch.get_default_dtype()),
             shifts=torch.tensor(shifts, dtype=torch.get_default_dtype()),
             unit_shifts=torch.tensor(
                 unit_shifts, dtype=torch.get_default_dtype()

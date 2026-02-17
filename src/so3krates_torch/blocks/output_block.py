@@ -147,7 +147,6 @@ class AtomicEnergyOutputHead(nn.Module):
             if m.bias is not None:
                 torch.nn.init.zeros_(m.bias)
 
-
     def forward(
         self,
         inv_features: torch.Tensor,
@@ -209,10 +208,7 @@ class MultiAtomicEnergyOutputHead(AtomicEnergyOutputHead):
         self.layers_weights = nn.ParameterList()
         self.layers_bias = nn.ParameterList()
         for i in range(layers - 1):
-            in_dim = (
-                num_features if i == 0
-                else energy_regression_dim
-            )
+            in_dim = num_features if i == 0 else energy_regression_dim
             multi_head_weights = nn.Parameter(
                 torch.empty(
                     self.num_output_heads,
@@ -560,9 +556,7 @@ class HirshfeldOutputHead(nn.Module):
             inv_features
         )  # (num_nodes, num_features//2)
 
-        qk = (q * k * (1.0 / math.sqrt(k.shape[-1]))).sum(
-            dim=-1
-        )
+        qk = (q * k * (1.0 / math.sqrt(k.shape[-1]))).sum(dim=-1)
 
         v_eff = v_shift + qk  # (num_nodes)
 
