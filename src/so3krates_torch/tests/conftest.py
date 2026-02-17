@@ -106,6 +106,40 @@ def multihead_model_config(so3lr_model_config):
 
 
 @pytest.fixture
+def mock_batch_for_loss():
+    """Batch-like object with known values for hand-computing loss."""
+    from so3krates_torch.tools.torch_geometric import Batch
+
+    # 2 graphs: 3 atoms (graph 0) + 4 atoms (graph 1)
+    # Known energy/forces/weights for manual loss calculation
+    batch = Batch(
+        ptr=torch.tensor([0, 3, 7]),  # Graph boundaries
+        batch=torch.tensor([0, 0, 0, 1, 1, 1, 1]),  # Atom mapping
+        energy=torch.tensor([10.0, 20.0]),
+        forces=torch.tensor(
+            [
+                [1.0, 0.0, 0.0],  # Graph 0
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [2.0, 0.0, 0.0],  # Graph 1
+                [0.0, 2.0, 0.0],
+                [0.0, 0.0, 2.0],
+                [1.0, 1.0, 1.0],
+            ]
+        ),
+        dipole=torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+        hirshfeld_ratios=torch.ones(7),
+        weight=torch.tensor([1.0, 2.0]),  # Per-graph
+        energy_weight=torch.tensor([1.0, 1.5]),
+        forces_weight=torch.tensor([10.0, 20.0]),
+        dipole_weight=torch.tensor([[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]]),
+        hirshfeld_ratios_weight=torch.tensor([1.0, 2.0]),
+    )
+
+    return batch
+
+
+@pytest.fixture
 def make_batch(device):
     """Factory fixture to convert ASE Atoms to model-ready batch."""
 
