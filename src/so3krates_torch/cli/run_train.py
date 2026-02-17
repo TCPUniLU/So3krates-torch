@@ -858,6 +858,14 @@ def setup_optimizer_and_scheduler(
                 weight_decay=weight_decay,
                 amsgrad=amsgrad,
             )
+        elif optimizer_name == "adamw":
+            optimizer = torch.optim.AdamW(
+                model.parameters(),
+                lr=lr,
+                weight_decay=weight_decay,  
+                betas=train_config.get("betas", (0.9, 0.999)),
+                eps=train_config.get("eps", 1e-8),
+            )
         else:
             optimizer = torch.optim.Adam(
                 model.parameters(),
@@ -872,9 +880,28 @@ def setup_optimizer_and_scheduler(
     # Setup learning rate scheduler
     scheduler_name = train_config.get("scheduler", "exponential_decay")
 
+    scheduler_args = train_config.get("scheduler_args", {})
+
     if scheduler_name == "exponential_decay":
         lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(
-            optimizer, gamma=train_config.get("lr_scheduler_gamma", 0.9993)
+            optimizer,
+            **{"gamma": scheduler_args.get("gamma", 0.9993)},
+        )
+    elif scheduler_name == "lambda":
+        gamma = scheduler_args.get("gamma", 0.85)
+        step_size = scheduler_args.get("step_size", 33)
+        lr_lambda = lambda epoch: gamma ** (epoch / step_size)
+        lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer,
+            lr_lambda=lr_lambda
+        )
+    elif scheduler_name == "step":
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            **{
+                "step_size": scheduler_args.get("step_size", 1000),
+                "gamma": scheduler_args.get("gamma", 0.1),
+            },
         )
     elif scheduler_name == "reduce_on_plateau":
         lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(

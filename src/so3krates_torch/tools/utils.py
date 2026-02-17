@@ -675,14 +675,15 @@ def save_results_xyz(input_data, results, filename):
         for key, value in results.items():
             if key in scalar_keys:
                 if key == "energies":
-                    atoms.info[f"REF_energy"] = value[i].item()
+                    atoms.info[f"SO3_energy"] = value[i].item()
                 else:
-                    atoms.info[f"REF_{key}"] = value[i].item()
+                    atoms.info[f"SO3_{key}"] = value[i].item()
             elif key in tensor_keys:
-                atoms.arrays[f"REF_{key}"] = value[i]
+                atoms.arrays[f"SO3_{key}"] = value[i]
         output_configs.append(atoms)
     write(filename, output_configs)
 
+# when evaluating, predicted "REF_{key}" will replace the "real {key}". So I modifed this refering to MACE_{key}.
 
 def ensemble_from_folder(path_to_models: str, device: str, dtype: str) -> dict:
     """
