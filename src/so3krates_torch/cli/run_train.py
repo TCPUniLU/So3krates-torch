@@ -1214,11 +1214,14 @@ def run_training(config: dict) -> None:
         f"Model r_max ({model.r_max}) does not match config "
         f"r_max ({config['ARCHITECTURE'].get('r_max', 4.5)})"
     )
-    assert model.r_max_lr == config["ARCHITECTURE"].get("r_max_lr", None), (
-        f"Model r_max_lr ({model.r_max_lr}) does not match "
-        f"config r_max_lr "
-        f"({config['ARCHITECTURE'].get('r_max_lr', None)})"
-    )
+    config_r_max_lr = config["ARCHITECTURE"].get("r_max_lr", None)
+    if model.r_max_lr != config_r_max_lr:
+        logging.warning(
+            f"Model r_max_lr ({model.r_max_lr}) does not match "
+            f"config r_max_lr ({config_r_max_lr}). "
+            f"Overriding model.r_max_lr with config value."
+        )
+        model.r_max_lr = config_r_max_lr
 
     # ---- data loaders (with DistributedSampler when needed) ----
     (
