@@ -77,6 +77,27 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
     """Create and initialize the SO3LR model."""
     arch_config = config["ARCHITECTURE"]
 
+    # Validate long-range configuration
+    r_max_lr = arch_config.get("r_max_lr", None)
+    electrostatic_bool = arch_config.get("electrostatic_energy_bool", True)
+    dispersion_bool = arch_config.get("dispersion_energy_bool", True)
+
+    if (electrostatic_bool or dispersion_bool) and r_max_lr is None:
+        raise ValueError(
+            "Long-range cutoff 'r_max_lr' must be specified when "
+            "electrostatic_energy_bool or dispersion_energy_bool is True. "
+            f"Current: r_max_lr={r_max_lr}, "
+            f"electrostatic_energy_bool={electrostatic_bool}, "
+            f"dispersion_energy_bool={dispersion_bool}"
+        )
+
+    if r_max_lr is not None and not electrostatic_bool and not dispersion_bool:
+        logging.warning(
+            f"Long-range cutoff r_max_lr={r_max_lr} is set but both "
+            "electrostatic_energy_bool and dispersion_energy_bool are False. "
+            "Long-range neighbor lists will be computed but not used."
+        )
+
     # Map YAML parameters to model parameters
     model_params = {
         # Base So3krates parameters
@@ -204,9 +225,7 @@ def setup_data_loaders(
     keydict = DefaultKeys.keydict()
     config_keys = config["TRAINING"].get("keys", {})
     keydict.update(config_keys)
-    keyspec = update_keyspec_from_kwargs(
-        KeySpecification(), keydict
-    )
+    keyspec = update_keyspec_from_kwargs(KeySpecification(), keydict)
     # Create data loaders
     batch_size = config["TRAINING"]["batch_size"]
     valid_batch_size = config["TRAINING"]["valid_batch_size"]
@@ -298,7 +317,9 @@ def setup_data_loaders(
             shuffle=True,
             sampler=train_sampler,
         )
-        logging.info("Computing dataset statistics (num_elements, avg_num_neighbors)...")
+        logging.info(
+            "Computing dataset statistics (num_elements, avg_num_neighbors)..."
+        )
         num_elements = determine_num_elements(train_loader)
         avg_num_neighbors = compute_avg_num_neighbors(train_loader)
         logging.info(
@@ -308,8 +329,7 @@ def setup_data_loaders(
         logging.info(f"Training set size: {len(train_data)}")
         logging.info(f"Validation set size: {len(val_data)}")
         logging.info(
-            f"Number of unique elements in training set: "
-            f"{num_elements}"
+            f"Number of unique elements in training set: " f"{num_elements}"
         )
         return (
             train_loader,
@@ -400,23 +420,14 @@ def setup_data_loaders(
             if val_data_path:
                 train_data = data
                 logging.info(
-                    f"Using separate validation data from "
-                    f"{val_data_path}"
+                    f"Using separate validation data from " f"{val_data_path}"
                 )
             else:
-                valid_ratio = config["TRAINING"].get(
-                    "valid_ratio", 0.1
-                )
-                num_train = config["TRAINING"].get(
-                    "num_train", None
-                )
-                num_valid = config["TRAINING"].get(
-                    "num_valid", None
-                )
-                train_data, val_data_split = (
-                    select_valid_subset(
-                        data, valid_ratio, num_train, num_valid
-                    )
+                valid_ratio = config["TRAINING"].get("valid_ratio", 0.1)
+                num_train = config["TRAINING"].get("num_train", None)
+                num_valid = config["TRAINING"].get("num_valid", None)
+                train_data, val_data_split = select_valid_subset(
+                    data, valid_ratio, num_train, num_valid
                 )
                 logging.info(
                     f"Splitting training data with validation "
@@ -433,7 +444,9 @@ def setup_data_loaders(
             z_table = AtomicNumberTable([int(z) for z in range(1, 119)])
 
             # Preprocess (compute neighbor lists)
-            logging.info("Preprocessing training data (computing neighbor lists)")
+            logging.info(
+                "Preprocessing training data (computing neighbor lists)"
+            )
             train_atomic_data = create_data_from_configs(
                 train_configs,
                 r_max=r_max,
@@ -569,9 +582,7 @@ def setup_data_loaders(
             if is_valid_preprocessed is None:
                 # Auto-detect
                 valid_format = detect_file_format(val_data_path)
-                is_valid_preprocessed = (
-                    valid_format == "hdf5_preprocessed"
-                )
+                is_valid_preprocessed = valid_format == "hdf5_preprocessed"
                 logging.info(
                     f"Auto-detected validation format: {valid_format}"
                 )
@@ -609,9 +620,7 @@ def setup_data_loaders(
                         load_atoms_from_hdf5,
                     )
 
-                    val_data = load_atoms_from_hdf5(
-                        val_data_path, index=None
-                    )
+                    val_data = load_atoms_from_hdf5(val_data_path, index=None)
                 else:
                     raise ValueError(
                         f"Unsupported validation file format: "
@@ -649,12 +658,10 @@ def setup_data_loaders(
         logging.info(f"Training set size: {len(train_atomic_data)}")
         if valid_loader is not None:
             logging.info(
-                f"Validation set size: "
-                f"{len(valid_loader.dataset)}"
+                f"Validation set size: " f"{len(valid_loader.dataset)}"
             )
         logging.info(
-            f"Number of unique elements in training set: "
-            f"{num_elements}"
+            f"Number of unique elements in training set: " f"{num_elements}"
         )
         return (
             train_loader,
@@ -932,7 +939,9 @@ def load_pretrained_model_direct(
     logging.info(f"Loading complete pretrained model from: {pretrained_path}")
 
     # Load the pretrained model
-    loaded_object = torch.load(pretrained_path, map_location=device, weights_only=False)
+    loaded_object = torch.load(
+        pretrained_path, map_location=device, weights_only=False
+    )
 
     if isinstance(loaded_object, torch.nn.Module):
         # If it's a complete model object, return it directly
@@ -1169,11 +1178,13 @@ def set_dtype_model(model: torch.nn.Module, dtype_str: str) -> None:
 def run_training(config: dict) -> None:
     """Execute the complete training pipeline."""
     # ---- distributed init (must come first) ----
-    rank, local_rank, world_size, distributed = (
-        init_distributed_from_config(config)
+    rank, local_rank, world_size, distributed = init_distributed_from_config(
+        config
     )
 
-    print(f"Distributed setup: rank={rank}, local_rank={local_rank}, world_size={world_size}, distributed={distributed}")
+    print(
+        f"Distributed setup: rank={rank}, local_rank={local_rank}, world_size={world_size}, distributed={distributed}"
+    )
     # Setup logging (only on rank 0 to avoid duplicate logs)
     if rank == 0:
         logging.getLogger().handlers.clear()
@@ -1190,12 +1201,8 @@ def run_training(config: dict) -> None:
     torch.set_default_dtype(DTYPE_MAP[dtype_str])
 
     # Get pretrained model settings from config
-    pretrained_weights = config["TRAINING"].get(
-        "pretrained_weights", None
-    )
-    pretrained_model = config["TRAINING"].get(
-        "pretrained_model", None
-    )
+    pretrained_weights = config["TRAINING"].get("pretrained_weights", None)
+    pretrained_model = config["TRAINING"].get("pretrained_model", None)
     no_checkpoint = config["MISC"].get("no_checkpoint", False)
 
     if pretrained_weights and pretrained_model:
@@ -1234,13 +1241,31 @@ def run_training(config: dict) -> None:
         f"Model r_max ({model.r_max}) does not match config "
         f"r_max ({config['ARCHITECTURE'].get('r_max', 4.5)})"
     )
-    assert model.r_max_lr == config["ARCHITECTURE"].get(
-        "r_max_lr", None
-    ), (
-        f"Model r_max_lr ({model.r_max_lr}) does not match "
-        f"config r_max_lr "
-        f"({config['ARCHITECTURE'].get('r_max_lr', None)})"
+    config_r_max_lr = config["ARCHITECTURE"].get("r_max_lr", None)
+    if model.r_max_lr != config_r_max_lr:
+        logging.warning(
+            f"Model r_max_lr ({model.r_max_lr}) does not match "
+            f"config r_max_lr ({config_r_max_lr}). "
+            f"Overriding model.r_max_lr with config value."
+        )
+        model.r_max_lr = config_r_max_lr
+
+    config_cutoff_lr_damping = config["ARCHITECTURE"].get(
+        "dispersion_energy_cutoff_lr_damping", None
     )
+    if (
+        hasattr(model, "dispersion_energy_cutoff_lr_damping")
+        and model.dispersion_energy_cutoff_lr_damping
+        != config_cutoff_lr_damping
+    ):
+        logging.warning(
+            f"Model dispersion_energy_cutoff_lr_damping "
+            f"({model.dispersion_energy_cutoff_lr_damping}) does not match "
+            f"config dispersion_energy_cutoff_lr_damping "
+            f"({config_cutoff_lr_damping}). "
+            f"Overriding model value with config value."
+        )
+        model.dispersion_energy_cutoff_lr_damping = config_cutoff_lr_damping
 
     # ---- data loaders (with DistributedSampler when needed) ----
     (
@@ -1258,9 +1283,7 @@ def run_training(config: dict) -> None:
     )
 
     if warm_start:
-        if config["TRAINING"].get(
-            "ft_update_avg_num_neighbors", False
-        ):
+        if config["TRAINING"].get("ft_update_avg_num_neighbors", False):
             logging.info(
                 "Updating average number of neighbors from "
                 "training data for fine-tuning."
@@ -1272,12 +1295,8 @@ def run_training(config: dict) -> None:
                 "pretrained model for fine-tuning."
             )
             avg_num_neighbors = model.avg_num_neighbors
-        atomic_energy_shifts = (
-            model.atomic_energy_output_block.energy_shifts
-        )
-        if config["TRAINING"].get(
-            "force_use_average_shifts", False
-        ):
+        atomic_energy_shifts = model.atomic_energy_output_block.energy_shifts
+        if config["TRAINING"].get("force_use_average_shifts", False):
             atomic_energy_shifts = average_atomic_energy_shifts
             logging.info(
                 "Forcing use of average atomic energy shifts "
@@ -1293,8 +1312,7 @@ def run_training(config: dict) -> None:
                 atomic_shifts_config
             )
             logging.info(
-                "Using provided atomic energy shifts for "
-                "training."
+                "Using provided atomic energy shifts for " "training."
             )
         else:
             atomic_energy_shifts = average_atomic_energy_shifts
@@ -1305,16 +1323,12 @@ def run_training(config: dict) -> None:
 
     # Setup finetuning if specified
     if config["TRAINING"].get("finetune_choice", None):
-        model = handle_finetuning(
-            config, model, num_elements, str(device)
-        )
+        model = handle_finetuning(config, model, num_elements, str(device))
 
     logging.info(f"Atomic energy shifts: {atomic_energy_shifts}")
     set_atomic_energy_shifts_in_model(model, atomic_energy_shifts)
     set_avg_num_neighbors_in_model(model, avg_num_neighbors)
-    set_dtype_model(
-        model, config["GENERAL"].get("default_dtype", "float32")
-    )
+    set_dtype_model(model, config["GENERAL"].get("default_dtype", "float32"))
 
     # ---- wrap model in DDP (after all weight mutations) ----
     ddp_model = None
@@ -1325,14 +1339,10 @@ def run_training(config: dict) -> None:
     loss_fn = setup_loss_function(config)
 
     # Setup optimizer and scheduler
-    optimizer, lr_scheduler = setup_optimizer_and_scheduler(
-        model, config
-    )
+    optimizer, lr_scheduler = setup_optimizer_and_scheduler(model, config)
 
     # Setup training tools
-    logger, checkpoint_handler, ema = setup_training_tools(
-        config, model
-    )
+    logger, checkpoint_handler, ema = setup_training_tools(config, model)
 
     # Load checkpoint if exists
     start_epoch = 0
@@ -1347,13 +1357,9 @@ def run_training(config: dict) -> None:
             config=config,
         )
 
-    logging.info(
-        "Model, data loaders, and training components initialized"
-    )
+    logging.info("Model, data loaders, and training components initialized")
     if start_epoch > 0:
-        logging.info(
-            f"Resuming training from epoch {start_epoch}"
-        )
+        logging.info(f"Resuming training from epoch {start_epoch}")
     else:
         logging.info("Starting fresh training.")
 
@@ -1363,9 +1369,7 @@ def run_training(config: dict) -> None:
     patience = config["TRAINING"].get("patience", 50)
     max_grad_norm = config["TRAINING"].get("clip_grad", 10.0)
     log_wandb = config["MISC"].get("log_wandb", False)
-    save_all_checkpoints = config["MISC"].get(
-        "keep_checkpoints", False
-    )
+    save_all_checkpoints = config["MISC"].get("keep_checkpoints", False)
 
     output_args = {
         "forces": True,
@@ -1377,8 +1381,7 @@ def run_training(config: dict) -> None:
 
     if config["ARCHITECTURE"].get("use_multihead", False):
         logging.info(
-            "Enabling head selection for multi-head model "
-            "during training."
+            "Enabling head selection for multi-head model " "during training."
         )
         model.select_heads = True
 
@@ -1414,8 +1417,7 @@ def run_training(config: dict) -> None:
 
     if config["ARCHITECTURE"].get("use_multihead", False):
         logging.info(
-            "Disabling head selection for multi-head model "
-            "after training."
+            "Disabling head selection for multi-head model " "after training."
         )
         model.select_heads = False
 
@@ -1424,21 +1426,16 @@ def run_training(config: dict) -> None:
         "lora",
         "vera",
     ]:
-        logging.info(
-            "Fusing LoRA weights into base model for saving..."
-        )
+        logging.info("Fusing LoRA weights into base model for saving...")
         model = fuse_lora_weights(model)
         logging.info("LoRA weights fused successfully.")
 
     # Only rank 0 saves the final model
     if rank == 0:
-        final_model_path = (
-            f'{config["GENERAL"]["name_exp"]}.pth'
-        )
+        final_model_path = f'{config["GENERAL"]["name_exp"]}.pth'
         torch.save(model.state_dict(), final_model_path)
-        torch.save(
-            model, final_model_path.replace(".pth", ".model")
-        )
+        torch.save(model, final_model_path.replace(".pth", ".model"))
+
 
 def init_distributed_from_config(config: dict):
     """Initialise distributed training and return rank info.
@@ -1461,13 +1458,10 @@ def wrap_model_ddp(model, local_rank):
     device = torch.device(f"cuda:{local_rank}")
     model = model.to(device)
     return DDP(
-        model, 
+        model,
         device_ids=[local_rank],
         find_unused_parameters=True,
-        )
-
-
-
+    )
 
 
 def main():

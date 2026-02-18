@@ -22,7 +22,9 @@ class DistributedEnvironment:
         self.rank = int(os.environ["RANK"])
 
     def _setup_distr_env(self):
-        hostname = hostlist.expand_hostlist(os.environ["SLURM_JOB_NODELIST"])[0]
+        hostname = hostlist.expand_hostlist(os.environ["SLURM_JOB_NODELIST"])[
+            0
+        ]
         os.environ["MASTER_ADDR"] = hostname
         os.environ["MASTER_PORT"] = os.environ.get("MASTER_PORT", "33333")
         os.environ["WORLD_SIZE"] = os.environ.get(

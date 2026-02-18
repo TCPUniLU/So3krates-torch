@@ -139,8 +139,7 @@ def process_hdf5_input(args):
 
     if args.mode == "raw":
         logging.error(
-            "Cannot convert HDF5 → raw HDF5. "
-            "Use XYZ → raw HDF5 instead."
+            "Cannot convert HDF5 → raw HDF5. " "Use XYZ → raw HDF5 instead."
         )
         sys.exit(1)
 

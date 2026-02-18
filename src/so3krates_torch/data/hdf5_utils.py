@@ -64,19 +64,13 @@ def save_atoms_to_hdf5(
             f.attrs["description"] = description
 
         # Store keyspec so it can be recovered on load
-        f.attrs["keyspec_info"] = json.dumps(
-            key_specification.info_keys
-        )
-        f.attrs["keyspec_arrays"] = json.dumps(
-            key_specification.arrays_keys
-        )
+        f.attrs["keyspec_info"] = json.dumps(key_specification.info_keys)
+        f.attrs["keyspec_arrays"] = json.dumps(key_specification.arrays_keys)
 
         # Write each configuration
         for i, atoms in enumerate(atoms_list):
             group = f.create_group(f"config_{i}")
-            _write_atoms_to_hdf5_group(
-                group, atoms, key_specification
-            )
+            _write_atoms_to_hdf5_group(group, atoms, key_specification)
 
     logging.info(
         f"Saved {len(atoms_list)} configurations to raw HDF5: "
@@ -193,12 +187,8 @@ def _read_atoms_from_hdf5_group(group: h5py.Group) -> ase.Atoms:
             value = np.array(group["properties"][key])
 
             # Store as info or arrays depending on shape
-            if value.ndim == 0 or (
-                value.ndim == 1 and len(value) == 1
-            ):
-                atoms.info[key] = (
-                    value.item() if value.ndim == 0 else value
-                )
+            if value.ndim == 0 or (value.ndim == 1 and len(value) == 1):
+                atoms.info[key] = value.item() if value.ndim == 0 else value
             else:
                 if len(value) == len(atoms):
                     atoms.arrays[key] = value
@@ -244,17 +234,13 @@ def configs_from_hdf5(
         with h5py.File(hdf5_path, "r") as f:
             if "keyspec_info" in f.attrs:
                 info_keys = json.loads(f.attrs["keyspec_info"])
-                arrays_keys = json.loads(
-                    f.attrs["keyspec_arrays"]
-                )
+                arrays_keys = json.loads(f.attrs["keyspec_arrays"])
                 key_specification = KeySpecification(
                     info_keys=info_keys,
                     arrays_keys=arrays_keys,
                 )
             else:
-                key_specification = (
-                    KeySpecification.from_defaults()
-                )
+                key_specification = KeySpecification.from_defaults()
 
     # Load atoms first
     atoms_list = load_atoms_from_hdf5(hdf5_path, index=None)
@@ -317,21 +303,16 @@ def save_preprocessed_hdf5(
 
             # Convert dict to JSON-serializable format (int keys → str)
             e0s_serializable = {
-                str(z): float(e0)
-                for z, e0 in atomic_energy_shifts.items()
+                str(z): float(e0) for z, e0 in atomic_energy_shifts.items()
             }
-            f.attrs["atomic_energy_shifts"] = json.dumps(
-                e0s_serializable
-            )
+            f.attrs["atomic_energy_shifts"] = json.dumps(e0s_serializable)
             logging.info(
                 f"Stored atomic energy shifts for "
                 f"{len(atomic_energy_shifts)} elements"
             )
 
         # Compute average number of neighbors
-        total_neighbors = sum(
-            data.edge_index.shape[1] for data in data_list
-        )
+        total_neighbors = sum(data.edge_index.shape[1] for data in data_list)
         total_atoms = sum(data.num_nodes for data in data_list)
         avg_num_neighbors = total_neighbors / max(total_atoms, 1)
         f.attrs["avg_num_neighbors"] = avg_num_neighbors
@@ -432,18 +413,11 @@ def _write_atomic_data_to_hdf5_group(
     edges_grp["unit_shifts"] = data.unit_shifts.cpu().numpy()
 
     # Long-range edges (optional)
-    if (
-        data.edge_index_lr is not None
-        and data.edge_index_lr.numel() > 0
-    ):
+    if data.edge_index_lr is not None and data.edge_index_lr.numel() > 0:
         edges_lr_grp = group.create_group("edges_lr")
-        edges_lr_grp["edge_index_lr"] = (
-            data.edge_index_lr.cpu().numpy()
-        )
+        edges_lr_grp["edge_index_lr"] = data.edge_index_lr.cpu().numpy()
         edges_lr_grp["shifts_lr"] = data.shifts_lr.cpu().numpy()
-        edges_lr_grp["unit_shifts_lr"] = (
-            data.unit_shifts_lr.cpu().numpy()
-        )
+        edges_lr_grp["unit_shifts_lr"] = data.unit_shifts_lr.cpu().numpy()
 
     # Properties
     props_grp = group.create_group("properties")
@@ -460,9 +434,7 @@ def _write_atomic_data_to_hdf5_group(
     if data.charges is not None:
         props_grp["charges"] = data.charges.cpu().numpy()
     if data.hirshfeld_ratios is not None:
-        props_grp["hirshfeld_ratios"] = (
-            data.hirshfeld_ratios.cpu().numpy()
-        )
+        props_grp["hirshfeld_ratios"] = data.hirshfeld_ratios.cpu().numpy()
     if data.total_charge is not None:
         props_grp["total_charge"] = data.total_charge.cpu().numpy()
     if data.total_spin is not None:
@@ -479,15 +451,11 @@ def _write_atomic_data_to_hdf5_group(
     if data.stress_weight is not None:
         weights_grp["stress_weight"] = data.stress_weight.cpu().numpy()
     if data.virials_weight is not None:
-        weights_grp["virials_weight"] = (
-            data.virials_weight.cpu().numpy()
-        )
+        weights_grp["virials_weight"] = data.virials_weight.cpu().numpy()
     if data.dipole_weight is not None:
         weights_grp["dipole_weight"] = data.dipole_weight.cpu().numpy()
     if data.charges_weight is not None:
-        weights_grp["charges_weight"] = (
-            data.charges_weight.cpu().numpy()
-        )
+        weights_grp["charges_weight"] = data.charges_weight.cpu().numpy()
     if data.hirshfeld_ratios_weight is not None:
         weights_grp["hirshfeld_ratios_weight"] = (
             data.hirshfeld_ratios_weight.cpu().numpy()
@@ -504,9 +472,7 @@ def _read_atomic_data_from_hdf5_group(
     atomic_numbers = torch.from_numpy(np.array(group["atomic_numbers"]))
     node_attrs = torch.from_numpy(np.array(group["node_attrs"]))
     cell = (
-        torch.from_numpy(np.array(group["cell"]))
-        if "cell" in group
-        else None
+        torch.from_numpy(np.array(group["cell"])) if "cell" in group else None
     )
 
     # Weights and metadata
@@ -627,9 +593,7 @@ def _read_atomic_data_from_hdf5_group(
         else torch.tensor(1.0)
     )
     hirshfeld_ratios_weight = (
-        torch.from_numpy(
-            np.array(weights_grp["hirshfeld_ratios_weight"])
-        )
+        torch.from_numpy(np.array(weights_grp["hirshfeld_ratios_weight"]))
         if "hirshfeld_ratios_weight" in weights_grp
         else torch.tensor(1.0)
     )
@@ -710,8 +674,7 @@ class PreprocessedHDF5Dataset(torch.utils.data.Dataset):
                     e0s_serialized = json.loads(e0s_json)
                     # Convert string keys back to int
                     self.atomic_energy_shifts = {
-                        int(z): float(e0)
-                        for z, e0 in e0s_serialized.items()
+                        int(z): float(e0) for z, e0 in e0s_serialized.items()
                     }
                     logging.info(
                         f"Loaded atomic energy shifts (E0s) for "
@@ -732,9 +695,7 @@ class PreprocessedHDF5Dataset(torch.utils.data.Dataset):
                 )
 
             # Store in metadata dict for easy access
-            self.metadata["atomic_energy_shifts"] = (
-                self.atomic_energy_shifts
-            )
+            self.metadata["atomic_energy_shifts"] = self.atomic_energy_shifts
 
         # Validate cutoffs
         if validate_cutoffs:
@@ -814,9 +775,7 @@ def detect_file_format(path: str) -> str:
                 else:
                     return "hdf5_raw"
         except Exception as e:
-            logging.warning(
-                f"Could not read HDF5 metadata from {path}: {e}"
-            )
+            logging.warning(f"Could not read HDF5 metadata from {path}: {e}")
             return "hdf5_raw"
 
     # Unknown format
@@ -843,9 +802,7 @@ def validate_preprocessed_hdf5(
     with h5py.File(hdf5_path, "r") as f:
         # Check format type
         if "format_type" not in f.attrs:
-            raise ValueError(
-                f"{hdf5_path} is missing format_type metadata"
-            )
+            raise ValueError(f"{hdf5_path} is missing format_type metadata")
 
         format_type = f.attrs["format_type"]
         if isinstance(format_type, bytes):
@@ -903,6 +860,5 @@ def validate_preprocessed_hdf5(
                 )
 
     logging.info(
-        f"Validated preprocessed HDF5: {hdf5_path} "
-        f"(r_max={r_max})"
+        f"Validated preprocessed HDF5: {hdf5_path} " f"(r_max={r_max})"
     )

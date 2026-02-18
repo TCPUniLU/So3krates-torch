@@ -335,7 +335,8 @@ class Data(object):
             if self.edge_index.dtype != torch.long:
                 raise RuntimeError(
                     (
-                        "Expected edge indices of dtype {}, but found dtype " " {}"
+                        "Expected edge indices of dtype {}, but found dtype "
+                        " {}"
                     ).format(torch.long, self.edge_index.dtype)
                 )
 
@@ -343,7 +344,8 @@ class Data(object):
             if self.face.dtype != torch.long:
                 raise RuntimeError(
                     (
-                        "Expected face indices of dtype {}, but found dtype " " {}"
+                        "Expected face indices of dtype {}, but found dtype "
+                        " {}"
                     ).format(torch.long, self.face.dtype)
                 )
 

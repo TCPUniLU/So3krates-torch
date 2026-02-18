@@ -1,4 +1,5 @@
 """Tests for training functionality."""
+
 import json
 from pathlib import Path
 
@@ -6,6 +7,7 @@ import pytest
 import torch
 from ase.io import read
 
+from so3krates_torch.cli.run_train import create_model
 from so3krates_torch.data.utils import KeySpecification
 from so3krates_torch.modules.loss import (
     WeightedEnergyForcesLoss,
@@ -80,9 +82,7 @@ def test_single_epoch_training_deterministic(
         },
     )
 
-    z_table = AtomicNumberTable(
-        [int(z) for z in range(1, 119)]
-    )
+    z_table = AtomicNumberTable([int(z) for z in range(1, 119)])
 
     train_loader = create_dataloader_from_list(
         atoms_list=atoms_list,
@@ -110,25 +110,23 @@ def test_single_epoch_training_deterministic(
     }
 
     if use_lr:
-        model_config.update({
-            "r_max_lr": r_max_lr,
-            "zbl_repulsion_bool": True,
-            "electrostatic_energy_bool": True,
-            "dispersion_energy_bool": True,
-            "dispersion_energy_cutoff_lr_damping": 2.0,
-        })
+        model_config.update(
+            {
+                "r_max_lr": r_max_lr,
+                "zbl_repulsion_bool": True,
+                "electrostatic_energy_bool": True,
+                "dispersion_energy_bool": True,
+                "dispersion_energy_cutoff_lr_damping": 2.0,
+            }
+        )
 
     model = model_class(**model_config).to(device)
     model.train()
 
-    optimizer = torch.optim.Adam(
-        model.parameters(), lr=0.001
-    )
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
     if loss_class == WeightedEnergyForcesLoss:
-        loss_fn = loss_class(
-            energy_weight=1.0, forces_weight=100.0
-        )
+        loss_fn = loss_class(energy_weight=1.0, forces_weight=100.0)
     else:
         loss_fn = loss_class(
             energy_weight=1.0,
@@ -148,9 +146,7 @@ def test_single_epoch_training_deterministic(
 
         optimizer.zero_grad()
 
-        output = model(
-            batch_dict, training=True, compute_force=True
-        )
+        output = model(batch_dict, training=True, compute_force=True)
 
         loss = loss_fn(pred=output, ref=batch)
         loss.backward()
@@ -172,20 +168,14 @@ def test_single_epoch_training_deterministic(
     )
 
     total_param_norm = sum(
-        p.norm().item()
-        for p in model.parameters()
-        if p.requires_grad
+        p.norm().item() for p in model.parameters() if p.requires_grad
     )
 
     metrics = {
         "avg_loss": avg_loss,
         "total_param_norm": total_param_norm,
-        "first_batch_energy_0": (
-            first_output["energy"][0].item()
-        ),
-        "first_batch_forces_norm": (
-            first_output["forces"].norm().item()
-        ),
+        "first_batch_energy_0": (first_output["energy"][0].item()),
+        "first_batch_forces_norm": (first_output["forces"].norm().item()),
     }
 
     if "dipole" in first_output:
@@ -203,9 +193,7 @@ def test_single_epoch_training_deterministic(
     if reference_key not in references:
         references[reference_key] = metrics
         _save_references(references)
-        pytest.skip(
-            f"Generated reference for '{reference_key}'"
-        )
+        pytest.skip(f"Generated reference for '{reference_key}'")
 
     ref = references[reference_key]
     rtol = 1e-6
@@ -227,3 +215,97 @@ def test_single_epoch_training_deterministic(
                 f"{key}: {actual} != {expected} "
                 f"(abs_diff={abs_diff:.2e}, atol={atol:.2e})"
             )
+
+
+def test_create_model_validates_lr_cutoff_missing(device):
+    """Test that create_model raises error when r_max_lr is None but
+    long-range physics is enabled."""
+    config = {
+        "GENERAL": {
+            "name_exp": "test",
+            "seed": 42,
+            "default_dtype": "float32",
+        },
+        "ARCHITECTURE": {
+            "degrees": [1, 2],
+            "r_max": 5.0,
+            "r_max_lr": None,  # Missing!
+            "electrostatic_energy_bool": True,  # Enabled
+            "dispersion_energy_bool": False,
+        },
+    }
+
+    with pytest.raises(
+        ValueError, match="Long-range cutoff.*must be specified"
+    ):
+        create_model(config, device)
+
+
+def test_create_model_validates_lr_cutoff_with_dispersion(device):
+    """Test that create_model raises error when r_max_lr is None but
+    dispersion is enabled."""
+    config = {
+        "GENERAL": {
+            "name_exp": "test",
+            "seed": 42,
+            "default_dtype": "float32",
+        },
+        "ARCHITECTURE": {
+            "degrees": [1, 2],
+            "r_max": 5.0,
+            "r_max_lr": None,  # Missing!
+            "electrostatic_energy_bool": False,
+            "dispersion_energy_bool": True,  # Enabled
+        },
+    }
+
+    with pytest.raises(
+        ValueError, match="Long-range cutoff.*must be specified"
+    ):
+        create_model(config, device)
+
+
+def test_create_model_warns_unused_lr_cutoff(device, caplog):
+    """Test that create_model warns when r_max_lr is set but both
+    long-range physics features are disabled."""
+    config = {
+        "GENERAL": {
+            "name_exp": "test",
+            "seed": 42,
+            "default_dtype": "float32",
+        },
+        "ARCHITECTURE": {
+            "degrees": [1, 2],
+            "r_max": 5.0,
+            "r_max_lr": 10.0,  # Set but not used
+            "electrostatic_energy_bool": False,  # Disabled
+            "dispersion_energy_bool": False,  # Disabled
+        },
+    }
+
+    model = create_model(config, device)
+    assert model is not None
+    assert "will be computed but not used" in caplog.text
+
+
+def test_create_model_accepts_valid_lr_config(device):
+    """Test that create_model accepts valid long-range configuration."""
+    config = {
+        "GENERAL": {
+            "name_exp": "test",
+            "seed": 42,
+            "default_dtype": "float32",
+        },
+        "ARCHITECTURE": {
+            "degrees": [1, 2],
+            "r_max": 5.0,
+            "r_max_lr": 10.0,
+            "electrostatic_energy_bool": True,
+            "dispersion_energy_bool": True,
+        },
+    }
+
+    model = create_model(config, device)
+    assert model is not None
+    assert isinstance(model, SO3LR)
+    assert model.r_max_lr == 10.0

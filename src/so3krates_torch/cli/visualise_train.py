@@ -34,7 +34,10 @@ error_type = {
         [("energy", "Energy per atom [eV]"), ("force", "Force [eV / A]")],
     ),
     "PerAtomRMSE": (
-        [("rmse_e_per_atom", "RMSE E/atom [meV]"), ("rmse_f", "RMSE F [meV / A]")],
+        [
+            ("rmse_e_per_atom", "RMSE E/atom [meV]"),
+            ("rmse_f", "RMSE F [meV / A]"),
+        ],
         [("energy", "Energy per atom [eV]"), ("force", "Force [eV / A]")],
     ),
     "PerAtomRMSEstressvirials": (
@@ -85,7 +88,10 @@ error_type = {
             ("rmse_mu_per_atom", "RMSE MU/atom [me AA]"),
             ("rmse_alpha_per_atom", "RMSE ALPHA/atom [me AA^2/V]"),
             ("rel_rmse_f", "Relative MU RMSE [%]"),
-            ("rmse_polarizability_per_atom", "Relative ALPHA RMSE [%]"),  # check that
+            (
+                "rmse_polarizability_per_atom",
+                "Relative ALPHA RMSE [%]",
+            ),  # check that
         ],
         [
             ("dipole", "Dipole per atom [me AA]]"),
@@ -134,7 +140,9 @@ class TrainingPlotter:
         self.swa_start = swa_start
         self.plot_interaction_e = plot_interaction_e
 
-    def plot(self, model_epoch: str, model: torch.nn.Module, rank: int) -> None:
+    def plot(
+        self, model_epoch: str, model: torch.nn.Module, rank: int
+    ) -> None:
 
         # All ranks process data through model_inference
         train_valid_dict = model_inference(
@@ -145,7 +153,11 @@ class TrainingPlotter:
             self.distributed,
         )
         test_dict = model_inference(
-            self.test_data, model, self.output_args, self.device, self.distributed
+            self.test_data,
+            model,
+            self.output_args,
+            self.device,
+            self.distributed,
         )
 
         # Only rank 0 creates and saves plots
@@ -160,7 +172,8 @@ class TrainingPlotter:
         for head in self.heads:
             fig = plt.figure(layout="constrained", figsize=(10, 6))
             fig.suptitle(
-                f"Model loaded from epoch {model_epoch} ({head} head)", fontsize=16
+                f"Model loaded from epoch {model_epoch} ({head} head)",
+                fontsize=16,
             )
 
             subfigs = fig.subfigures(2, 1, height_ratios=[1, 1], hspace=0.05)
@@ -190,7 +203,11 @@ class TrainingPlotter:
                         alpha=0.6,
                         label="Stage Two Starts",
                     )
-                stage = "stage_two" if self.swa_start < model_epoch else "stage_one"
+                stage = (
+                    "stage_two"
+                    if self.swa_start < model_epoch
+                    else "stage_one"
+                )
             else:
                 stage = "stage_one"
             axsTop[0].legend(loc="best")
@@ -216,7 +233,11 @@ def parse_training_results(path: str) -> List[dict]:
 
 
 def plot_epoch_dependence(
-    axes: np.ndarray, data: pd.DataFrame, head: str, model_epoch: str, labels: List[str]
+    axes: np.ndarray,
+    data: pd.DataFrame,
+    head: str,
+    model_epoch: str,
+    labels: List[str],
 ) -> None:
 
     valid_data = (
@@ -236,14 +257,20 @@ def plot_epoch_dependence(
     # ---- Plot loss ----
     ax = axes[0]
     ax.plot(
-        train_data["epoch"], train_data["loss"]["mean"], color=colors[1], linewidth=1
+        train_data["epoch"],
+        train_data["loss"]["mean"],
+        color=colors[1],
+        linewidth=1,
     )
     ax.set_ylabel("Training Loss", color=colors[1])
     ax.set_yscale("log")
 
     ax2 = ax.twinx()
     ax2.plot(
-        valid_data["epoch"], valid_data["loss"]["mean"], color=colors[0], linewidth=1
+        valid_data["epoch"],
+        valid_data["loss"]["mean"],
+        color=colors[0],
+        linewidth=1,
     )
     ax2.set_ylabel("Validation Loss", color=colors[0])
     ax2.set_yscale("log")
@@ -327,7 +354,11 @@ def plot_inference_from_results(
             scatter = None
 
             if key == "energy" and "energy" in result:
-                e_key = "energy" if not plot_interaction_e else "interaction_energy"
+                e_key = (
+                    "energy"
+                    if not plot_interaction_e
+                    else "interaction_energy"
+                )
                 scatter = ax.scatter(
                     result[e_key]["reference_per_atom"],
                     result[e_key]["predicted_per_atom"],
@@ -384,7 +415,11 @@ def plot_inference_from_results(
             scatter = None
 
             if key == "energy" and "energy" in result:
-                e_key = "energy" if not plot_interaction_e else "interaction_energy"
+                e_key = (
+                    "energy"
+                    if not plot_interaction_e
+                    else "interaction_energy"
+                )
                 scatter = ax.scatter(
                     result[e_key]["reference_per_atom"],
                     result[e_key]["predicted_per_atom"],
@@ -447,7 +482,9 @@ def plot_inference_from_results(
         # Set legend with unique entries (Test + individual train/valid names)
         if legend_labels:
             ax.legend(
-                handles=legend_labels.values(), labels=legend_labels.keys(), loc="best"
+                handles=legend_labels.values(),
+                labels=legend_labels.keys(),
+                loc="best",
             )
         if key != "energy" or not plot_interaction_e:
             ax.set_xlabel(f"Reference {label}")
@@ -515,9 +552,13 @@ class InferenceMetric(Metric):
         super().__init__()
         # Raw values
         self.add_state("ref_energies", default=[], dist_reduce_fx="cat")
-        self.add_state("ref_interaction_energies", default=[], dist_reduce_fx="cat")
+        self.add_state(
+            "ref_interaction_energies", default=[], dist_reduce_fx="cat"
+        )
         self.add_state("pred_energies", default=[], dist_reduce_fx="cat")
-        self.add_state("pred_interaction_energies", default=[], dist_reduce_fx="cat")
+        self.add_state(
+            "pred_interaction_energies", default=[], dist_reduce_fx="cat"
+        )
         self.add_state("ref_forces", default=[], dist_reduce_fx="cat")
         self.add_state("pred_forces", default=[], dist_reduce_fx="cat")
         self.add_state("ref_stress", default=[], dist_reduce_fx="cat")
@@ -528,31 +569,57 @@ class InferenceMetric(Metric):
         self.add_state("pred_dipole", default=[], dist_reduce_fx="cat")
 
         # Per-atom normalized values
-        self.add_state("ref_energies_per_atom", default=[], dist_reduce_fx="cat")
         self.add_state(
-            "ref_interaction_energies_per_atom", default=[], dist_reduce_fx="cat"
+            "ref_energies_per_atom", default=[], dist_reduce_fx="cat"
         )
-        self.add_state("pred_energies_per_atom", default=[], dist_reduce_fx="cat")
         self.add_state(
-            "pred_interaction_energies_per_atom", default=[], dist_reduce_fx="cat"
+            "ref_interaction_energies_per_atom",
+            default=[],
+            dist_reduce_fx="cat",
         )
-        self.add_state("ref_virials_per_atom", default=[], dist_reduce_fx="cat")
-        self.add_state("pred_virials_per_atom", default=[], dist_reduce_fx="cat")
+        self.add_state(
+            "pred_energies_per_atom", default=[], dist_reduce_fx="cat"
+        )
+        self.add_state(
+            "pred_interaction_energies_per_atom",
+            default=[],
+            dist_reduce_fx="cat",
+        )
+        self.add_state(
+            "ref_virials_per_atom", default=[], dist_reduce_fx="cat"
+        )
+        self.add_state(
+            "pred_virials_per_atom", default=[], dist_reduce_fx="cat"
+        )
         self.add_state("ref_dipole_per_atom", default=[], dist_reduce_fx="cat")
-        self.add_state("pred_dipole_per_atom", default=[], dist_reduce_fx="cat")
+        self.add_state(
+            "pred_dipole_per_atom", default=[], dist_reduce_fx="cat"
+        )
 
         # Store atom counts for each configuration
         self.add_state("atom_counts", default=[], dist_reduce_fx="cat")
 
         # Counters
-        self.add_state("n_energy", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state(
-            "n_interaction_energy", default=torch.tensor(0.0), dist_reduce_fx="sum"
+            "n_energy", default=torch.tensor(0.0), dist_reduce_fx="sum"
         )
-        self.add_state("n_forces", default=torch.tensor(0.0), dist_reduce_fx="sum")
-        self.add_state("n_stress", default=torch.tensor(0.0), dist_reduce_fx="sum")
-        self.add_state("n_virials", default=torch.tensor(0.0), dist_reduce_fx="sum")
-        self.add_state("n_dipole", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state(
+            "n_interaction_energy",
+            default=torch.tensor(0.0),
+            dist_reduce_fx="sum",
+        )
+        self.add_state(
+            "n_forces", default=torch.tensor(0.0), dist_reduce_fx="sum"
+        )
+        self.add_state(
+            "n_stress", default=torch.tensor(0.0), dist_reduce_fx="sum"
+        )
+        self.add_state(
+            "n_virials", default=torch.tensor(0.0), dist_reduce_fx="sum"
+        )
+        self.add_state(
+            "n_dipole", default=torch.tensor(0.0), dist_reduce_fx="sum"
+        )
 
     def update(self, batch, output):  # pylint: disable=arguments-differ
         """Update metric states with new batch data."""
@@ -566,13 +633,23 @@ class InferenceMetric(Metric):
             self.pred_energies.append(output["energy"])
             # Per-atom normalization
             self.ref_energies_per_atom.append(batch.energy / atoms_per_config)
-            self.pred_energies_per_atom.append(output["energy"] / atoms_per_config)
+            self.pred_energies_per_atom.append(
+                output["energy"] / atoms_per_config
+            )
 
             self.n_energy += filter_nonzero_weight(
-                batch, self.ref_energies, batch.weight, batch.energy_weight, "config"
+                batch,
+                self.ref_energies,
+                batch.weight,
+                batch.energy_weight,
+                "config",
             )
             filter_nonzero_weight(
-                batch, self.pred_energies, batch.weight, batch.energy_weight, "config"
+                batch,
+                self.pred_energies,
+                batch.weight,
+                batch.energy_weight,
+                "config",
             )
             filter_nonzero_weight(
                 batch,
@@ -589,10 +666,13 @@ class InferenceMetric(Metric):
                 "config",
             )
 
-        if output.get("interaction_energy") is not None and batch.energy is not None:
-            E0s = output["energy"].to(torch.float64) - output["interaction_energy"].to(
-                torch.float64
-            )
+        if (
+            output.get("interaction_energy") is not None
+            and batch.energy is not None
+        ):
+            E0s = output["energy"].to(torch.float64) - output[
+                "interaction_energy"
+            ].to(torch.float64)
             self.ref_interaction_energies.append(batch.energy - E0s)
             self.pred_interaction_energies.append(output["interaction_energy"])
             # Per-atom normalization
@@ -638,10 +718,18 @@ class InferenceMetric(Metric):
             self.pred_forces.append(output["forces"])
 
             self.n_forces += filter_nonzero_weight(
-                batch, self.ref_forces, batch.weight, batch.forces_weight, "atom"
+                batch,
+                self.ref_forces,
+                batch.weight,
+                batch.forces_weight,
+                "atom",
             )
             filter_nonzero_weight(
-                batch, self.pred_forces, batch.weight, batch.forces_weight, "atom"
+                batch,
+                self.pred_forces,
+                batch.weight,
+                batch.forces_weight,
+                "atom",
             )
 
         # Stress
@@ -650,10 +738,18 @@ class InferenceMetric(Metric):
             self.pred_stress.append(output["stress"])
 
             self.n_stress += filter_nonzero_weight(
-                batch, self.ref_stress, batch.weight, batch.stress_weight, "config"
+                batch,
+                self.ref_stress,
+                batch.weight,
+                batch.stress_weight,
+                "config",
             )
             filter_nonzero_weight(
-                batch, self.pred_stress, batch.weight, batch.stress_weight, "config"
+                batch,
+                self.pred_stress,
+                batch.weight,
+                batch.stress_weight,
+                "config",
             )
 
         # Virials
@@ -662,14 +758,26 @@ class InferenceMetric(Metric):
             self.pred_virials.append(output["virials"])
             # Per-atom normalization
             atoms_per_config_3d = atoms_per_config.view(-1, 1, 1)
-            self.ref_virials_per_atom.append(batch.virials / atoms_per_config_3d)
-            self.pred_virials_per_atom.append(output["virials"] / atoms_per_config_3d)
+            self.ref_virials_per_atom.append(
+                batch.virials / atoms_per_config_3d
+            )
+            self.pred_virials_per_atom.append(
+                output["virials"] / atoms_per_config_3d
+            )
 
             self.n_virials += filter_nonzero_weight(
-                batch, self.ref_virials, batch.weight, batch.virials_weight, "config"
+                batch,
+                self.ref_virials,
+                batch.weight,
+                batch.virials_weight,
+                "config",
             )
             filter_nonzero_weight(
-                batch, self.pred_virials, batch.weight, batch.virials_weight, "config"
+                batch,
+                self.pred_virials,
+                batch.weight,
+                batch.virials_weight,
+                "config",
             )
             filter_nonzero_weight(
                 batch,
@@ -692,13 +800,23 @@ class InferenceMetric(Metric):
             self.pred_dipole.append(output["dipole"])
             atoms_per_config_3d = atoms_per_config.view(-1, 1)
             self.ref_dipole_per_atom.append(batch.dipole / atoms_per_config_3d)
-            self.pred_dipole_per_atom.append(output["dipole"] / atoms_per_config_3d)
+            self.pred_dipole_per_atom.append(
+                output["dipole"] / atoms_per_config_3d
+            )
 
             self.n_dipole += filter_nonzero_weight(
-                batch, self.ref_dipole, batch.weight, batch.dipole_weight, "config"
+                batch,
+                self.ref_dipole,
+                batch.weight,
+                batch.dipole_weight,
+                "config",
             )
             filter_nonzero_weight(
-                batch, self.pred_dipole, batch.weight, batch.dipole_weight, "config"
+                batch,
+                self.pred_dipole,
+                batch.weight,
+                batch.dipole_weight,
+                "config",
             )
             filter_nonzero_weight(
                 batch,
@@ -739,7 +857,9 @@ class InferenceMetric(Metric):
 
         # Process energies
         if self.n_energy:
-            ref_e, pred_e = self._process_data(self.ref_energies, self.pred_energies)
+            ref_e, pred_e = self._process_data(
+                self.ref_energies, self.pred_energies
+            )
             ref_e_pa, pred_e_pa = self._process_data(
                 self.ref_energies_per_atom, self.pred_energies_per_atom
             )
@@ -767,7 +887,9 @@ class InferenceMetric(Metric):
 
         # Process forces
         if self.n_forces:
-            ref_f, pred_f = self._process_data(self.ref_forces, self.pred_forces)
+            ref_f, pred_f = self._process_data(
+                self.ref_forces, self.pred_forces
+            )
             results["forces"] = {
                 "reference": ref_f,
                 "predicted": pred_f,
@@ -775,7 +897,9 @@ class InferenceMetric(Metric):
 
         # Process stress
         if self.n_stress:
-            ref_s, pred_s = self._process_data(self.ref_stress, self.pred_stress)
+            ref_s, pred_s = self._process_data(
+                self.ref_stress, self.pred_stress
+            )
             results["stress"] = {
                 "reference": ref_s,
                 "predicted": pred_s,
@@ -783,7 +907,9 @@ class InferenceMetric(Metric):
 
         # Process virials
         if self.n_virials:
-            ref_v, pred_v = self._process_data(self.ref_virials, self.pred_virials)
+            ref_v, pred_v = self._process_data(
+                self.ref_virials, self.pred_virials
+            )
             ref_v_pa, pred_v_pa = self._process_data(
                 self.ref_virials_per_atom, self.pred_virials_per_atom
             )
@@ -796,7 +922,9 @@ class InferenceMetric(Metric):
 
         # Process dipoles
         if self.n_dipole:
-            ref_d, pred_d = self._process_data(self.ref_dipole, self.pred_dipole)
+            ref_d, pred_d = self._process_data(
+                self.ref_dipole, self.pred_dipole
+            )
             ref_d_pa, pred_d_pa = self._process_data(
                 self.ref_dipole_per_atom, self.pred_dipole_per_atom
             )

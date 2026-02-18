@@ -88,9 +88,7 @@ def evaluate_model(
         "so3lr",
         "so3krates",
     ], f"Unknown model type: {model_type}"
-    key_spec = (
-        KeySpecification() if key_spec is None else key_spec
-    )
+    key_spec = KeySpecification() if key_spec is None else key_spec
 
     data_loader = create_dataloader_from_list(
         atoms_list=atoms_list,
@@ -315,9 +313,7 @@ def ensemble_prediction(
         all_dipoles = []
     if compute_partial_charges:
         all_partial_charges = []
-    key_spec = (
-        KeySpecification() if key_spec is None else key_spec
-    )
+    key_spec = KeySpecification() if key_spec is None else key_spec
     i = 0
     for model in models:
         results = evaluate_model(

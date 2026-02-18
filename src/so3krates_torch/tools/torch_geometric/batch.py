@@ -107,13 +107,17 @@ class Batch(Data):
                             tmp = f"{key}_{j}_batch"
                             batch[tmp] = [] if i == 0 else batch[tmp]
                             batch[tmp].append(
-                                torch.full((size,), i, dtype=torch.long, device=device)
+                                torch.full(
+                                    (size,), i, dtype=torch.long, device=device
+                                )
                             )
                     else:
                         tmp = f"{key}_batch"
                         batch[tmp] = [] if i == 0 else batch[tmp]
                         batch[tmp].append(
-                            torch.full((size,), i, dtype=torch.long, device=device)
+                            torch.full(
+                                (size,), i, dtype=torch.long, device=device
+                            )
                         )
 
             if hasattr(data, "__num_nodes__"):
@@ -123,7 +127,9 @@ class Batch(Data):
 
             num_nodes = data.num_nodes
             if num_nodes is not None:
-                item = torch.full((num_nodes,), i, dtype=torch.long, device=device)
+                item = torch.full(
+                    (num_nodes,), i, dtype=torch.long, device=device
+                )
                 batch.batch.append(item)
                 batch.ptr.append(batch.ptr[-1] + num_nodes)
 

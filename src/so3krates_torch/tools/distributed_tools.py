@@ -3,10 +3,8 @@
 import os
 import torch
 
-def init_distributed(
-        distributed: bool,
-        launcher: str
-):
+
+def init_distributed(distributed: bool, launcher: str):
     """
     Returns (rank, local_rank, world_size) and initialises the process-group.
     Works for: slurm | torchrun | mpi | none
@@ -16,7 +14,9 @@ def init_distributed(
 
     # ------------------------------------------------------------------ slurm
     if launcher == "slurm":
-        from so3krates_torch.tools.slurm_distributed import DistributedEnvironment
+        from so3krates_torch.tools.slurm_distributed import (
+            DistributedEnvironment,
+        )
 
         env = DistributedEnvironment()
         rank, local_rank, world_size = env.rank, env.local_rank, env.world_size
@@ -39,7 +39,9 @@ def init_distributed(
 
         # tell PyTorch where the rendez-vous server is
         os.environ.setdefault("MASTER_ADDR", os.environ["MASTER_ADDR"])
-        os.environ.setdefault("MASTER_PORT", os.environ.get("MASTER_PORT", "33333"))
+        os.environ.setdefault(
+            "MASTER_PORT", os.environ.get("MASTER_PORT", "33333")
+        )
         # torchrun style vars so later code keeps working
         os.environ["RANK"] = str(rank)
         os.environ["WORLD_SIZE"] = str(world_size)

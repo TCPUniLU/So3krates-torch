@@ -170,7 +170,9 @@ def _make_mock_lammps_data(
     # Force update mock
     mock.update_pair_forces_gpu = Mock()
     # Module for device detection (not kokkos)
-    mock.__class__ = type("RegularModule", (), {"__module__": "regular_module"})
+    mock.__class__ = type(
+        "RegularModule", (), {"__module__": "regular_module"}
+    )
     return mock
 
 
@@ -276,9 +278,7 @@ class TestSo3EdgeForcesWrapper:
         for p in wrapper.model.parameters():
             assert p.requires_grad is False
 
-    def test_r_max_buffer(
-        self, so3lr_short_range_model, water_atomic_numbers
-    ):
+    def test_r_max_buffer(self, so3lr_short_range_model, water_atomic_numbers):
         wrapper = So3EdgeForcesWrapper(
             so3lr_short_range_model,
             atomic_numbers=water_atomic_numbers,
@@ -435,7 +435,9 @@ class TestLAMMPS_MLIAP_SO3:
             atomic_numbers_map=water_atomic_numbers,
         )
         # Force specific element assignment: H, O, H
-        mock_data.elems = torch.tensor([0, 1, 0])  # type 0=H(Z=1), type 1=O(Z=8)
+        mock_data.elems = torch.tensor(
+            [0, 1, 0]
+        )  # type 0=H(Z=1), type 1=O(Z=8)
         species = torch.as_tensor(mock_data.elems, dtype=torch.int64)
 
         batch = calc._prepare_batch(mock_data, 3, 0, species)
@@ -669,17 +671,13 @@ class TestCLIValidation:
         with pytest.raises(ValueError, match="electrostatic"):
             validate_model(so3lr_electrostatic_model)
 
-    def test_validate_model_rejects_dispersion(
-        self, so3lr_dispersion_model
-    ):
+    def test_validate_model_rejects_dispersion(self, so3lr_dispersion_model):
         from so3krates_torch.cli.create_lammps_model import validate_model
 
         with pytest.raises(ValueError, match="dispersion"):
             validate_model(so3lr_dispersion_model)
 
-    def test_validate_model_accepts_short_range(
-        self, so3lr_short_range_model
-    ):
+    def test_validate_model_accepts_short_range(self, so3lr_short_range_model):
         from so3krates_torch.cli.create_lammps_model import validate_model
 
         # Should not raise
@@ -798,9 +796,7 @@ class TestEndToEndForward:
         model = so3lr_short_range_model
         model.double()
 
-        calc = LAMMPS_MLIAP_SO3(
-            model, atomic_numbers=water_atomic_numbers
-        )
+        calc = LAMMPS_MLIAP_SO3(model, atomic_numbers=water_atomic_numbers)
         calc.device = torch.device("cpu")
         calc.initialized = True
         calc.model = calc.model.to("cpu")
@@ -843,9 +839,7 @@ class TestEndToEndForward:
         ase_energy = ase_output["energy"].squeeze().item()
 
         # --- LAMMPS mock path ---
-        calc = LAMMPS_MLIAP_SO3(
-            model, atomic_numbers=water_atomic_numbers
-        )
+        calc = LAMMPS_MLIAP_SO3(model, atomic_numbers=water_atomic_numbers)
         calc.device = torch.device("cpu")
         calc.initialized = True
         calc.model = calc.model.to("cpu")
@@ -857,9 +851,9 @@ class TestEndToEndForward:
         lammps_energy = mock_data.energy.item()
 
         # Energies should match within numerical precision
-        assert lammps_energy == pytest.approx(ase_energy, rel=1e-5), (
-            f"Energy mismatch: LAMMPS={lammps_energy}, ASE={ase_energy}"
-        )
+        assert lammps_energy == pytest.approx(
+            ase_energy, rel=1e-5
+        ), f"Energy mismatch: LAMMPS={lammps_energy}, ASE={ase_energy}"
 
     def test_forces_match_ase_calculator(
         self,
@@ -887,9 +881,7 @@ class TestEndToEndForward:
         ase_forces = ase_output["forces"].detach()
 
         # --- LAMMPS mock path: compute edge forces ---
-        calc = LAMMPS_MLIAP_SO3(
-            model, atomic_numbers=water_atomic_numbers
-        )
+        calc = LAMMPS_MLIAP_SO3(model, atomic_numbers=water_atomic_numbers)
         calc.device = torch.device("cpu")
         calc.initialized = True
         calc.model = calc.model.to("cpu")
@@ -918,14 +910,20 @@ class TestEndToEndForward:
 
         # Forces should match
         print(f"\nASE forces:\n{ase_forces}")
-        print(f"\nLAMMPS atomic forces (from edge forces):\n{lammps_atomic_forces}")
+        print(
+            f"\nLAMMPS atomic forces (from edge forces):\n{lammps_atomic_forces}"
+        )
         print(f"\nDifference:\n{ase_forces - lammps_atomic_forces}")
-        print(f"\nMax abs diff: {(ase_forces - lammps_atomic_forces).abs().max().item()}")
+        print(
+            f"\nMax abs diff: {(ase_forces - lammps_atomic_forces).abs().max().item()}"
+        )
 
         torch.testing.assert_close(
-            lammps_atomic_forces, ase_forces,
-            atol=1e-5, rtol=1e-5,
-            msg=f"Force mismatch!\nASE: {ase_forces}\nLAMMPS: {lammps_atomic_forces}"
+            lammps_atomic_forces,
+            ase_forces,
+            atol=1e-5,
+            rtol=1e-5,
+            msg=f"Force mismatch!\nASE: {ase_forces}\nLAMMPS: {lammps_atomic_forces}",
         )
 
     def _atoms_to_mock_lammps_data_periodic(
@@ -953,7 +951,7 @@ class TestEndToEndForward:
         # Create ghost atoms for periodic images.
         # Each unique (j_atom, shift) with shift != (0,0,0) needs a ghost.
         ghost_map = {}  # (j_atom, shift_tuple) -> ghost_index
-        ghost_types = []   # LAMMPS type index for each ghost
+        ghost_types = []  # LAMMPS type index for each ghost
         next_ghost_idx = natoms
 
         z_to_type = {z: idx for idx, z in enumerate(atomic_numbers_list)}
@@ -1068,9 +1066,7 @@ class TestEndToEndForward:
         ase_energy = ase_output["energy"].squeeze().item()
 
         # --- LAMMPS mock path (with ghost atoms) ---
-        calc = LAMMPS_MLIAP_SO3(
-            model, atomic_numbers=si_atomic_numbers
-        )
+        calc = LAMMPS_MLIAP_SO3(model, atomic_numbers=si_atomic_numbers)
         calc.device = torch.device("cpu")
         calc.initialized = True
         calc.model = calc.model.to("cpu")
@@ -1081,16 +1077,18 @@ class TestEndToEndForward:
         calc.compute_forces(mock_data)
         lammps_energy = mock_data.energy.item()
 
-        print(f"\nPeriodic Si: natoms={mock_data.nlocal}, "
-              f"nghosts={mock_data.ntotal - mock_data.nlocal}, "
-              f"npairs={mock_data.npairs}")
+        print(
+            f"\nPeriodic Si: natoms={mock_data.nlocal}, "
+            f"nghosts={mock_data.ntotal - mock_data.nlocal}, "
+            f"npairs={mock_data.npairs}"
+        )
         print(f"ASE energy: {ase_energy}")
         print(f"LAMMPS energy: {lammps_energy}")
 
         # Energy should match
-        assert lammps_energy == pytest.approx(ase_energy, rel=1e-5), (
-            f"Energy mismatch: LAMMPS={lammps_energy}, ASE={ase_energy}"
-        )
+        assert lammps_energy == pytest.approx(
+            ase_energy, rel=1e-5
+        ), f"Energy mismatch: LAMMPS={lammps_energy}, ASE={ase_energy}"
 
         # Convert edge forces to atomic forces (Newton's 3rd law).
         # Ghost atom forces must be mapped back to their real parent atoms,
@@ -1116,10 +1114,14 @@ class TestEndToEndForward:
         print(f"\nASE forces:\n{ase_forces}")
         print(f"\nLAMMPS atomic forces:\n{lammps_atomic_forces}")
         print(f"\nDifference:\n{ase_forces - lammps_atomic_forces}")
-        print(f"\nMax abs diff: {(ase_forces - lammps_atomic_forces).abs().max().item()}")
+        print(
+            f"\nMax abs diff: {(ase_forces - lammps_atomic_forces).abs().max().item()}"
+        )
 
         torch.testing.assert_close(
-            lammps_atomic_forces, ase_forces,
-            atol=1e-10, rtol=1e-10,
-            msg=f"Force mismatch (periodic)!\nASE: {ase_forces}\nLAMMPS: {lammps_atomic_forces}"
+            lammps_atomic_forces,
+            ase_forces,
+            atol=1e-10,
+            rtol=1e-10,
+            msg=f"Force mismatch (periodic)!\nASE: {ase_forces}\nLAMMPS: {lammps_atomic_forces}",
         )

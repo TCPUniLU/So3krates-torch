@@ -116,7 +116,9 @@ def random_train_valid_split(
         )
     else:
         # Save indices to file
-        with open(work_dir + f"/valid_indices_{seed}.txt", "w", encoding="utf-8") as f:
+        with open(
+            work_dir + f"/valid_indices_{seed}.txt", "w", encoding="utf-8"
+        ) as f:
             for index in indices[train_size:]:
                 f.write(f"{index}\n")
 
@@ -175,7 +177,9 @@ def config_from_atoms(
 
     properties = {}
     property_weights = {}
-    for name in list(key_specification.arrays_keys) + list(key_specification.info_keys):
+    for name in list(key_specification.arrays_keys) + list(
+        key_specification.info_keys
+    ):
         property_weights[name] = atoms.info.get(f"config_{name}_weight", 1.0)
 
     for name, atoms_key in key_specification.info_keys.items():
@@ -280,7 +284,9 @@ def load_from_xyz(
     if not has_energy and not has_forces and not has_dipole:
         msg = f"None of '{final_energy_key}', '{final_forces_key}', and '{final_dipole_key}' found in '{file_path}'."
         if no_data_ok:
-            logging.warning(msg + " Continuing because no_data_ok=True was passed in.")
+            logging.warning(
+                msg + " Continuing because no_data_ok=True was passed in."
+            )
         else:
             raise ValueError(
                 msg
@@ -305,12 +311,15 @@ def load_from_xyz(
         for idx, atoms in enumerate(atoms_list):
             atoms.info[head_key] = head_name
             isolated_atom_config = (
-                len(atoms) == 1 and atoms.info.get("config_type") == "IsolatedAtom"
+                len(atoms) == 1
+                and atoms.info.get("config_type") == "IsolatedAtom"
             )
             if isolated_atom_config:
                 atomic_number = int(atoms.get_atomic_numbers()[0])
                 if energy_key in atoms.info.keys():
-                    atomic_energies_dict[atomic_number] = float(atoms.info[energy_key])
+                    atomic_energies_dict[atomic_number] = float(
+                        atoms.info[energy_key]
+                    )
                 else:
                     logging.warning(
                         f"Configuration '{idx}' is marked as 'IsolatedAtom' "
@@ -347,14 +356,28 @@ def compute_average_E0s(
     Function to compute the average interaction energy of each chemical element
     returns dictionary of E0s
     """
-    len_train = len(collections_train)
+    valid = [
+        c
+        for c in collections_train
+        if c.properties.get("energy") is not None
+    ]
+    if not valid:
+        logging.warning(
+            "No energies found in training data; atomic energy "
+            "shifts (E0s) set to zero. Training will use forces only."
+        )
+        return {z: 0.0 for z in z_table.zs}
+
+    len_train = len(valid)
     len_zs = len(z_table)
     A = np.zeros((len_train, len_zs))
     B = np.zeros(len_train)
     for i in range(len_train):
-        B[i] = collections_train[i].properties["energy"]
+        B[i] = valid[i].properties["energy"]
         for j, z in enumerate(z_table.zs):
-            A[i, j] = np.count_nonzero(collections_train[i].atomic_numbers == z)
+            A[i, j] = np.count_nonzero(
+                valid[i].atomic_numbers == z
+            )
     try:
         E0s = np.linalg.lstsq(A, B, rcond=None)[0]
         atomic_energies_dict = {}
@@ -379,20 +402,36 @@ def compute_average_E0s_from_dataset(
     Uses the same least-squares approach as
     compute_average_E0s but works directly with
     AtomicData tensors instead of Configuration objects.
+    Samples whose energy_weight is 0.0 (i.e. no reference
+    energy was provided) are skipped.
     """
     from so3krates_torch.tools.utils import AtomicNumberTable
 
-    len_train = len(dataset)
-    len_zs = len(z_table)
-    A = np.zeros((len_train, len_zs))
-    B = np.zeros(len_train)
-    for i in range(len_train):
+    energies = []
+    atom_counts = []
+    for i in range(len(dataset)):
         data = dataset[i]
-        B[i] = data.energy.item()
-        for j, z in enumerate(z_table.zs):
-            A[i, j] = (
-                (data.atomic_numbers == z).sum().item()
-            )
+        if (
+            data.energy_weight is None
+            or data.energy_weight.item() == 0.0
+        ):
+            continue
+        energies.append(data.energy.item())
+        atom_counts.append(
+            [(data.atomic_numbers == z).sum().item()
+             for z in z_table.zs]
+        )
+
+    if not energies:
+        logging.warning(
+            "No energies found in preprocessed dataset; atomic "
+            "energy shifts (E0s) set to zero. "
+            "Training will use forces only."
+        )
+        return {z: 0.0 for z in z_table.zs}
+
+    A = np.array(atom_counts, dtype=float)
+    B = np.array(energies, dtype=float)
     try:
         E0s = np.linalg.lstsq(A, B, rcond=None)[0]
         atomic_energies_dict = {}
@@ -439,7 +478,9 @@ def save_AtomicData_to_HDF5(data, i, h5_file) -> None:
     grp["head"] = data.head
 
 
-def save_configurations_as_HDF5(configurations: Configurations, _, h5_file) -> None:
+def save_configurations_as_HDF5(
+    configurations: Configurations, _, h5_file
+) -> None:
     grp = h5_file.create_group("config_batch_0")
     for j, config in enumerate(configurations):
         subgroup_name = f"config_{j}"

@@ -47,9 +47,7 @@ class TestRawHDF5:
         """Test save and load single molecule."""
         # Add properties
         h2o_atoms.info["REF_energy"] = -10.0
-        h2o_atoms.arrays["REF_forces"] = np.random.randn(
-            len(h2o_atoms), 3
-        )
+        h2o_atoms.arrays["REF_forces"] = np.random.randn(len(h2o_atoms), 3)
 
         # Save to HDF5
         hdf5_path = tmp_path / "single.h5"
@@ -64,9 +62,7 @@ class TestRawHDF5:
 
         # Verify — loaded atoms have original ASE keys
         assert len(loaded) == len(h2o_atoms)
-        assert np.allclose(
-            loaded.get_positions(), h2o_atoms.get_positions()
-        )
+        assert np.allclose(loaded.get_positions(), h2o_atoms.get_positions())
         assert "REF_energy" in loaded.info
         assert np.isclose(loaded.info["REF_energy"], -10.0)
 
@@ -79,9 +75,7 @@ class TestRawHDF5:
 
         # Save
         hdf5_path = tmp_path / "multiple.h5"
-        keyspec = KeySpecification(
-            info_keys={"energy": "REF_energy"}
-        )
+        keyspec = KeySpecification(info_keys={"energy": "REF_energy"})
         save_atoms_to_hdf5(atoms_list, str(hdf5_path), keyspec)
 
         # Load all
@@ -89,9 +83,7 @@ class TestRawHDF5:
         assert len(loaded_list) == 3
 
         # Load slice
-        loaded_slice = load_atoms_from_hdf5(
-            str(hdf5_path), index=slice(0, 2)
-        )
+        loaded_slice = load_atoms_from_hdf5(str(hdf5_path), index=slice(0, 2))
         assert len(loaded_slice) == 2
 
         # Load single by index
@@ -115,16 +107,12 @@ class TestRawHDF5:
         loaded = load_atoms_from_hdf5(str(hdf5_path), index=0)
 
         # Check properties — loaded with original ASE keys
-        assert np.isclose(
-            loaded.info["REF_energy"], atoms.info["REF_energy"]
-        )
+        assert np.isclose(loaded.info["REF_energy"], atoms.info["REF_energy"])
         assert np.allclose(
             loaded.arrays["REF_forces"],
             atoms.arrays["REF_forces"],
         )
-        assert np.allclose(
-            loaded.info["REF_stress"], atoms.info["REF_stress"]
-        )
+        assert np.allclose(loaded.info["REF_stress"], atoms.info["REF_stress"])
 
     def test_configs_from_hdf5(self, example_raw_hdf5):
         """Test direct Configuration loading from HDF5."""
@@ -135,9 +123,7 @@ class TestRawHDF5:
         configs = configs_from_hdf5(example_raw_hdf5, keyspec)
 
         assert len(configs) == 3
-        assert all(
-            hasattr(config, "atomic_numbers") for config in configs
-        )
+        assert all(hasattr(config, "atomic_numbers") for config in configs)
         assert all(hasattr(config, "positions") for config in configs)
 
 
@@ -148,9 +134,7 @@ class TestPreprocessedHDF5:
         """Test save and load preprocessed AtomicData."""
         # Create AtomicData
         h2o_atoms.info["REF_energy"] = -10.0
-        h2o_atoms.arrays["REF_forces"] = np.random.randn(
-            len(h2o_atoms), 3
-        )
+        h2o_atoms.arrays["REF_forces"] = np.random.randn(len(h2o_atoms), 3)
         keyspec = KeySpecification(
             info_keys={"energy": "REF_energy"},
             arrays_keys={"forces": "REF_forces"},
@@ -394,7 +378,6 @@ class TestCLIPreprocess:
         # Check success
         assert result.returncode == 0, f"stderr: {result.stderr}"
         assert output_h5.exists()
-
 
     def test_validation_flag(self, tmp_path):
         """Test --validate flag."""
