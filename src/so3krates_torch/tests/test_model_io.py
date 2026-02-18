@@ -63,3 +63,66 @@ class TestModelSaveLoad:
         assert model2.zbl_repulsion is not None
         assert model2.electrostatic_potential is not None
         assert model2.dispersion_potential is not None
+
+    def test_save_load_inference_roundtrip(
+        self,
+        default_model_config,
+        make_batch,
+        h2o_atoms,
+        tmp_path,
+    ):
+        """Saved and loaded So3krates model produces identical predictions."""
+        model1 = So3krates(**default_model_config)
+        model1.eval()
+        batch = make_batch(h2o_atoms, r_max=5.0)
+
+        # Forces are computed via autograd.grad; cannot use torch.no_grad()
+        out1 = model1(batch.to_dict(), compute_stress=False)
+        energy1 = out1["energy"].detach().clone()
+        forces1 = out1["forces"].detach().clone()
+
+        save_path = tmp_path / "model.pt"
+        torch.save(model1.state_dict(), save_path)
+
+        model2 = So3krates(**default_model_config)
+        model2.load_state_dict(
+            torch.load(save_path, weights_only=True)
+        )
+        model2.eval()
+        out2 = model2(batch.to_dict(), compute_stress=False)
+
+        assert torch.allclose(energy1, out2["energy"].detach())
+        assert torch.allclose(forces1, out2["forces"].detach())
+
+    def test_so3lr_save_load_inference(
+        self,
+        so3lr_model_config,
+        make_batch,
+        h2o_atoms,
+        tmp_path,
+    ):
+        """SO3LR model with long-range components produces identical
+        predictions after save/load."""
+        model1 = SO3LR(**so3lr_model_config)
+        model1.eval()
+        batch = make_batch(h2o_atoms, r_max=5.0, cutoff_lr=10.0)
+
+        out1 = model1(batch.to_dict(), compute_stress=False)
+        energy1 = out1["energy"].detach().clone()
+        forces1 = out1["forces"].detach().clone()
+
+        save_path = tmp_path / "so3lr_model.pt"
+        torch.save(model1.state_dict(), save_path)
+
+        model2 = SO3LR(**so3lr_model_config)
+        # strict=False: Coulomb constants are registered as buffers during
+        # the first forward pass so they appear in model1's state_dict but
+        # not in fresh model2; they are deterministic and always identical.
+        model2.load_state_dict(
+            torch.load(save_path, weights_only=True), strict=False
+        )
+        model2.eval()
+        out2 = model2(batch.to_dict(), compute_stress=False)
+
+        assert torch.allclose(energy1, out2["energy"].detach())
+        assert torch.allclose(forces1, out2["forces"].detach())
