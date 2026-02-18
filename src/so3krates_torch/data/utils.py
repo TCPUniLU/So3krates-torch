@@ -356,15 +356,27 @@ def compute_average_E0s(
     Function to compute the average interaction energy of each chemical element
     returns dictionary of E0s
     """
-    len_train = len(collections_train)
+    valid = [
+        c
+        for c in collections_train
+        if c.properties.get("energy") is not None
+    ]
+    if not valid:
+        logging.warning(
+            "No energies found in training data; atomic energy "
+            "shifts (E0s) set to zero. Training will use forces only."
+        )
+        return {z: 0.0 for z in z_table.zs}
+
+    len_train = len(valid)
     len_zs = len(z_table)
     A = np.zeros((len_train, len_zs))
     B = np.zeros(len_train)
     for i in range(len_train):
-        B[i] = collections_train[i].properties["energy"]
+        B[i] = valid[i].properties["energy"]
         for j, z in enumerate(z_table.zs):
             A[i, j] = np.count_nonzero(
-                collections_train[i].atomic_numbers == z
+                valid[i].atomic_numbers == z
             )
     try:
         E0s = np.linalg.lstsq(A, B, rcond=None)[0]
@@ -390,18 +402,36 @@ def compute_average_E0s_from_dataset(
     Uses the same least-squares approach as
     compute_average_E0s but works directly with
     AtomicData tensors instead of Configuration objects.
+    Samples whose energy_weight is 0.0 (i.e. no reference
+    energy was provided) are skipped.
     """
     from so3krates_torch.tools.utils import AtomicNumberTable
 
-    len_train = len(dataset)
-    len_zs = len(z_table)
-    A = np.zeros((len_train, len_zs))
-    B = np.zeros(len_train)
-    for i in range(len_train):
+    energies = []
+    atom_counts = []
+    for i in range(len(dataset)):
         data = dataset[i]
-        B[i] = data.energy.item()
-        for j, z in enumerate(z_table.zs):
-            A[i, j] = (data.atomic_numbers == z).sum().item()
+        if (
+            data.energy_weight is None
+            or data.energy_weight.item() == 0.0
+        ):
+            continue
+        energies.append(data.energy.item())
+        atom_counts.append(
+            [(data.atomic_numbers == z).sum().item()
+             for z in z_table.zs]
+        )
+
+    if not energies:
+        logging.warning(
+            "No energies found in preprocessed dataset; atomic "
+            "energy shifts (E0s) set to zero. "
+            "Training will use forces only."
+        )
+        return {z: 0.0 for z in z_table.zs}
+
+    A = np.array(atom_counts, dtype=float)
+    B = np.array(energies, dtype=float)
     try:
         E0s = np.linalg.lstsq(A, B, rcond=None)[0]
         atomic_energies_dict = {}

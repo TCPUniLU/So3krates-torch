@@ -94,6 +94,14 @@ class AtomicEnergyOutputHead(nn.Module):
 
         self.enable_learned_energy_shifts_and_scales()
 
+    def _apply(self, fn):
+        """Keep self.device in sync when model.to() / .cuda() / .cpu() is called."""
+        super()._apply(fn)
+        # fn is a tensor transform; recover the new device from energy_shifts
+        # which _apply has already moved.
+        self.device = self.energy_shifts.device
+        return self
+
     def set_defined_energy_shifts(
         self,
         atomic_type_shifts: Union[
@@ -112,12 +120,12 @@ class AtomicEnergyOutputHead(nn.Module):
         elif isinstance(atomic_type_shifts, torch.Tensor) or isinstance(
             atomic_type_shifts, nn.Parameter
         ):
-
-            atomic_type_shifts.to(self.device)
-            atomic_type_shifts.requires_grad = False
-
             self.energy_shifts = nn.Parameter(
-                atomic_type_shifts.to(dtype=torch.get_default_dtype())
+                atomic_type_shifts.to(
+                    device=self.device,
+                    dtype=torch.get_default_dtype(),
+                ),
+                requires_grad=False,
             )
         else:
             raise ValueError(
