@@ -1223,6 +1223,23 @@ def run_training(config: dict) -> None:
         )
         model.r_max_lr = config_r_max_lr
 
+    config_cutoff_lr_damping = config["ARCHITECTURE"].get(
+        "dispersion_energy_cutoff_lr_damping", None
+    )
+    if (
+        hasattr(model, "dispersion_energy_cutoff_lr_damping")
+        and model.dispersion_energy_cutoff_lr_damping
+        != config_cutoff_lr_damping
+    ):
+        logging.warning(
+            f"Model dispersion_energy_cutoff_lr_damping "
+            f"({model.dispersion_energy_cutoff_lr_damping}) does not match "
+            f"config dispersion_energy_cutoff_lr_damping "
+            f"({config_cutoff_lr_damping}). "
+            f"Overriding model value with config value."
+        )
+        model.dispersion_energy_cutoff_lr_damping = config_cutoff_lr_damping
+
     # ---- data loaders (with DistributedSampler when needed) ----
     (
         train_loader,
