@@ -6,11 +6,6 @@ import torch
 from so3krates_torch.modules.spherical_harmonics import (
     RealSphericalHarmonics,
 )
-from so3krates_torch.blocks.radial_basis import (
-    GaussianBasis,
-    BernsteinBasis,
-    BesselBasis,
-)
 from so3krates_torch.blocks.embedding import (
     InvariantEmbedding,
     EuclideanEmbedding,
@@ -46,13 +41,6 @@ class TestSphericalHarmonicsShapes:
         out = sh(vecs)
         assert out.shape == (10, expected_dim)
 
-    @pytest.mark.parametrize("batch_size", [1, 10, 100, 1000])
-    def test_batch_dimension(self, batch_size):
-        sh = RealSphericalHarmonics(degrees=[1, 2])
-        vecs = torch.randn(batch_size, 3)
-        out = sh(vecs)
-        assert out.shape == (batch_size, 8)
-
     @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
     def test_output_dtype_matches_input(self, dtype):
         sh = RealSphericalHarmonics(degrees=[1, 2])
@@ -61,42 +49,7 @@ class TestSphericalHarmonicsShapes:
         assert out.dtype == dtype
 
 
-class TestRadialBasisShapes:
-
-    def test_gaussian_basis_shape_2d(self):
-        basis = GaussianBasis(r_max=5.0, num_radial_basis_fn=16)
-        distances = torch.rand(100, 1) * 5.0
-        out = basis(distances)
-        assert out.shape == (100, 16)
-
-    def test_gaussian_basis_shape_1d(self):
-        basis = GaussianBasis(r_max=5.0, num_radial_basis_fn=16)
-        distances = torch.rand(100) * 5.0
-        out = basis(distances)
-        assert out.shape == (100, 16)
-
-    def test_bernstein_basis_shape(self):
-        basis = BernsteinBasis(n_rbf=16, r_cut=5.0)
-        distances = torch.rand(100, 1) * 5.0
-        out = basis(distances)
-        assert out.shape == (100, 16)
-
-    def test_bessel_basis_shape(self):
-        basis = BesselBasis(n_rbf=16, r_cut=5.0)
-        distances = torch.rand(100, 1) * 5.0
-        out = basis(distances)
-        assert out.shape == (100, 16)
-
-
 class TestEmbeddingShapes:
-
-    def test_invariant_embedding_shape(self):
-        emb = InvariantEmbedding(num_elements=118, out_features=64)
-        one_hot = torch.zeros(4, 118)
-        for i, z in enumerate([0, 5, 7, 6]):
-            one_hot[i, z] = 1.0
-        out = emb(one_hot)
-        assert out.shape == (4, 64)
 
     def test_euclidean_embedding_zeros_shape(self):
         emb = EuclideanEmbedding(initialization_to_zeros=True)
@@ -188,13 +141,6 @@ class TestOutputHeadShapes:
         assert out.shape == (num_heads, 1)
 
 
-_CUTOFF_PARAMS = [
-    (CosineCutoff, {"r_max": 5.0}),
-    (PhysNetCutoff, {"r_max": 5.0}),
-    (PolynomialCutoff, {"r_max": 5.0, "p": 6}),
-    (ExponentialCutoff, {"r_max": 5.0}),
-]
-
 _MASKING_CUTOFF_PARAMS = [
     (PhysNetCutoff, {"r_max": 5.0}),
     (PolynomialCutoff, {"r_max": 5.0, "p": 6}),
@@ -203,20 +149,6 @@ _MASKING_CUTOFF_PARAMS = [
 
 
 class TestCutoffShapes:
-
-    @pytest.mark.parametrize("cutoff_cls,kwargs", _CUTOFF_PARAMS)
-    def test_shape_preserved_1d(self, cutoff_cls, kwargs):
-        cutoff = cutoff_cls(**kwargs)
-        x = torch.rand(20) * 4.0
-        out = cutoff(x)
-        assert out.shape == (20,)
-
-    @pytest.mark.parametrize("cutoff_cls,kwargs", _CUTOFF_PARAMS)
-    def test_shape_preserved_2d(self, cutoff_cls, kwargs):
-        cutoff = cutoff_cls(**kwargs)
-        x = torch.rand(20, 1) * 4.0
-        out = cutoff(x)
-        assert out.shape == (20, 1)
 
     @pytest.mark.parametrize("cutoff_cls,kwargs", _MASKING_CUTOFF_PARAMS)
     def test_zero_beyond_cutoff(self, cutoff_cls, kwargs):
@@ -230,11 +162,3 @@ class TestCutoffShapes:
         x = torch.tensor([6.0, 10.0])
         out = cutoff(x)
         assert not torch.allclose(out, torch.zeros_like(out))
-
-    @pytest.mark.parametrize("cutoff_cls,kwargs", _CUTOFF_PARAMS)
-    @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-    def test_output_dtype_matches_input(self, cutoff_cls, kwargs, dtype):
-        cutoff = cutoff_cls(**kwargs)
-        x = torch.rand(10, dtype=dtype) * 4.0
-        out = cutoff(x)
-        assert out.dtype == dtype

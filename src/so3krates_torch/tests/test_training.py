@@ -217,6 +217,35 @@ def test_single_epoch_training_deterministic(
             )
 
 
+def test_all_parameters_receive_gradients(
+    default_model_config, make_batch, h2o_atoms
+):
+    """After a backward pass, every requires_grad parameter has .grad."""
+    from so3krates_torch.modules.loss import WeightedEnergyForcesLoss
+
+    model = So3krates(**default_model_config)
+    model.train()
+
+    batch = make_batch(h2o_atoms, r_max=5.0)
+    batch_dict = batch.to_dict()
+    batch_dict["positions"].requires_grad_(True)
+
+    output = model(batch_dict, training=True, compute_force=True)
+
+    # Create a simple loss from energy and forces
+    loss = output["energy"].sum() + output["forces"].sum()
+    loss.backward()
+
+    no_grad = [
+        name
+        for name, p in model.named_parameters()
+        if p.requires_grad and p.grad is None
+    ]
+    assert no_grad == [], (
+        f"Parameters without gradients after backward: {no_grad}"
+    )
+
+
 def test_create_model_validates_lr_cutoff_missing(device):
     """Test that create_model raises error when r_max_lr is None but
     long-range physics is enabled."""
