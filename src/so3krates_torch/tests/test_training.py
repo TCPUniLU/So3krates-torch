@@ -241,9 +241,9 @@ def test_all_parameters_receive_gradients(
         for name, p in model.named_parameters()
         if p.requires_grad and p.grad is None
     ]
-    assert no_grad == [], (
-        f"Parameters without gradients after backward: {no_grad}"
-    )
+    assert (
+        no_grad == []
+    ), f"Parameters without gradients after backward: {no_grad}"
 
 
 def test_create_model_validates_lr_cutoff_missing(device):
@@ -338,3 +338,183 @@ def test_create_model_accepts_valid_lr_config(device):
     assert model is not None
     assert isinstance(model, SO3LR)
     assert model.r_max_lr == 10.0
+
+
+def test_setup_optimizer_and_scheduler_adam(default_model_config):
+    from so3krates_torch.cli.run_train import setup_optimizer_and_scheduler
+    from so3krates_torch.modules.models import So3krates
+
+    model = So3krates(**default_model_config)
+    config = {
+        "TRAINING": {
+            "optimizer": "adam",
+            "lr": 1e-3,
+            "weight_decay": 1e-4,
+            "amsgrad": False,
+            "scheduler": "exponential_decay",
+            "lr_scheduler_gamma": 0.99,
+        }
+    }
+    optimizer, scheduler = setup_optimizer_and_scheduler(model, config)
+    assert isinstance(optimizer, torch.optim.Adam)
+    assert abs(optimizer.param_groups[0]["lr"] - 1e-3) < 1e-9
+    assert isinstance(scheduler, torch.optim.lr_scheduler.ExponentialLR)
+    assert abs(scheduler.gamma - 0.99) < 1e-9
+
+
+def test_setup_optimizer_and_scheduler_plateau(default_model_config):
+    from so3krates_torch.cli.run_train import setup_optimizer_and_scheduler
+    from so3krates_torch.modules.models import So3krates
+
+    model = So3krates(**default_model_config)
+    config = {
+        "TRAINING": {
+            "lr": 5e-4,
+            "scheduler": "reduce_on_plateau",
+            "scheduler_patience": 10,
+            "lr_factor": 0.5,
+        }
+    }
+    _, scheduler = setup_optimizer_and_scheduler(model, config)
+    assert isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau)
+
+
+def test_setup_optimizer_invalid_name_raises(default_model_config):
+    from so3krates_torch.cli.run_train import setup_optimizer_and_scheduler
+    from so3krates_torch.modules.models import So3krates
+
+    model = So3krates(**default_model_config)
+    config = {"TRAINING": {"lr": 1e-3, "optimizer": "sgd"}}
+    with pytest.raises(ValueError, match="Unsupported optimizer"):
+        setup_optimizer_and_scheduler(model, config)
+
+
+def test_process_config_atomic_energies_int_keys():
+    from so3krates_torch.cli.run_train import process_config_atomic_energies
+
+    shifts = process_config_atomic_energies({1: -13.6, 6: -1027.0, 8: -2042.0})
+    assert shifts[1] == -13.6
+    assert shifts[6] == -1027.0
+    assert shifts[8] == -2042.0
+    # Missing elements default to 0.0
+    assert shifts[7] == 0.0
+    # Full range 1-118
+    assert len(shifts) == 118
+
+
+def test_process_config_atomic_energies_str_keys():
+    from so3krates_torch.cli.run_train import process_config_atomic_energies
+
+    shifts = process_config_atomic_energies({"1": -13.6, "6": -1027.0})
+    assert shifts[1] == -13.6
+    assert shifts[6] == -1027.0
+
+
+def test_set_avg_num_neighbors_in_model(default_model_config):
+    from so3krates_torch.cli.run_train import set_avg_num_neighbors_in_model
+    from so3krates_torch.modules.models import So3krates
+
+    model = So3krates(**default_model_config)
+    set_avg_num_neighbors_in_model(model, 15.5)
+    assert model.avg_num_neighbors == 15.5
+    for layer in model.euclidean_transformers:
+        assert layer.euclidean_attention_block.att_norm_inv == 15.5
+        assert layer.euclidean_attention_block.att_norm_ev == 15.5
+
+
+def test_set_atomic_energy_shifts_in_model(default_model_config, device):
+    from so3krates_torch.cli.run_train import (
+        set_atomic_energy_shifts_in_model,
+    )
+    from so3krates_torch.modules.models import So3krates
+
+    model = So3krates(**default_model_config).to(device)
+    shifts = {z: float(z) * -0.1 for z in range(1, 119)}
+    set_atomic_energy_shifts_in_model(model, shifts)
+    stored = model.atomic_energy_output_block.energy_shifts
+    assert stored is not None
+
+
+def test_set_dtype_model_float32(default_model_config):
+    from so3krates_torch.cli.run_train import set_dtype_model
+    from so3krates_torch.modules.models import So3krates
+
+    model = So3krates(**default_model_config)
+    set_dtype_model(model, "float32")
+    for param in model.parameters():
+        assert param.dtype == torch.float32
+
+
+def test_set_dtype_model_float64(default_model_config):
+    from so3krates_torch.cli.run_train import set_dtype_model
+    from so3krates_torch.modules.models import So3krates
+
+    model = So3krates(**default_model_config)
+    set_dtype_model(model, "float64")
+    for param in model.parameters():
+        assert param.dtype == torch.float64
+
+
+def test_set_dtype_model_invalid_raises(default_model_config):
+    from so3krates_torch.cli.run_train import set_dtype_model
+    from so3krates_torch.modules.models import So3krates
+
+    model = So3krates(**default_model_config)
+    with pytest.raises(ValueError, match="Unsupported dtype"):
+        set_dtype_model(model, "int32")
+
+
+def test_setup_loss_function_auto_energy_forces():
+    from so3krates_torch.cli.run_train import setup_loss_function
+    from so3krates_torch.modules.loss import WeightedEnergyForcesLoss
+
+    config = {
+        "TRAINING": {
+            "energy_weight": 2.0,
+            "forces_weight": 500.0,
+        }
+    }
+    loss = setup_loss_function(config)
+    assert isinstance(loss, WeightedEnergyForcesLoss)
+
+
+def test_setup_loss_function_invalid_type_raises():
+    from so3krates_torch.cli.run_train import setup_loss_function
+
+    config = {"TRAINING": {"loss_type": "nonexistent"}}
+    with pytest.raises(ValueError, match="Unknown loss_type"):
+        setup_loss_function(config)
+
+
+def test_select_valid_subset_split_ratio():
+    from so3krates_torch.cli.run_train import select_valid_subset
+
+    data = list(range(100))
+    train, val = select_valid_subset(data, valid_ratio=0.2)
+    assert len(train) == 80
+    assert len(val) == 20
+    assert set(train) | set(val) == set(range(100))
+    assert set(train) & set(val) == set()
+
+
+def test_select_valid_subset_num_train_limit():
+    from so3krates_torch.cli.run_train import select_valid_subset
+
+    data = list(range(100))
+    train, val = select_valid_subset(data, valid_ratio=0.1, num_train=30)
+    assert len(train) == 30
+    assert len(val) == 10
+
+
+def test_determine_num_elements(example_xyz_with_data):
+    from so3krates_torch.cli.run_train import determine_num_elements
+    from so3krates_torch.tools.utils import create_dataloader_from_list
+    from ase.io import read
+
+    atoms_list = read(example_xyz_with_data, index=":")
+    loader = create_dataloader_from_list(
+        atoms_list, batch_size=8, r_max=5.0, r_max_lr=None, shuffle=False
+    )
+    n = determine_num_elements(loader)
+    # H2O -> H,O; NH3 -> N,H; CH4 -> C,H  ->  {H, O, N, C} = 4 elements
+    assert n == 4
