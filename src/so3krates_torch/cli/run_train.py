@@ -180,7 +180,7 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
         )
         model = MultiHeadSO3LR(**model_params)
     else:
-        logging.info(f"Createing SO3LR model")
+        logging.info("Creating SO3LR model")
         model = SO3LR(**model_params)
 
     model = model.to(device)
@@ -327,7 +327,11 @@ def setup_data_loaders(
             f"avg_num_neighbors={avg_num_neighbors:.2f}"
         )
         logging.info(f"Training set size: {len(train_data)}")
-        logging.info(f"Validation set size: {len(val_data)}")
+        total_val = sum(len(loader.dataset) for loader in val_data.values())
+        logging.info(
+            f"Total validation set size: {total_val} "
+            f"across {len(val_data)} heads"
+        )
         logging.info(
             f"Number of unique elements in training set: " f"{num_elements}"
         )
@@ -816,63 +820,22 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
 def setup_optimizer_and_scheduler(
     model: torch.nn.Module,
     config: dict,
-    use_lora_plus: bool = False,
-    lora_B_lr: float = None,
 ) -> tuple:
     """Setup optimizer and learning rate scheduler."""
     train_config = config["TRAINING"]
 
-    # Setup optimizer
     optimizer_name = train_config.get("optimizer", "adam").lower()
     lr = train_config["lr"]
     weight_decay = train_config.get("weight_decay", 0.0)
     amsgrad = train_config.get("amsgrad", False)
 
     if optimizer_name == "adam":
-        if use_lora_plus:
-            assert (
-                lora_B_lr is not None
-            ), "lora_A_lr must be provided for LoRA+"
-            lr = lora_B_lr
-            # for LoRA+ adjust learning rate for A and B matrices
-            optimizer = torch.optim.Adam(
-                [
-                    {
-                        "params": [
-                            p
-                            for n, p in model.named_parameters()
-                            if "lora_A" in n
-                        ],
-                        "lr": lr,
-                    },
-                    {
-                        "params": [
-                            p
-                            for n, p in model.named_parameters()
-                            if "lora_B" in n
-                        ],
-                        "lr": lora_B_lr,
-                    },
-                    {
-                        "params": [
-                            p
-                            for n, p in model.named_parameters()
-                            if "lora_A" not in n and "lora_B" not in n
-                        ]
-                    },
-                ],
-                lr=lr,
-                weight_decay=weight_decay,
-                amsgrad=amsgrad,
-            )
-        else:
-            optimizer = torch.optim.Adam(
-                model.parameters(),
-                lr=lr,
-                weight_decay=weight_decay,
-                amsgrad=amsgrad,
-            )
-
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+            amsgrad=amsgrad,
+        )
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_name}")
 
@@ -1155,8 +1118,9 @@ def run_training(config: dict) -> None:
         config
     )
 
-    print(
-        f"Distributed setup: rank={rank}, local_rank={local_rank}, world_size={world_size}, distributed={distributed}"
+    logging.info(
+        f"Distributed setup: rank={rank}, local_rank={local_rank}, "
+        f"world_size={world_size}, distributed={distributed}"
     )
     # Setup logging (only on rank 0 to avoid duplicate logs)
     if rank == 0:
@@ -1210,10 +1174,12 @@ def run_training(config: dict) -> None:
             load_pretrained_weights(model, pretrained_weights, device)
             warm_start = True
 
-    assert model.r_max == config["ARCHITECTURE"].get("r_max", 4.5), (
-        f"Model r_max ({model.r_max}) does not match config "
-        f"r_max ({config['ARCHITECTURE'].get('r_max', 4.5)})"
-    )
+    config_r_max = config["ARCHITECTURE"].get("r_max", 4.5)
+    if model.r_max != config_r_max:
+        raise ValueError(
+            f"Model r_max ({model.r_max}) does not match config "
+            f"r_max ({config_r_max})"
+        )
     config_r_max_lr = config["ARCHITECTURE"].get("r_max_lr", None)
     if model.r_max_lr != config_r_max_lr:
         logging.warning(
