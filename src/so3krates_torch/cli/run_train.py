@@ -427,6 +427,140 @@ def _load_validation_loader(
     )
 
 
+def _setup_multihead_data_loaders(
+    config: dict,
+    distributed: bool = False,
+    rank: int = 0,
+    world_size: int = 1,
+) -> tuple:
+    """Setup data loaders for multi-head (multi-dataset) training.
+
+    Returns (train_loader, valid_loaders, train_sampler,
+             avg_num_neighbors, num_elements,
+             average_atomic_energy_shifts).
+    """
+    from so3krates_torch.tools.default_keys import DefaultKeys
+    from so3krates_torch.data.utils import update_keyspec_from_kwargs
+
+    keydict = DefaultKeys.keydict()
+    config_keys = config["TRAINING"].get("keys", {})
+    keydict.update(config_keys)
+    keyspec = update_keyspec_from_kwargs(KeySpecification(), keydict)
+    batch_size = config["TRAINING"]["batch_size"]
+    valid_batch_size = config["TRAINING"]["valid_batch_size"]
+    r_max = config["ARCHITECTURE"].get("r_max", None)
+    r_max_lr = config["ARCHITECTURE"].get("r_max_lr", None)
+
+    heads = config["TRAINING"].get("heads", None)
+    train_configs = []
+    val_data = {}
+    for head_name, head_config in heads.items():
+        head_data = read(head_config["path_to_train_data"], index=":")
+        head_valid_path = head_config.get("path_to_val_data", None)
+        if head_valid_path:
+            head_val_data = read(head_valid_path, index=":")
+            head_train_data = head_data
+        else:
+            valid_ratio = head_config.get("valid_ratio", 0.1)
+            num_train = head_config.get("num_train", None)
+            num_valid = head_config.get("num_valid", None)
+            head_train_data, head_val_data = select_valid_subset(
+                head_data, valid_ratio, num_train, num_valid
+            )
+        logging.info(
+            f"Head {head_name} - Training set size: " f"{len(head_train_data)}"
+        )
+        logging.info(
+            f"Head {head_name} - Validation set size: " f"{len(head_val_data)}"
+        )
+
+        head_config_list_train = create_configs_from_list(
+            atoms_list=head_train_data,
+            key_specification=keyspec,
+            head_name=head_name,
+        )
+        train_configs.extend(head_config_list_train)
+
+        head_config_list_val = create_data_from_list(
+            head_val_data,
+            r_max=r_max,
+            r_max_lr=r_max_lr,
+            key_specification=keyspec,
+            head_name=head_name,
+            all_heads=list(heads.keys()),
+        )
+        val_data[head_name] = create_dataloader_from_data(
+            head_config_list_val,
+            batch_size=valid_batch_size,
+            shuffle=False,
+        )
+
+    # Find elements actually present in data
+    present_zs = set()
+    for cfg in train_configs:
+        present_zs.update(cfg.atomic_numbers)
+    present_z_table = AtomicNumberTable(sorted(list(present_zs)))
+
+    # Compute E0s for present elements only
+    present_e0s = compute_average_E0s(
+        collections_train=train_configs,
+        z_table=present_z_table,
+    )
+
+    # Expand to full 118 elements (fill missing with 0)
+    average_atomic_energy_shifts = {
+        z: present_e0s.get(z, 0.0) for z in range(1, 119)
+    }
+    train_data = create_data_from_configs(
+        train_configs,
+        r_max=r_max,
+        r_max_lr=r_max_lr,
+        all_heads=list(heads.keys()),
+    )
+
+    train_sampler = None
+    if distributed:
+        train_sampler = DistributedSampler(
+            train_data,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+        )
+
+    train_loader = create_dataloader_from_data(
+        config_list=train_data,
+        batch_size=batch_size,
+        shuffle=True,
+        sampler=train_sampler,
+    )
+    logging.info(
+        "Computing dataset statistics (num_elements, avg_num_neighbors)..."
+    )
+    num_elements = determine_num_elements(train_loader)
+    avg_num_neighbors = compute_avg_num_neighbors(train_loader)
+    logging.info(
+        f"Computed: num_elements={num_elements}, "
+        f"avg_num_neighbors={avg_num_neighbors:.2f}"
+    )
+    logging.info(f"Training set size: {len(train_data)}")
+    total_val = sum(len(loader.dataset) for loader in val_data.values())
+    logging.info(
+        f"Total validation set size: {total_val} "
+        f"across {len(val_data)} heads"
+    )
+    logging.info(
+        f"Number of unique elements in training set: " f"{num_elements}"
+    )
+    return (
+        train_loader,
+        val_data,
+        train_sampler,
+        avg_num_neighbors,
+        num_elements,
+        average_atomic_energy_shifts,
+    )
+
+
 def _setup_singlehead_data_loaders(
     config: dict,
     distributed: bool = False,
@@ -571,136 +705,13 @@ def setup_data_loaders(
              avg_num_neighbors, num_elements,
              average_atomic_energy_shifts).
     """
-    # Key specification from defaults, with optional overrides
-    from so3krates_torch.tools.default_keys import DefaultKeys
-    from so3krates_torch.data.utils import update_keyspec_from_kwargs
-
-    keydict = DefaultKeys.keydict()
-    config_keys = config["TRAINING"].get("keys", {})
-    keydict.update(config_keys)
-    keyspec = update_keyspec_from_kwargs(KeySpecification(), keydict)
-    # Create data loaders
-    batch_size = config["TRAINING"]["batch_size"]
-    valid_batch_size = config["TRAINING"]["valid_batch_size"]
-    r_max = config["ARCHITECTURE"].get("r_max", None)
-    r_max_lr = config["ARCHITECTURE"].get("r_max_lr", None)
-
-    heads = config["TRAINING"].get("heads", None)
-    if heads is not None:
-        train_configs = []
-        val_data = {}
-        for head_name, head_config in heads.items():
-            head_data = read(head_config["path_to_train_data"], index=":")
-            head_valid_path = head_config.get("path_to_val_data", None)
-            if head_valid_path:
-                head_val_data = read(head_valid_path, index=":")
-                head_train_data = head_data
-            else:
-                valid_ratio = head_config.get("valid_ratio", 0.1)
-                num_train = head_config.get("num_train", None)
-                num_valid = head_config.get("num_valid", None)
-                head_train_data, head_val_data = select_valid_subset(
-                    head_data, valid_ratio, num_train, num_valid
-                )
-            logging.info(
-                f"Head {head_name} - Training set size: "
-                f"{len(head_train_data)}"
-            )
-            logging.info(
-                f"Head {head_name} - Validation set size: "
-                f"{len(head_val_data)}"
-            )
-
-            head_config_list_train = create_configs_from_list(
-                atoms_list=head_train_data,
-                key_specification=keyspec,
-                head_name=head_name,
-            )
-            train_configs.extend(head_config_list_train)
-
-            head_config_list_val = create_data_from_list(
-                head_val_data,
-                r_max=r_max,
-                r_max_lr=r_max_lr,
-                key_specification=keyspec,
-                head_name=head_name,
-                all_heads=list(heads.keys()),
-            )
-            val_data[head_name] = create_dataloader_from_data(
-                head_config_list_val,
-                batch_size=valid_batch_size,
-                shuffle=False,
-            )
-
-        # Find elements actually present in data
-        present_zs = set()
-        for cfg in train_configs:
-            present_zs.update(cfg.atomic_numbers)
-        present_z_table = AtomicNumberTable(sorted(list(present_zs)))
-
-        # Compute E0s for present elements only
-        present_e0s = compute_average_E0s(
-            collections_train=train_configs,
-            z_table=present_z_table,
-        )
-
-        # Expand to full 118 elements (fill missing with 0)
-        average_atomic_energy_shifts = {
-            z: present_e0s.get(z, 0.0) for z in range(1, 119)
-        }
-        train_data = create_data_from_configs(
-            train_configs,
-            r_max=r_max,
-            r_max_lr=r_max_lr,
-            all_heads=list(heads.keys()),
-        )
-
-        train_sampler = None
-        if distributed:
-            train_sampler = DistributedSampler(
-                train_data,
-                num_replicas=world_size,
-                rank=rank,
-                shuffle=True,
-            )
-
-        train_loader = create_dataloader_from_data(
-            config_list=train_data,
-            batch_size=batch_size,
-            shuffle=True,
-            sampler=train_sampler,
-        )
-        logging.info(
-            "Computing dataset statistics (num_elements, avg_num_neighbors)..."
-        )
-        num_elements = determine_num_elements(train_loader)
-        avg_num_neighbors = compute_avg_num_neighbors(train_loader)
-        logging.info(
-            f"Computed: num_elements={num_elements}, "
-            f"avg_num_neighbors={avg_num_neighbors:.2f}"
-        )
-        logging.info(f"Training set size: {len(train_data)}")
-        total_val = sum(len(loader.dataset) for loader in val_data.values())
-        logging.info(
-            f"Total validation set size: {total_val} "
-            f"across {len(val_data)} heads"
-        )
-        logging.info(
-            f"Number of unique elements in training set: " f"{num_elements}"
-        )
-        return (
-            train_loader,
-            val_data,
-            train_sampler,
-            avg_num_neighbors,
-            num_elements,
-            average_atomic_energy_shifts,
-        )
-
-    else:
-        return _setup_singlehead_data_loaders(
+    if config["TRAINING"].get("heads", None) is not None:
+        return _setup_multihead_data_loaders(
             config, distributed, rank, world_size
         )
+    return _setup_singlehead_data_loaders(
+        config, distributed, rank, world_size
+    )
 
 
 def set_avg_num_neighbors_in_model(
