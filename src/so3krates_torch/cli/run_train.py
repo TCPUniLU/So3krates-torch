@@ -1148,6 +1148,74 @@ def set_dtype_model(model: torch.nn.Module, dtype_str: str) -> None:
         param.data = param.data.to(dtype)
 
 
+def _setup_model_for_training(
+    config: dict,
+    device: torch.device,
+) -> tuple:
+    """Create or load the model and return (model, warm_start).
+
+    Validates that model attributes match the config, overriding
+    r_max_lr and dispersion_energy_cutoff_lr_damping if they differ
+    (with a warning).
+    """
+    pretrained_weights = config["TRAINING"].get("pretrained_weights", None)
+    pretrained_model = config["TRAINING"].get("pretrained_model", None)
+
+    if pretrained_weights and pretrained_model:
+        raise ValueError(
+            "Cannot specify both 'pretrained_weights' and "
+            "'pretrained_model' in config. "
+            "Use 'pretrained_weights' for weights only or "
+            "'pretrained_model' for complete model."
+        )
+
+    warm_start = False
+    if pretrained_model:
+        model = load_pretrained_model_direct(pretrained_model, device)
+        logging.info("Using complete pretrained model.")
+        warm_start = True
+    else:
+        model = create_model(config, device)
+        if pretrained_weights:
+            load_pretrained_weights(model, pretrained_weights, device)
+            warm_start = True
+
+    config_r_max = config["ARCHITECTURE"].get("r_max", 4.5)
+    if model.r_max != config_r_max:
+        raise ValueError(
+            f"Model r_max ({model.r_max}) does not match config "
+            f"r_max ({config_r_max})"
+        )
+
+    config_r_max_lr = config["ARCHITECTURE"].get("r_max_lr", None)
+    if model.r_max_lr != config_r_max_lr:
+        logging.warning(
+            f"Model r_max_lr ({model.r_max_lr}) does not match "
+            f"config r_max_lr ({config_r_max_lr}). "
+            f"Overriding model.r_max_lr with config value."
+        )
+        model.r_max_lr = config_r_max_lr
+
+    config_cutoff_lr_damping = config["ARCHITECTURE"].get(
+        "dispersion_energy_cutoff_lr_damping", None
+    )
+    if (
+        hasattr(model, "dispersion_energy_cutoff_lr_damping")
+        and model.dispersion_energy_cutoff_lr_damping
+        != config_cutoff_lr_damping
+    ):
+        logging.warning(
+            f"Model dispersion_energy_cutoff_lr_damping "
+            f"({model.dispersion_energy_cutoff_lr_damping}) does not "
+            f"match config dispersion_energy_cutoff_lr_damping "
+            f"({config_cutoff_lr_damping}). "
+            f"Overriding model value with config value."
+        )
+        model.dispersion_energy_cutoff_lr_damping = config_cutoff_lr_damping
+
+    return model, warm_start
+
+
 def run_training(config: dict) -> None:
     """Execute the complete training pipeline."""
     # ---- distributed init (must come first) ----
@@ -1174,18 +1242,7 @@ def run_training(config: dict) -> None:
     dtype_str = config["GENERAL"].get("default_dtype", "float32")
     torch.set_default_dtype(DTYPE_MAP[dtype_str])
 
-    # Get pretrained model settings from config
-    pretrained_weights = config["TRAINING"].get("pretrained_weights", None)
-    pretrained_model = config["TRAINING"].get("pretrained_model", None)
     no_checkpoint = config["MISC"].get("no_checkpoint", False)
-
-    if pretrained_weights and pretrained_model:
-        raise ValueError(
-            "Cannot specify both 'pretrained_weights' and "
-            "'pretrained_model' in config. Use "
-            "'pretrained_weights' for weights only or "
-            "'pretrained_model' for complete model."
-        )
 
     if no_checkpoint:
         config["MISC"]["restart_latest"] = False
@@ -1200,48 +1257,7 @@ def run_training(config: dict) -> None:
     logging.info(f"Using device: {device}")
 
     # ---- model creation ----
-    warm_start = False
-    if pretrained_model:
-        model = load_pretrained_model_direct(pretrained_model, device)
-        logging.info("Using complete pretrained model.")
-        warm_start = True
-    else:
-        model = create_model(config, device)
-        if pretrained_weights:
-            load_pretrained_weights(model, pretrained_weights, device)
-            warm_start = True
-
-    config_r_max = config["ARCHITECTURE"].get("r_max", 4.5)
-    if model.r_max != config_r_max:
-        raise ValueError(
-            f"Model r_max ({model.r_max}) does not match config "
-            f"r_max ({config_r_max})"
-        )
-    config_r_max_lr = config["ARCHITECTURE"].get("r_max_lr", None)
-    if model.r_max_lr != config_r_max_lr:
-        logging.warning(
-            f"Model r_max_lr ({model.r_max_lr}) does not match "
-            f"config r_max_lr ({config_r_max_lr}). "
-            f"Overriding model.r_max_lr with config value."
-        )
-        model.r_max_lr = config_r_max_lr
-
-    config_cutoff_lr_damping = config["ARCHITECTURE"].get(
-        "dispersion_energy_cutoff_lr_damping", None
-    )
-    if (
-        hasattr(model, "dispersion_energy_cutoff_lr_damping")
-        and model.dispersion_energy_cutoff_lr_damping
-        != config_cutoff_lr_damping
-    ):
-        logging.warning(
-            f"Model dispersion_energy_cutoff_lr_damping "
-            f"({model.dispersion_energy_cutoff_lr_damping}) does not match "
-            f"config dispersion_energy_cutoff_lr_damping "
-            f"({config_cutoff_lr_damping}). "
-            f"Overriding model value with config value."
-        )
-        model.dispersion_energy_cutoff_lr_damping = config_cutoff_lr_damping
+    model, warm_start = _setup_model_for_training(config, device)
 
     # ---- data loaders (with DistributedSampler when needed) ----
     (
@@ -1322,7 +1338,7 @@ def run_training(config: dict) -> None:
 
     # Load checkpoint if exists
     start_epoch = 0
-    if not pretrained_weights and not pretrained_model:
+    if not warm_start:
         start_epoch = load_checkpoint_if_exists(
             model=model,
             optimizer=optimizer,
