@@ -377,6 +377,8 @@ def test_setup_optimizer_and_scheduler_plateau(default_model_config):
     }
     _, scheduler = setup_optimizer_and_scheduler(model, config)
     assert isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau)
+    assert scheduler.patience == 10
+    assert abs(scheduler.factor - 0.5) < 1e-9
 
 
 def test_setup_optimizer_invalid_name_raises(default_model_config):
@@ -433,6 +435,9 @@ def test_set_atomic_energy_shifts_in_model(default_model_config, device):
     set_atomic_energy_shifts_in_model(model, shifts)
     stored = model.atomic_energy_output_block.energy_shifts
     assert stored is not None
+    # shifts dict is sorted by key (z), so index 0 -> z=1 (H), index 5 -> z=6 (C)
+    assert abs(stored[0].item() - (-0.1)) < 1e-9
+    assert abs(stored[5].item() - (-0.6)) < 1e-9
 
 
 def test_set_dtype_model_float32(default_model_config):
@@ -476,6 +481,8 @@ def test_setup_loss_function_auto_energy_forces():
     }
     loss = setup_loss_function(config)
     assert isinstance(loss, WeightedEnergyForcesLoss)
+    assert abs(loss.energy_weight.item() - 2.0) < 1e-9
+    assert abs(loss.forces_weight.item() - 500.0) < 1e-9
 
 
 def test_setup_loss_function_invalid_type_raises():
