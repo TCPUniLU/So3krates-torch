@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from ase.io import read
 import random
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 from so3krates_torch.modules.models import SO3LR, MultiHeadSO3LR
 from so3krates_torch.tools.utils import (
     create_dataloader_from_list,
@@ -172,9 +172,11 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
         model_params["num_output_heads"] = arch_config.get(
             "num_output_heads", None
         )
-        assert (
-            model_params["num_output_heads"] is not None
-        ), "num_output_heads must be specified when using convert_to_multihead"
+        if model_params["num_output_heads"] is None:
+            raise ValueError(
+                "num_output_heads must be specified when using "
+                "convert_to_multihead"
+            )
         logging.info(
             f"Creating Multi-Head SO3LR model with {model_params['num_output_heads']} heads"
         )
@@ -451,7 +453,7 @@ def _setup_multihead_data_loaders(
     r_max = config["ARCHITECTURE"].get("r_max", None)
     r_max_lr = config["ARCHITECTURE"].get("r_max_lr", None)
 
-    heads = config["TRAINING"].get("heads", None)
+    heads = config["TRAINING"]["heads"]
     train_configs = []
     val_data = {}
     for head_name, head_config in heads.items():
@@ -579,6 +581,7 @@ def _setup_singlehead_data_loaders(
     r_max_lr = config["ARCHITECTURE"].get("r_max_lr", None)
     batch_size = config["TRAINING"]["batch_size"]
     valid_batch_size = config["TRAINING"]["valid_batch_size"]
+    valid_loader: Optional = None
 
     (
         train_atomic_data,
