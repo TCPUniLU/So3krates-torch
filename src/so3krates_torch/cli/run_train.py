@@ -43,6 +43,7 @@ from so3krates_torch.tools.checkpoint import (
 from torch_ema import ExponentialMovingAverage
 from so3krates_torch.tools.train import train
 from so3krates_torch.tools.finetune import fuse_lora_weights, setup_finetuning
+from so3krates_torch.tools.torch_geometric import DataLoader
 import os
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
@@ -581,7 +582,7 @@ def _setup_singlehead_data_loaders(
     r_max_lr = config["ARCHITECTURE"].get("r_max_lr", None)
     batch_size = config["TRAINING"]["batch_size"]
     valid_batch_size = config["TRAINING"]["valid_batch_size"]
-    valid_loader: Optional = None
+    valid_loader: Optional[DataLoader] = None
 
     (
         train_atomic_data,
