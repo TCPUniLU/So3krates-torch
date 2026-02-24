@@ -222,6 +222,7 @@ def _load_training_dataset(
     val_split is None if path_to_val_data is set.
     """
     train_path = config["TRAINING"]["path_to_train_data"]
+    logging.info(f"Loading training data from {train_path}")
 
     is_preprocessed = config["TRAINING"].get("data_preprocessed", None)
     if is_preprocessed is None:
@@ -345,6 +346,7 @@ def _load_validation_loader(
     val_data_path = config["TRAINING"].get("path_to_val_data")
 
     if val_data_path:
+        logging.info(f"Loading validation data from {val_data_path}")
         is_valid_preprocessed = config["TRAINING"].get(
             "valid_data_preprocessed", None
         )
@@ -401,18 +403,20 @@ def _load_validation_loader(
 
     # No separate val file — use split from training data
     if is_train_preprocessed:
-        assert (
-            valid_subset is not None
-        ), "valid_subset required when splitting preprocessed data"
+        if valid_subset is None:
+            raise ValueError(
+                "valid_subset required when splitting preprocessed data"
+            )
         return create_dataloader_from_data(
             config_list=valid_subset,
             batch_size=valid_batch_size,
             shuffle=False,
         )
 
-    assert (
-        val_split_from_train is not None
-    ), "val_split_from_train required when splitting raw data"
+    if val_split_from_train is None:
+        raise ValueError(
+            "val_split_from_train required when splitting raw data"
+        )
     return create_dataloader_from_list(
         val_split_from_train,
         batch_size=valid_batch_size,
