@@ -170,6 +170,38 @@ def test_freeze_lora_only(base_model):
 # ---------------------------------------------------------------------------
 
 
+def test_lora_device_consistency(base_model):
+    """All buffers and params in LoRA attention blocks share one device."""
+    model_to_lora(base_model, rank=4, alpha=8.0, device="cpu")
+
+    for i, transformer in enumerate(base_model.euclidean_transformers):
+        block = transformer.euclidean_attention_block
+        devices = set()
+        for name, param in block.named_parameters():
+            devices.add(str(param.device))
+        for name, buf in block.named_buffers():
+            devices.add(str(buf.device))
+        assert len(devices) == 1, (
+            f"Transformer {i}: mixed devices {devices}"
+        )
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="CUDA not available"
+)
+def test_lora_device_consistency_cuda(base_model):
+    """LoRA conversion on CUDA places all tensors on the same device."""
+    base_model = base_model.to("cuda")
+    model_to_lora(base_model, rank=4, alpha=8.0, device="cuda")
+
+    for i, transformer in enumerate(base_model.euclidean_transformers):
+        block = transformer.euclidean_attention_block
+        for name, buf in block.named_buffers():
+            assert buf.device.type == "cuda", (
+                f"Transformer {i}, buffer {name} on {buf.device}"
+            )
+
+
 def test_preserve_grad_state_restores(base_model):
     """Context manager restores requires_grad state on exit."""
     params = list(base_model.parameters())

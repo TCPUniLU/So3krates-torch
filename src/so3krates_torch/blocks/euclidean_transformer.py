@@ -403,7 +403,7 @@ class EuclideanAttentionBlock(torch.nn.Module):
 
         self.register_buffer(
             "degree_repeats",
-            torch.tensor([2 * y + 1 for y in degrees]),
+            torch.tensor([2 * y + 1 for y in degrees], device=device),
         )
 
     def _get_qkv(
@@ -548,7 +548,7 @@ class InteractionBlock(torch.nn.Module):
         # e.g. for degrees=[0,1,2], we have repeats = [1, 3, 5]
         self.register_buffer(
             "degree_repeats",
-            torch.tensor([2 * y + 1 for y in degrees]),
+            torch.tensor([2 * y + 1 for y in degrees], device=device),
         )
 
     def reset_parameters(self):
