@@ -406,6 +406,17 @@ class EuclideanAttentionBlock(torch.nn.Module):
             torch.tensor([2 * y + 1 for y in degrees], device=device),
         )
 
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        # Migrate legacy models where degree_repeats was a plain
+        # tensor attribute, not a registered buffer.  .to(device)
+        # only moves registered buffers, so plain attrs cause
+        # device mismatches.
+        if "degree_repeats" not in self._buffers:
+            tensor = self.__dict__.pop("degree_repeats", None)
+            if tensor is not None:
+                self.register_buffer("degree_repeats", tensor)
+
     def _get_qkv(
         self,
         inv_features_inv: torch.Tensor,
@@ -550,6 +561,13 @@ class InteractionBlock(torch.nn.Module):
             "degree_repeats",
             torch.tensor([2 * y + 1 for y in degrees], device=device),
         )
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        if "degree_repeats" not in self._buffers:
+            tensor = self.__dict__.pop("degree_repeats", None)
+            if tensor is not None:
+                self.register_buffer("degree_repeats", tensor)
 
     def reset_parameters(self):
         # JAX init (lecun normal)
