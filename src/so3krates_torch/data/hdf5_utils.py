@@ -1392,3 +1392,194 @@ def validate_preprocessed_hdf5(
     logging.info(
         f"Validated preprocessed HDF5: {hdf5_path} " f"(r_max={r_max})"
     )
+
+
+# ============================================================================
+# HDF5 Merge Utilities
+# ============================================================================
+
+
+def iter_atoms_from_hdf5(
+    hdf5_path: str,
+    batch_size: int = 100_000,
+) -> Iterable[ase.Atoms]:
+    """Stream ASE Atoms objects from a raw HDF5 file.
+
+    Yields atoms in batches to keep peak RAM proportional to
+    ``batch_size``, not total dataset size.
+
+    Args:
+        hdf5_path: Path to raw HDF5 v2.0 file.
+        batch_size: Number of structures loaded per read batch.
+
+    Yields:
+        Individual ASE Atoms objects.
+    """
+    with h5py.File(hdf5_path, "r") as f:
+        num_configs = int(f.attrs["num_configs"])
+    for start in range(0, num_configs, batch_size):
+        end = min(start + batch_size, num_configs)
+        batch = load_atoms_from_hdf5(
+            hdf5_path, index=slice(start, end)
+        )
+        yield from batch
+
+
+def merge_raw_hdf5_files(
+    input_paths: List[str],
+    output_path: str,
+    batch_size: int = 100_000,
+    description: Optional[str] = None,
+) -> None:
+    """Merge multiple raw HDF5 (v2.0) files into one.
+
+    Uses streaming I/O so peak RAM is proportional to ``batch_size``,
+    not total combined dataset size.  Property schemas are reconciled
+    automatically: properties absent in some files are filled with NaN.
+
+    Args:
+        input_paths: Ordered list of raw HDF5 files to merge.
+        output_path: Path for the merged output file.
+        batch_size: Structures processed per write batch.
+        description: Optional description for the merged file.
+
+    Raises:
+        ValueError: If any input is not a raw HDF5 file.
+    """
+    for p in input_paths:
+        fmt = detect_file_format(p)
+        if fmt != "hdf5_raw":
+            raise ValueError(
+                f"{p} is not a raw HDF5 file (detected format: {fmt})"
+            )
+
+    # Recover keyspec from first file
+    with h5py.File(input_paths[0], "r") as f:
+        if "keyspec_info" in f.attrs:
+            key_specification = KeySpecification(
+                info_keys=json.loads(f.attrs["keyspec_info"]),
+                arrays_keys=json.loads(f.attrs["keyspec_arrays"]),
+            )
+        else:
+            key_specification = KeySpecification()
+
+    total_configs = sum(
+        int(h5py.File(p, "r").attrs["num_configs"]) for p in input_paths
+    )
+    logging.info(
+        f"Merging {len(input_paths)} raw HDF5 files "
+        f"({total_configs} total structures) → {output_path}"
+    )
+
+    combined = itertools.chain.from_iterable(
+        iter_atoms_from_hdf5(p, batch_size) for p in input_paths
+    )
+    save_atoms_to_hdf5(
+        combined,
+        output_path,
+        key_specification=key_specification,
+        description=description,
+        batch_size=batch_size,
+    )
+    logging.info(f"Merge complete: {output_path}")
+
+
+def merge_preprocessed_hdf5_files(
+    input_paths: List[str],
+    output_path: str,
+) -> None:
+    """Merge multiple preprocessed HDF5 files into one.
+
+    Copies ``config_N`` groups via h5py with renumbering so that the
+    merged file contains groups ``config_0 … config_{total-1}``.
+    All input files must have identical ``r_max`` and ``r_max_lr``.
+
+    Args:
+        input_paths: Ordered list of preprocessed HDF5 files to merge.
+        output_path: Path for the merged output file.
+
+    Raises:
+        ValueError: If any input is not a preprocessed HDF5 file, or
+                    if ``r_max`` / ``r_max_lr`` differ across inputs.
+    """
+    for p in input_paths:
+        fmt = detect_file_format(p)
+        if fmt != "hdf5_preprocessed":
+            raise ValueError(
+                f"{p} is not a preprocessed HDF5 file "
+                f"(detected format: {fmt})"
+            )
+
+    # Validate that r_max / r_max_lr are consistent
+    r_max_ref: Optional[float] = None
+    r_max_lr_ref: Optional[float] = None
+    num_configs_per_file: List[int] = []
+    avg_nn_per_file: List[float] = []
+
+    for p in input_paths:
+        with h5py.File(p, "r") as f:
+            r_max_val = float(f.attrs["r_max"])
+            r_max_lr_val = (
+                float(f.attrs["r_max_lr"]) if "r_max_lr" in f.attrs else None
+            )
+            if r_max_ref is None:
+                r_max_ref = r_max_val
+                r_max_lr_ref = r_max_lr_val
+            else:
+                if abs(r_max_val - r_max_ref) > 1e-6:
+                    raise ValueError(
+                        f"r_max mismatch: {input_paths[0]} has "
+                        f"r_max={r_max_ref}, but {p} has r_max={r_max_val}"
+                    )
+                if r_max_lr_ref != r_max_lr_val:
+                    # Allow (None, None) match; reject any other mismatch
+                    if not (
+                        r_max_lr_ref is None and r_max_lr_val is None
+                    ):
+                        raise ValueError(
+                            f"r_max_lr mismatch: {input_paths[0]} has "
+                            f"r_max_lr={r_max_lr_ref}, but {p} has "
+                            f"r_max_lr={r_max_lr_val}"
+                        )
+            num_configs_per_file.append(int(f.attrs["num_configs"]))
+            avg_nn_per_file.append(float(f.attrs.get("avg_num_neighbors", 0.0)))
+
+    total_configs = sum(num_configs_per_file)
+    # Weighted average of avg_num_neighbors by num_configs
+    total_weight = sum(num_configs_per_file)
+    avg_num_neighbors = (
+        sum(a * n for a, n in zip(avg_nn_per_file, num_configs_per_file))
+        / max(total_weight, 1)
+    )
+
+    logging.info(
+        f"Merging {len(input_paths)} preprocessed HDF5 files "
+        f"({total_configs} total configs) → {output_path}"
+    )
+
+    with h5py.File(output_path, "w") as out_f:
+        # Copy root attributes from first file and update
+        with h5py.File(input_paths[0], "r") as first_f:
+            for k, v in first_f.attrs.items():
+                out_f.attrs[k] = v
+        out_f.attrs["num_configs"] = total_configs
+        out_f.attrs["avg_num_neighbors"] = avg_num_neighbors
+        out_f.attrs["timestamp"] = datetime.now().isoformat()
+
+        # Copy config groups with renumbering
+        config_offset = 0
+        for p, n in zip(input_paths, num_configs_per_file):
+            with h5py.File(p, "r") as in_f:
+                for i in range(n):
+                    in_f.copy(
+                        f"config_{i}",
+                        out_f,
+                        name=f"config_{config_offset + i}",
+                    )
+            config_offset += n
+            logging.info(
+                f"Copied {n} configs from {p} "
+                f"(offset {config_offset - n})"
+            )
+
+    logging.info(f"Merge complete: {output_path}")

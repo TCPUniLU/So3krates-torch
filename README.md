@@ -16,7 +16,7 @@ Lightweight implementation of the So3krates model in pytorch. This package is mo
 #### Implemented features:
 1. ASE calculator for MD (including pre-trained SO3LR)
 2. Inference over ase readable datasets: `torchkrates-eval`
-3. Error metrics over ase readable datasets: `torchkrates-test`
+3. Error metrics over ase readable datasets: `torchkrates-metric`
 4. Transforming pyTorch and JAX parameter formates: `torchkrates-jax2torch` or `torchkrates-torch2jax` (for these you need to install jax, flax, and mlff (https://github.com/thorben-frank/mlff/tree/v1.0-lrs-gems))
 5. Training: `torchkrates-train --config config.yaml` (see example)
 
@@ -73,7 +73,32 @@ torchkrates-preprocess --input raw.h5 --output preprocessed.h5 --mode preprocess
 
 ---
 
-### `torchkrates-lammps` — LAMMPS Model Export
+### `torchkrates-merge` — HDF5 File Merging
+
+Merge two or more HDF5 files (raw or preprocessed) into a single file. Both formats are supported; all inputs must be the same type. Raw files are merged with streaming writes to avoid loading everything into memory.
+
+```bash
+# Merge raw HDF5 files
+torchkrates-merge --inputs train_a.h5 train_b.h5 --output train_merged.h5
+
+# Merge preprocessed HDF5 files
+torchkrates-merge --inputs part1.h5 part2.h5 part3.h5 --output all.h5
+
+# With optional metadata and custom batch size
+torchkrates-merge --inputs a.h5 b.h5 --output merged.h5 \
+    --description "combined dataset" --batch-size 50000
+```
+
+| Flag | Description |
+|------|-------------|
+| `--inputs FILE [FILE ...]` | Two or more input HDF5 files to merge (must be the same format) |
+| `--output FILE` | Output HDF5 file path |
+| `--description TEXT` | Optional description stored in the merged file metadata (raw format only) |
+| `--batch-size N` | Structures processed per write batch (raw format only, default: `100000`) |
+
+---
+
+### `torchkrates-create-lammps-model` — LAMMPS Model Export
 
 > [!NOTE]
 > More details and how to use the model in LAMMPS are coming ...
@@ -81,7 +106,7 @@ torchkrates-preprocess --input raw.h5 --output preprocessed.h5 --mode preprocess
 Convert a trained SO3LR model to a TorchScript model compatible with the LAMMPS ML-IAP interface.
 
 ```bash
-torchkrates-lammps model.pt --elements Si O
+torchkrates-create-lammps-model model.pt --elements Si O
 ```
 
 | Flag | Description |
