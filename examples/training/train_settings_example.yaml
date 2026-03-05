@@ -57,6 +57,10 @@ TRAINING:
   clip_grad: 10.0
   neighbors_lr_cutoff: 100.
   patience: 50
+  # lazy_loading: false       # on-the-fly preprocessing from raw HDF5 (default: false)
+  # num_workers: 4            # DataLoader worker processes (only with lazy_loading)
+  # prefetch_factor: 2        # batches prefetched per worker (only with lazy_loading)
+  # num_neighbor_samples: 1000  # structures sampled for avg_num_neighbors estimate
 
 
 MISC:

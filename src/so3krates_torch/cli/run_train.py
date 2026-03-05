@@ -28,8 +28,10 @@ from so3krates_torch.data.utils import (
 from so3krates_torch.data.hdf5_utils import (
     detect_file_format,
     PreprocessedHDF5Dataset,
+    scan_raw_hdf5_statistics,
     validate_preprocessed_hdf5,
 )
+from so3krates_torch.data.lazy_dataset import LazyAtomicDataset
 from so3krates_torch.tools.utils import (
     AtomicNumberTable,
     MetricsLogger,
@@ -260,6 +262,34 @@ def _load_training_dataset(
         )
         avg_num_neighbors = dataset.metadata.get("avg_num_neighbors", None)
         num_elements = dataset.metadata.get("num_elements", None)
+        return dataset, None, avg_num_neighbors, num_elements, None
+
+    # Lazy loading path (raw HDF5 only)
+    lazy_loading = config["TRAINING"].get("lazy_loading", False)
+    if lazy_loading and train_path.endswith((".h5", ".hdf5")):
+        logging.info(
+            "Using lazy loading for raw HDF5 training data"
+        )
+        num_neighbor_samples = config["TRAINING"].get(
+            "num_neighbor_samples", 1000
+        )
+        e0s, num_elements, avg_num_neighbors = (
+            scan_raw_hdf5_statistics(
+                hdf5_path=train_path,
+                r_max=r_max,
+                r_max_lr=r_max_lr,
+                keyspec=keyspec,
+                num_neighbor_samples=num_neighbor_samples,
+            )
+        )
+        dataset = LazyAtomicDataset(
+            hdf5_path=train_path,
+            r_max=r_max,
+            r_max_lr=r_max_lr,
+            keyspec=keyspec,
+        )
+        # Store pre-computed E0s on the dataset for later use
+        dataset.atomic_energy_shifts = e0s
         return dataset, None, avg_num_neighbors, num_elements, None
 
     # Raw path (XYZ or raw HDF5)
@@ -593,10 +623,14 @@ def _setup_singlehead_data_loaders(
     ) = _load_training_dataset(config, r_max, r_max_lr, keyspec)
 
     is_preprocessed = isinstance(train_atomic_data, PreprocessedHDF5Dataset)
+    is_lazy = isinstance(train_atomic_data, LazyAtomicDataset)
 
-    # Split preprocessed dataset if no separate val file
+    # Split preprocessed/lazy dataset if no separate val file
     valid_subset = None
-    if is_preprocessed and not config["TRAINING"].get("path_to_val_data"):
+    if (
+        (is_preprocessed or is_lazy)
+        and not config["TRAINING"].get("path_to_val_data")
+    ):
         valid_ratio = config["TRAINING"].get("valid_ratio", 0.1)
         n_total = len(train_atomic_data)
         indices = list(range(n_total))
@@ -608,7 +642,7 @@ def _setup_singlehead_data_loaders(
         valid_subset = Subset(train_atomic_data, indices[n_train:])
         train_atomic_data = Subset(train_atomic_data, indices[:n_train])
         logging.info(
-            f"Split preprocessed data: {n_train} train, "
+            f"Split data: {n_train} train, "
             f"{n_valid} valid (ratio={valid_ratio})"
         )
 
@@ -621,12 +655,37 @@ def _setup_singlehead_data_loaders(
             rank=rank,
             shuffle=True,
         )
-    train_loader = create_dataloader_from_data(
-        config_list=train_atomic_data,
-        batch_size=batch_size,
-        shuffle=(train_sampler is None),
-        sampler=train_sampler,
-    )
+
+    if is_lazy:
+        num_workers = config["TRAINING"].get("num_workers", 4)
+        prefetch_factor = config["TRAINING"].get(
+            "prefetch_factor", 2
+        )
+        from so3krates_torch.tools.torch_geometric.dataloader import (
+            Collater,
+        )
+
+        train_loader = DataLoader(
+            dataset=train_atomic_data,
+            batch_size=batch_size,
+            shuffle=(train_sampler is None),
+            sampler=train_sampler,
+            num_workers=num_workers,
+            prefetch_factor=prefetch_factor,
+            persistent_workers=(num_workers > 0),
+            collate_fn=Collater([None], [None]),
+        )
+        logging.info(
+            f"Lazy DataLoader: num_workers={num_workers}, "
+            f"prefetch_factor={prefetch_factor}"
+        )
+    else:
+        train_loader = create_dataloader_from_data(
+            config_list=train_atomic_data,
+            batch_size=batch_size,
+            shuffle=(train_sampler is None),
+            sampler=train_sampler,
+        )
 
     # Compute dataset statistics (from metadata or iterate)
     if num_elements is None:
@@ -653,7 +712,16 @@ def _setup_singlehead_data_loaders(
         )
 
     # E0s
-    if is_preprocessed:
+    if is_lazy:
+        # For lazy datasets, E0s were pre-computed during
+        # scan_raw_hdf5_statistics
+        raw_dataset = (
+            train_atomic_data.dataset
+            if hasattr(train_atomic_data, "dataset")
+            else train_atomic_data
+        )
+        average_atomic_energy_shifts = raw_dataset.atomic_energy_shifts
+    elif is_preprocessed:
         # For Subset, unwrap to get the underlying dataset
         raw_dataset = (
             train_atomic_data.dataset
@@ -677,7 +745,7 @@ def _setup_singlehead_data_loaders(
         r_max_lr,
         keyspec,
         valid_batch_size,
-        is_train_preprocessed=is_preprocessed,
+        is_train_preprocessed=(is_preprocessed or is_lazy),
         val_split_from_train=val_split,
         valid_subset=valid_subset,
     )

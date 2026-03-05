@@ -60,21 +60,25 @@ def _log_progress(current, total, start_time, log_interval=100):
 def process_xyz_input(args):
     """Load XYZ, convert to raw or preprocessed HDF5."""
     logging.info(f"Loading XYZ file: {args.input}")
-    atoms_list = ase.io.read(args.input, index=":")
-    logging.info(f"Loaded {len(atoms_list)} configurations")
 
     if args.mode == "raw":
-        # Save to raw HDF5
+        # Stream directly from XYZ → HDF5; no need to load all into RAM
         keyspec = create_keyspec_from_args(args)
+        atoms_iter = ase.io.iread(args.input, index=":")
         save_atoms_to_hdf5(
-            atoms_list,
+            atoms_iter,
             args.output,
             key_specification=keyspec,
             description=args.description,
+            batch_size=args.batch_size,
         )
         logging.info(f"Saved raw HDF5 to: {args.output}")
 
     elif args.mode == "preprocessed":
+        # Load all structures first (needed for E0 computation)
+        atoms_list = ase.io.read(args.input, index=":")
+        logging.info(f"Loaded {len(atoms_list)} configurations")
+
         # Convert to Configurations
         keyspec = create_keyspec_from_args(args)
         configs = create_configs_from_list(
@@ -283,6 +287,13 @@ def main():
         "--validate",
         action="store_true",
         help="Validate output after creation",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=100_000,
+        help="Structures per write batch for raw mode (default: 100000). "
+        "Controls peak RAM usage when streaming large XYZ files.",
     )
 
     args = parser.parse_args()
