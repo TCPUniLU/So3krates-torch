@@ -1,6 +1,9 @@
 import logging
-import torch
+import time
+
 import numpy as np
+import torch
+from ase.io import read
 from typing import Tuple, List, Union, Optional
 from so3krates_torch.data.utils import KeySpecification
 from so3krates_torch.tools import torch_geometric, torch_tools
@@ -15,7 +18,6 @@ from so3krates_torch.tools.utils import (
 )
 from so3krates_torch.tools.utils import create_dataloader_from_list
 from torchmetrics import Metric
-import time
 
 
 def evaluate_model(
@@ -710,8 +712,6 @@ def test_ensemble(
     if atoms_list is not None:
         data_to_use = atoms_list
     elif path_to_data is not None:
-        from ase.io import read
-
         data_to_use = read(path_to_data, index=":")
     else:
         raise ValueError("Either atoms_list or path_to_data must be provided")

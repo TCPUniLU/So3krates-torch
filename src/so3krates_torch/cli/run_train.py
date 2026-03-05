@@ -24,13 +24,17 @@ from so3krates_torch.modules.loss import (
 from so3krates_torch.data.utils import (
     KeySpecification,
     compute_average_E0s,
+    compute_average_E0s_from_dataset,
+    update_keyspec_from_kwargs,
 )
 from so3krates_torch.data.hdf5_utils import (
     detect_file_format,
+    load_atoms_from_hdf5,
     PreprocessedHDF5Dataset,
     scan_raw_hdf5_statistics,
     validate_preprocessed_hdf5,
 )
+from so3krates_torch.tools.default_keys import DefaultKeys
 from so3krates_torch.data.lazy_dataset import LazyAtomicDataset
 from so3krates_torch.tools.utils import (
     AtomicNumberTable,
@@ -48,7 +52,9 @@ from so3krates_torch.tools.finetune import fuse_lora_weights, setup_finetuning
 from so3krates_torch.tools.torch_geometric import DataLoader
 import os
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import Subset
 from torch.utils.data.distributed import DistributedSampler
+from so3krates_torch.tools.torch_geometric.dataloader import Collater
 
 
 DTYPE_MAP = {
@@ -299,8 +305,6 @@ def _load_training_dataset(
         data = read(train_path, index=":")
     elif train_path.endswith((".h5", ".hdf5")):
         logging.info("Loading raw HDF5 training data")
-        from so3krates_torch.data.hdf5_utils import load_atoms_from_hdf5
-
         data = load_atoms_from_hdf5(train_path, index=None)
     else:
         raise ValueError(f"Unsupported training file format: {train_path}")
@@ -353,10 +357,6 @@ def _compute_e0s(
         )
         present_e0s = train_dataset.atomic_energy_shifts
     else:
-        from so3krates_torch.data.utils import (
-            compute_average_E0s_from_dataset,
-        )
-
         logging.info(
             "Computing E0s from preprocessed data " "(not found in HDF5)..."
         )
@@ -415,10 +415,6 @@ def _load_validation_loader(
         if val_data_path.endswith(".xyz"):
             val_data = read(val_data_path, index=":")
         elif val_data_path.endswith((".h5", ".hdf5")):
-            from so3krates_torch.data.hdf5_utils import (
-                load_atoms_from_hdf5,
-            )
-
             val_data = load_atoms_from_hdf5(val_data_path, index=None)
         else:
             raise ValueError(
@@ -472,9 +468,6 @@ def _setup_multihead_data_loaders(
              avg_num_neighbors, num_elements,
              average_atomic_energy_shifts).
     """
-    from so3krates_torch.tools.default_keys import DefaultKeys
-    from so3krates_torch.data.utils import update_keyspec_from_kwargs
-
     keydict = DefaultKeys.keydict()
     config_keys = config["TRAINING"].get("keys", {})
     keydict.update(config_keys)
@@ -601,9 +594,6 @@ def _setup_singlehead_data_loaders(
     world_size: int = 1,
 ) -> tuple:
     """Setup data loaders for single-head training."""
-    from so3krates_torch.tools.default_keys import DefaultKeys
-    from so3krates_torch.data.utils import update_keyspec_from_kwargs
-
     keydict = DefaultKeys.keydict()
     keydict.update(config["TRAINING"].get("keys", {}))
     keyspec = update_keyspec_from_kwargs(KeySpecification(), keydict)
@@ -637,8 +627,6 @@ def _setup_singlehead_data_loaders(
         random.shuffle(indices)
         n_valid = int(n_total * valid_ratio)
         n_train = n_total - n_valid
-        from torch.utils.data import Subset
-
         valid_subset = Subset(train_atomic_data, indices[n_train:])
         train_atomic_data = Subset(train_atomic_data, indices[:n_train])
         logging.info(
@@ -661,10 +649,6 @@ def _setup_singlehead_data_loaders(
         prefetch_factor = config["TRAINING"].get(
             "prefetch_factor", 2
         )
-        from so3krates_torch.tools.torch_geometric.dataloader import (
-            Collater,
-        )
-
         train_loader = DataLoader(
             dataset=train_atomic_data,
             batch_size=batch_size,

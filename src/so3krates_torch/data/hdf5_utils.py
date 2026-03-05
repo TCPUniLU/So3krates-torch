@@ -43,6 +43,7 @@ Reading a single structure at index i::
 import itertools
 import json
 import logging
+import random
 import time
 from datetime import datetime
 from pathlib import Path
@@ -59,8 +60,13 @@ from so3krates_torch.data.utils import (
     Configuration,
     Configurations,
     KeySpecification,
+    config_from_atoms,
+    compute_average_E0s,
 )
-from so3krates_torch.tools.utils import AtomicNumberTable
+from so3krates_torch.tools.utils import (
+    AtomicNumberTable,
+    create_configs_from_list,
+)
 
 # Format version for compatibility tracking
 RAW_HDF5_FORMAT_VERSION = "2.0"
@@ -684,13 +690,6 @@ def scan_raw_hdf5_statistics(
         (e0s_dict, num_elements, avg_num_neighbors) where e0s_dict
         maps atomic number (int) to E0 (float).
     """
-    import random
-
-    from so3krates_torch.data.utils import (
-        config_from_atoms,
-        compute_average_E0s,
-    )
-
     atoms_list = load_atoms_from_hdf5(hdf5_path, index=None)
     num_configs = len(atoms_list)
 
@@ -781,8 +780,6 @@ def configs_from_hdf5(
 
     atoms_list = load_atoms_from_hdf5(hdf5_path, index=None)
 
-    from so3krates_torch.tools.utils import create_configs_from_list
-
     configs = create_configs_from_list(
         atoms_list,
         key_specification,
@@ -832,8 +829,6 @@ def save_preprocessed_hdf5(
 
         # Store atomic energy shifts if provided
         if atomic_energy_shifts is not None:
-            import json
-
             # Convert dict to JSON-serializable format (int keys → str)
             e0s_serializable = {
                 str(z): float(e0) for z, e0 in atomic_energy_shifts.items()
@@ -891,8 +886,6 @@ def compute_and_format_e0s(
     Returns:
         Dictionary mapping int(Z) -> float(E0) for all elements 1-118
     """
-    from so3krates_torch.data.utils import compute_average_E0s
-
     # Find elements actually present
     present_zs = set()
     for config in configs:
@@ -1196,8 +1189,6 @@ class PreprocessedHDF5Dataset(torch.utils.data.Dataset):
 
             # Read E0s if present
             if "atomic_energy_shifts" in f.attrs:
-                import json
-
                 try:
                     e0s_json = f.attrs["atomic_energy_shifts"]
                     if isinstance(e0s_json, bytes):

@@ -1,6 +1,6 @@
 import argparse
 from so3krates_torch.tools.eval import evaluate_model, ensemble_prediction
-from so3krates_torch.tools.utils import save_results_hdf5
+from so3krates_torch.tools.utils import save_results_hdf5, save_results_xyz
 from ase.io import read
 import torch
 from so3krates_torch.data.utils import KeySpecification
@@ -261,8 +261,6 @@ def main():
     if extension == ".h5" or extension == ".hdf5" or extension == "":
         save_results_hdf5(result, output_file, is_ensemble=is_ensemble)
     elif is_ensemble == False and extension == ".xyz":
-        from so3krates_torch.tools.utils import save_results_xyz
-
         save_results_xyz(data_path, result, output_file)
     else:
         raise ValueError(

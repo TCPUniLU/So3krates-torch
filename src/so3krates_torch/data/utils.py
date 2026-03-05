@@ -405,8 +405,6 @@ def compute_average_E0s_from_dataset(
     Samples whose energy_weight is 0.0 (i.e. no reference
     energy was provided) are skipped.
     """
-    from so3krates_torch.tools.utils import AtomicNumberTable
-
     energies = []
     atom_counts = []
     for i in range(len(dataset)):

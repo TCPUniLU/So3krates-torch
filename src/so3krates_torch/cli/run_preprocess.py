@@ -19,13 +19,14 @@ import torch
 
 from so3krates_torch.data.atomic_data import AtomicData
 from so3krates_torch.data.hdf5_utils import (
+    compute_and_format_e0s,
     configs_from_hdf5,
     detect_file_format,
     save_atoms_to_hdf5,
     save_preprocessed_hdf5,
     validate_preprocessed_hdf5,
 )
-from so3krates_torch.data.utils import KeySpecification
+from so3krates_torch.data.utils import KeySpecification, update_keyspec_from_kwargs
 from so3krates_torch.tools.default_keys import DefaultKeys
 from so3krates_torch.tools.utils import (
     AtomicNumberTable,
@@ -91,10 +92,6 @@ def process_xyz_input(args):
         logging.info(f"Using full atomic number table (Z=1-118)")
 
         # Compute E0s from configs
-        from so3krates_torch.data.hdf5_utils import (
-            compute_and_format_e0s,
-        )
-
         atomic_energy_shifts = compute_and_format_e0s(configs, z_table)
         logging.info("Computed atomic energy shifts (E0s)")
 
@@ -159,8 +156,6 @@ def process_hdf5_input(args):
     logging.info(f"Using full atomic number table (Z=1-118)")
 
     # Compute E0s from configs
-    from so3krates_torch.data.hdf5_utils import compute_and_format_e0s
-
     atomic_energy_shifts = compute_and_format_e0s(configs, z_table)
     logging.info("Computed atomic energy shifts (E0s)")
 
@@ -206,8 +201,6 @@ def create_keyspec_from_args(args) -> KeySpecification:
         keydict["dipole_key"] = args.dipole_key
     if args.charges_key:
         keydict["charges_key"] = args.charges_key
-
-    from so3krates_torch.data.utils import update_keyspec_from_kwargs
 
     keyspec = KeySpecification()
     return update_keyspec_from_kwargs(keyspec, keydict)
