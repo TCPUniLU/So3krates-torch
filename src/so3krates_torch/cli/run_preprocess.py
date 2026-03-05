@@ -302,7 +302,7 @@ def main():
         torch.set_default_dtype(torch.float64)
 
     # Execute
-    if args.input.endswith(".xyz"):
+    if args.input.endswith(".xyz") or args.input.endswith(".extxyz"):
         process_xyz_input(args)
     elif args.input.endswith((".h5", ".hdf5")):
         process_hdf5_input(args)
