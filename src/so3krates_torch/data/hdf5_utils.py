@@ -155,6 +155,39 @@ def save_atoms_to_hdf5(
     )
 
 
+def _remap_ase_reserved_keys(
+    batch: List[ase.Atoms], key_spec: KeySpecification
+) -> None:
+    """Populate atoms.info/arrays for ASE-reserved keys.
+
+    Since ASE >= 3.23.0b1, ``energy``, ``forces``, and ``stress`` read from
+    extxyz may be stored as calculator results rather than in
+    ``atoms.info`` / ``atoms.arrays``.  This mirrors the workaround in
+    ``load_from_xyz`` so that raw-mode streaming also captures these values.
+    Mutates batch in-place.
+    """
+    energy_key = key_spec.info_keys.get("energy")
+    forces_key = key_spec.arrays_keys.get("forces")
+    stress_key = key_spec.info_keys.get("stress")
+
+    for atoms in batch:
+        if energy_key == "energy" and energy_key not in atoms.info:
+            try:
+                atoms.info["energy"] = atoms.get_potential_energy()
+            except Exception:
+                atoms.info["energy"] = None
+        if forces_key == "forces" and forces_key not in atoms.arrays:
+            try:
+                atoms.arrays["forces"] = atoms.get_forces()
+            except Exception:
+                atoms.arrays["forces"] = None
+        if stress_key == "stress" and stress_key not in atoms.info:
+            try:
+                atoms.info["stress"] = atoms.get_stress()
+            except Exception:
+                atoms.info["stress"] = None
+
+
 def _detect_prop_meta(
     batch: List[ase.Atoms],
     key_spec: KeySpecification,
@@ -311,6 +344,9 @@ def _stream_atoms_to_hdf5_v2(
             [a.info.get("stress_weight", np.nan) for a in batch],
             dtype=np.float64,
         )
+
+        # --- Remap ASE-reserved keys (energy/forces/stress) ---
+        _remap_ase_reserved_keys(batch, key_spec)
 
         # --- Detect property shapes from first batch ---
         if prop_meta is None:
