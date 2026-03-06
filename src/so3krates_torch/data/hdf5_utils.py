@@ -1460,9 +1460,13 @@ def merge_raw_hdf5_files(
 ) -> None:
     """Merge multiple raw HDF5 (v2.0) files into one.
 
-    Uses streaming I/O so peak RAM is proportional to ``batch_size``,
-    not total combined dataset size.  Property schemas are reconciled
-    automatically: properties absent in some files are filled with NaN.
+    Operates directly on HDF5 datasets without deserializing to ASE
+    Atoms objects, making it dramatically faster than a round-trip
+    through Python objects.  Peak RAM is proportional to
+    ``batch_size``, not total combined dataset size.
+
+    Property schemas are reconciled automatically: properties absent
+    in some files are filled with NaN.
 
     Args:
         input_paths: Ordered list of raw HDF5 files to merge.
@@ -1473,41 +1477,247 @@ def merge_raw_hdf5_files(
     Raises:
         ValueError: If any input is not a raw HDF5 file.
     """
-    for p in input_paths:
+    # --- Pass 1: validate formats, collect sizes & property schemas ---
+    file_meta: List[dict] = []
+    all_info_keys: Dict[str, tuple] = {}  # key -> (shape, dtype)
+    all_arrays_keys: Dict[str, tuple] = {}  # key -> (shape, dtype)
+    key_specification = KeySpecification()
+
+    for idx, p in enumerate(input_paths):
         fmt = detect_file_format(p)
         if fmt != "hdf5_raw":
             raise ValueError(
                 f"{p} is not a raw HDF5 file (detected format: {fmt})"
             )
-
-    # Recover keyspec from first file
-    with h5py.File(input_paths[0], "r") as f:
-        if "keyspec_info" in f.attrs:
-            key_specification = KeySpecification(
-                info_keys=json.loads(f.attrs["keyspec_info"]),
-                arrays_keys=json.loads(f.attrs["keyspec_arrays"]),
+        with h5py.File(p, "r") as f:
+            nc = int(f.attrs["num_configs"])
+            na = int(f.attrs.get("num_atoms", 0))
+            if na == 0 and nc > 0:
+                na = int(f["n_atoms"][:].sum())
+            file_meta.append(
+                {"path": p, "num_configs": nc, "num_atoms": na}
             )
-        else:
-            key_specification = KeySpecification()
+            # Recover keyspec from first file
+            if idx == 0 and "keyspec_info" in f.attrs:
+                key_specification = KeySpecification(
+                    info_keys=json.loads(f.attrs["keyspec_info"]),
+                    arrays_keys=json.loads(
+                        f.attrs["keyspec_arrays"]
+                    ),
+                )
+            # Collect property dataset schemas
+            if "properties/info" in f:
+                for k in f["properties/info"]:
+                    ds = f[f"properties/info/{k}"]
+                    all_info_keys.setdefault(
+                        k, (ds.shape[1:], ds.dtype)
+                    )
+            if "properties/arrays" in f:
+                for k in f["properties/arrays"]:
+                    ds = f[f"properties/arrays/{k}"]
+                    all_arrays_keys.setdefault(
+                        k, (ds.shape[1:], ds.dtype)
+                    )
 
-    total_configs = sum(
-        int(h5py.File(p, "r").attrs["num_configs"]) for p in input_paths
-    )
+    total_configs = sum(m["num_configs"] for m in file_meta)
+    total_atoms = sum(m["num_atoms"] for m in file_meta)
+    c = _HDF5_CHUNK
+
     logging.info(
         f"Merging {len(input_paths)} raw HDF5 files "
         f"({total_configs} total structures) → {output_path}"
     )
 
-    combined = itertools.chain.from_iterable(
-        iter_atoms_from_hdf5(p, batch_size) for p in input_paths
-    )
-    save_atoms_to_hdf5(
-        combined,
-        output_path,
-        key_specification=key_specification,
-        description=description,
-        batch_size=batch_size,
-    )
+    # --- Pass 2: create output and copy data directly ---
+    with h5py.File(output_path, "w") as out:
+        # File-level attributes
+        out.attrs["format_version"] = RAW_HDF5_FORMAT_VERSION
+        out.attrs["format_type"] = "raw"
+        out.attrs["timestamp"] = datetime.now().isoformat()
+        out.attrs["num_configs"] = total_configs
+        out.attrs["num_atoms"] = total_atoms
+        if description:
+            out.attrs["description"] = description
+        out.attrs["keyspec_info"] = json.dumps(
+            key_specification.info_keys
+        )
+        out.attrs["keyspec_arrays"] = json.dumps(
+            key_specification.arrays_keys
+        )
+
+        str_dt = h5py.string_dtype(encoding="utf-8")
+
+        # Pre-allocate all datasets at final size
+        out.create_dataset(
+            "n_atoms", shape=(total_configs,),
+            dtype=np.int32, chunks=(min(c, total_configs),),
+        )
+        out.create_dataset(
+            "atomic_numbers", shape=(total_atoms,),
+            dtype=np.int32, chunks=(min(c, total_atoms),),
+        )
+        out.create_dataset(
+            "positions", shape=(total_atoms, 3),
+            dtype=np.float64, chunks=(min(c, total_atoms), 3),
+        )
+        out.create_dataset(
+            "cell", shape=(total_configs, 3, 3),
+            dtype=np.float64,
+            chunks=(min(c, total_configs), 3, 3),
+        )
+        out.create_dataset(
+            "pbc", shape=(total_configs, 3),
+            dtype=bool, chunks=(min(c, total_configs), 3),
+        )
+
+        meta_grp = out.require_group("config_metadata")
+        meta_grp.create_dataset(
+            "config_type", shape=(total_configs,),
+            dtype=str_dt, chunks=(min(c, total_configs),),
+        )
+        meta_grp.create_dataset(
+            "head", shape=(total_configs,),
+            dtype=str_dt, chunks=(min(c, total_configs),),
+        )
+        meta_grp.create_dataset(
+            "weight", shape=(total_configs,),
+            dtype=np.float64, chunks=(min(c, total_configs),),
+        )
+
+        pw_grp = out.require_group("property_weights")
+        for pw_name in ("energy", "forces", "stress"):
+            pw_grp.create_dataset(
+                pw_name, shape=(total_configs,),
+                dtype=np.float64,
+                chunks=(min(c, total_configs),),
+            )
+
+        if all_info_keys:
+            info_grp = out.require_group("properties/info")
+            for k, (ishape, dt) in all_info_keys.items():
+                ds_shape = (total_configs,) + ishape
+                ds_chunks = (min(c, total_configs),) + ishape
+                ds = info_grp.create_dataset(
+                    k, shape=ds_shape, dtype=dt,
+                    chunks=ds_chunks,
+                )
+                ds[:] = np.nan
+
+        if all_arrays_keys:
+            arr_grp = out.require_group("properties/arrays")
+            for k, (ishape, dt) in all_arrays_keys.items():
+                ds_shape = (total_atoms,) + ishape
+                ds_chunks = (min(c, total_atoms),) + ishape
+                ds = arr_grp.create_dataset(
+                    k, shape=ds_shape, dtype=dt,
+                    chunks=ds_chunks,
+                )
+                ds[:] = np.nan
+
+        # Stream data from each input file
+        cfg_off = 0
+        atm_off = 0
+        start_time = time.time()
+
+        for fm in file_meta:
+            p = fm["path"]
+            nc = fm["num_configs"]
+            if nc == 0:
+                continue
+
+            with h5py.File(p, "r") as inp:
+                # Copy in batches to limit RAM
+                for b_start in range(0, nc, batch_size):
+                    b_end = min(b_start + batch_size, nc)
+                    b_len = b_end - b_start
+
+                    # Per-config datasets
+                    n_atoms_b = inp["n_atoms"][b_start:b_end]
+                    b_atoms = int(n_atoms_b.sum())
+
+                    # Atom range in source
+                    if b_start == 0:
+                        a_start = 0
+                    else:
+                        a_start = int(
+                            inp["n_atoms"][:b_start].sum()
+                        )
+                    a_end = a_start + b_atoms
+
+                    out["n_atoms"][
+                        cfg_off:cfg_off + b_len
+                    ] = n_atoms_b
+                    out["atomic_numbers"][
+                        atm_off:atm_off + b_atoms
+                    ] = inp["atomic_numbers"][a_start:a_end]
+                    out["positions"][
+                        atm_off:atm_off + b_atoms
+                    ] = inp["positions"][a_start:a_end]
+                    out["cell"][
+                        cfg_off:cfg_off + b_len
+                    ] = inp["cell"][b_start:b_end]
+                    out["pbc"][
+                        cfg_off:cfg_off + b_len
+                    ] = inp["pbc"][b_start:b_end]
+
+                    # Config metadata
+                    out["config_metadata/config_type"][
+                        cfg_off:cfg_off + b_len
+                    ] = inp["config_metadata/config_type"][
+                        b_start:b_end
+                    ]
+                    out["config_metadata/head"][
+                        cfg_off:cfg_off + b_len
+                    ] = inp["config_metadata/head"][b_start:b_end]
+                    out["config_metadata/weight"][
+                        cfg_off:cfg_off + b_len
+                    ] = inp["config_metadata/weight"][
+                        b_start:b_end
+                    ]
+
+                    # Property weights
+                    for pw_name in ("energy", "forces", "stress"):
+                        out[f"property_weights/{pw_name}"][
+                            cfg_off:cfg_off + b_len
+                        ] = inp[f"property_weights/{pw_name}"][
+                            b_start:b_end
+                        ]
+
+                    # Info properties (per-config)
+                    for k in all_info_keys:
+                        src = f"properties/info/{k}"
+                        if src in inp:
+                            out[src][
+                                cfg_off:cfg_off + b_len
+                            ] = inp[src][b_start:b_end]
+
+                    # Arrays properties (per-atom)
+                    for k in all_arrays_keys:
+                        src = f"properties/arrays/{k}"
+                        if src in inp:
+                            out[src][
+                                atm_off:atm_off + b_atoms
+                            ] = inp[src][a_start:a_end]
+
+                    cfg_off += b_len
+                    atm_off += b_atoms
+
+                    elapsed = time.time() - start_time
+                    rate = (
+                        cfg_off / elapsed if elapsed > 0 else 0
+                    )
+                    logging.info(
+                        f"Progress: {cfg_off}/{total_configs} "
+                        f"configs ({rate:.0f} configs/s)"
+                    )
+
+        # Build CSR offset index
+        n_atoms_all = out["n_atoms"][:]
+        offsets = np.concatenate(
+            [[0], np.cumsum(n_atoms_all).astype(np.int64)]
+        )
+        out.create_dataset("offsets", data=offsets)
+
     logging.info(f"Merge complete: {output_path}")
 
 
@@ -1529,6 +1739,12 @@ def merge_preprocessed_hdf5_files(
         ValueError: If any input is not a preprocessed HDF5 file, or
                     if ``r_max`` / ``r_max_lr`` differ across inputs.
     """
+    # Validate formats and r_max / r_max_lr in a single pass
+    r_max_ref: Optional[float] = None
+    r_max_lr_ref: Optional[float] = None
+    num_configs_per_file: List[int] = []
+    avg_nn_per_file: List[float] = []
+
     for p in input_paths:
         fmt = detect_file_format(p)
         if fmt != "hdf5_preprocessed":
@@ -1536,14 +1752,6 @@ def merge_preprocessed_hdf5_files(
                 f"{p} is not a preprocessed HDF5 file "
                 f"(detected format: {fmt})"
             )
-
-    # Validate that r_max / r_max_lr are consistent
-    r_max_ref: Optional[float] = None
-    r_max_lr_ref: Optional[float] = None
-    num_configs_per_file: List[int] = []
-    avg_nn_per_file: List[float] = []
-
-    for p in input_paths:
         with h5py.File(p, "r") as f:
             r_max_val = float(f.attrs["r_max"])
             r_max_lr_val = (
