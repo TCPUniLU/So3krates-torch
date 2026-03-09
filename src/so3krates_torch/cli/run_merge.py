@@ -16,6 +16,7 @@ import argparse
 import logging
 import sys
 
+from so3krates_torch.config import MergeArgs
 from so3krates_torch.data.hdf5_utils import (
     detect_file_format,
     merge_preprocessed_hdf5_files,
@@ -61,9 +62,7 @@ def main() -> None:
         help="Structures processed per write batch (raw format only).",
     )
     args = parser.parse_args()
-
-    if len(args.inputs) < 2:
-        parser.error("At least two --inputs files are required.")
+    validated = MergeArgs.model_validate(vars(args))
 
     # Detect format from first input
     try:
