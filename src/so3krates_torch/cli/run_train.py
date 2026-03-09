@@ -929,6 +929,14 @@ def setup_optimizer_and_scheduler(
             weight_decay=weight_decay,
             amsgrad=amsgrad,
         )
+        
+    if optimizer_name == "adamw":
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+            amsgrad=amsgrad,
+        )
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_name}")
 
