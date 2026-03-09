@@ -91,9 +91,7 @@ def test_typo_in_section_name_rejected():
 
 
 def test_r_max_lr_required_for_electrostatics():
-    with pytest.raises(
-        ValidationError, match="Long-range cutoff"
-    ):
+    with pytest.raises(ValidationError, match="Long-range cutoff"):
         ArchitectureConfig(
             degrees=[1, 2],
             r_max=5.0,
@@ -104,9 +102,7 @@ def test_r_max_lr_required_for_electrostatics():
 
 
 def test_r_max_lr_required_for_dispersion():
-    with pytest.raises(
-        ValidationError, match="Long-range cutoff"
-    ):
+    with pytest.raises(ValidationError, match="Long-range cutoff"):
         ArchitectureConfig(
             degrees=[1, 2],
             r_max=5.0,
@@ -130,9 +126,7 @@ def test_preprocess_preprocessed_requires_r_max():
 
 
 def test_preprocess_raw_accepts_no_r_max():
-    cfg = PreprocessArgs(
-        input="in.xyz", output="out.h5", mode="raw"
-    )
+    cfg = PreprocessArgs(input="in.xyz", output="out.h5", mode="raw")
     assert cfg.r_max is None
 
 
@@ -237,9 +231,7 @@ def test_merge_args_min_inputs():
 
 
 def test_merge_args_valid():
-    cfg = MergeArgs(
-        inputs=["a.h5", "b.h5"], output="out.h5"
-    )
+    cfg = MergeArgs(inputs=["a.h5", "b.h5"], output="out.h5")
     assert len(cfg.inputs) == 2
 
 

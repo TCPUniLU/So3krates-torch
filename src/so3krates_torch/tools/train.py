@@ -568,7 +568,6 @@ def evaluate(
     output_args: Dict[str, bool],
     device: torch.device,
 ) -> Tuple[float, Dict[str, Any]]:
-
     metrics = ModelEval(loss_fn=loss_fn).to(device)
 
     with preserve_grad_state(model):

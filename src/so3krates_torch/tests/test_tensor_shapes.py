@@ -23,7 +23,6 @@ from so3krates_torch.modules.cutoff import (
 
 
 class TestSphericalHarmonicsShapes:
-
     @pytest.mark.parametrize(
         "degrees,expected_dim",
         [
@@ -50,7 +49,6 @@ class TestSphericalHarmonicsShapes:
 
 
 class TestEmbeddingShapes:
-
     def test_euclidean_embedding_zeros_shape(self):
         emb = EuclideanEmbedding(initialization_to_zeros=True)
         out = emb(
@@ -77,7 +75,6 @@ class TestEmbeddingShapes:
 
 
 class TestOutputHeadShapes:
-
     @staticmethod
     def _make_data_dict(num_nodes, num_elements=118):
         one_hot = torch.zeros(num_nodes, num_elements)
@@ -149,7 +146,6 @@ _MASKING_CUTOFF_PARAMS = [
 
 
 class TestCutoffShapes:
-
     @pytest.mark.parametrize("cutoff_cls,kwargs", _MASKING_CUTOFF_PARAMS)
     def test_zero_beyond_cutoff(self, cutoff_cls, kwargs):
         cutoff = cutoff_cls(**kwargs)

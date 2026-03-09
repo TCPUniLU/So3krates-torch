@@ -27,9 +27,7 @@ def minimal_state():
     """Minimal CheckpointState with a small linear model."""
     model = nn.Linear(10, 5)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-    lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(
-        optimizer, gamma=0.9
-    )
+    lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
     return CheckpointState(
         model=model,
         optimizer=optimizer,
@@ -112,9 +110,7 @@ def test_checkpoint_io_keep_old(minimal_state, tmp_path):
 def test_checkpoint_io_swa_filename(minimal_state, tmp_path):
     """Checkpoint saved after swa_start has _swa in the filename."""
     checkpoint = CheckpointBuilder.create_checkpoint(minimal_state)
-    io = CheckpointIO(
-        directory=str(tmp_path), tag="test", swa_start=50
-    )
+    io = CheckpointIO(directory=str(tmp_path), tag="test", swa_start=50)
     io.save(checkpoint, epochs=60)
 
     assert (tmp_path / "test_epoch-60_swa.pt").exists()

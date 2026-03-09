@@ -17,9 +17,7 @@ from so3krates_torch.tools.utils import (
 
 def test_compute_forces_sign(device):
     """Forces should equal -dE/dx (F = -grad E)."""
-    positions = torch.randn(
-        10, 3, requires_grad=True, device=device
-    )
+    positions = torch.randn(10, 3, requires_grad=True, device=device)
     energy = (positions**2).sum()
 
     forces = compute_forces(energy, positions, training=False)
@@ -30,9 +28,7 @@ def test_compute_forces_sign(device):
 
 def test_compute_forces_zero_when_no_dependence(device):
     """Forces are zero when energy has no dependence on positions."""
-    positions = torch.randn(
-        10, 3, requires_grad=True, device=device
-    )
+    positions = torch.randn(10, 3, requires_grad=True, device=device)
     # Energy depends on a different leaf — not positions
     other = torch.tensor(1.0, requires_grad=True, device=device)
     energy = other.unsqueeze(0)
@@ -44,9 +40,7 @@ def test_compute_forces_zero_when_no_dependence(device):
 
 def test_compute_forces_retain_graph_training(device):
     """training=True retains the computation graph for re-use."""
-    positions = torch.randn(
-        5, 3, requires_grad=True, device=device
-    )
+    positions = torch.randn(5, 3, requires_grad=True, device=device)
     energy = (positions**2).sum()
 
     compute_forces(energy, positions, training=True)
@@ -57,9 +51,7 @@ def test_compute_forces_retain_graph_training(device):
 
 def test_compute_forces_no_create_graph_eval(device):
     """training=False does not create a higher-order graph."""
-    positions = torch.randn(
-        5, 3, requires_grad=True, device=device
-    )
+    positions = torch.randn(5, 3, requires_grad=True, device=device)
     energy = (positions**2).sum()
 
     forces = compute_forces(energy, positions, training=False)
@@ -69,14 +61,10 @@ def test_compute_forces_no_create_graph_eval(device):
 
 def _make_symmetric_displacement_inputs(N, G, device):
     """Helper: minimal valid inputs for get_symmetric_displacement."""
-    positions = torch.randn(
-        N, 3, requires_grad=True, device=device
-    )
+    positions = torch.randn(N, 3, requires_grad=True, device=device)
     # Two directed edges between first two atoms (no PBC shifts)
     edge_index = torch.tensor([[0, 1], [1, 0]], device=device)
-    unit_shifts = torch.zeros(
-        2, 3, dtype=positions.dtype, device=device
-    )
+    unit_shifts = torch.zeros(2, 3, dtype=positions.dtype, device=device)
     cell = (
         torch.eye(3, dtype=positions.dtype, device=device)
         .unsqueeze(0)
@@ -90,9 +78,13 @@ def _make_symmetric_displacement_inputs(N, G, device):
 def test_get_symmetric_displacement_symmetric(device):
     """Returned displacement produces a symmetric strain tensor."""
     N, G = 4, 1
-    positions, unit_shifts, cell, edge_index, batch = (
-        _make_symmetric_displacement_inputs(N, G, device)
-    )
+    (
+        positions,
+        unit_shifts,
+        cell,
+        edge_index,
+        batch,
+    ) = _make_symmetric_displacement_inputs(N, G, device)
 
     _, _, displacement = get_symmetric_displacement(
         positions=positions,
@@ -107,23 +99,23 @@ def test_get_symmetric_displacement_symmetric(device):
     assert displacement.requires_grad
 
     # The symmetrized version must be symmetric by construction
-    sym = 0.5 * (
-        displacement + displacement.transpose(-1, -2)
-    )
+    sym = 0.5 * (displacement + displacement.transpose(-1, -2))
     assert torch.allclose(sym, sym.transpose(-1, -2))
 
 
 def test_compute_forces_virials_sign(device):
     """Forces and virials have the correct sign for a harmonic potential."""
     N, G = 2, 1
-    positions, unit_shifts, cell, edge_index, batch = (
-        _make_symmetric_displacement_inputs(N, G, device)
-    )
+    (
+        positions,
+        unit_shifts,
+        cell,
+        edge_index,
+        batch,
+    ) = _make_symmetric_displacement_inputs(N, G, device)
     # Fix positions so sign is deterministic
     with torch.no_grad():
-        positions.copy_(
-            torch.tensor([[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]])
-        )
+        positions.copy_(torch.tensor([[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]]))
 
     pos_def, _, displacement = get_symmetric_displacement(
         positions=positions,
@@ -153,12 +145,14 @@ def test_stress_from_virials(device):
     """Stress equals virials divided by cell volume."""
     N, G = 3, 1
     L = 2.0  # cubic box side length
-    positions, unit_shifts, _, edge_index, batch = (
-        _make_symmetric_displacement_inputs(N, G, device)
-    )
-    cell_3x3 = (
-        torch.eye(3, dtype=positions.dtype, device=device) * L
-    )
+    (
+        positions,
+        unit_shifts,
+        _,
+        edge_index,
+        batch,
+    ) = _make_symmetric_displacement_inputs(N, G, device)
+    cell_3x3 = torch.eye(3, dtype=positions.dtype, device=device) * L
     cell = cell_3x3.reshape(-1, 3)  # (3, 3) for G=1
 
     pos_def, _, displacement = get_symmetric_displacement(
@@ -190,9 +184,13 @@ def test_stress_from_virials(device):
 def test_compute_forces_virials_shapes(device):
     """Output tensors have the expected shapes: forces (N,3), virials (G,3,3)."""
     N, G = 5, 1
-    positions, unit_shifts, cell, edge_index, batch = (
-        _make_symmetric_displacement_inputs(N, G, device)
-    )
+    (
+        positions,
+        unit_shifts,
+        cell,
+        edge_index,
+        batch,
+    ) = _make_symmetric_displacement_inputs(N, G, device)
 
     pos_def, _, displacement = get_symmetric_displacement(
         positions=positions,

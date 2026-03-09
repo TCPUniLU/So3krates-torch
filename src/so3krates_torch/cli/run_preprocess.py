@@ -27,7 +27,10 @@ from so3krates_torch.data.hdf5_utils import (
     save_preprocessed_hdf5,
     validate_preprocessed_hdf5,
 )
-from so3krates_torch.data.utils import KeySpecification, update_keyspec_from_kwargs
+from so3krates_torch.data.utils import (
+    KeySpecification,
+    update_keyspec_from_kwargs,
+)
 from so3krates_torch.tools.default_keys import DefaultKeys
 from so3krates_torch.tools.utils import (
     AtomicNumberTable,

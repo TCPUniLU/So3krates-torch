@@ -9,7 +9,6 @@ from pathlib import Path
 
 
 def main():
-
     argparser = argparse.ArgumentParser(
         description="Convert between Flax and PyTorch model formats"
     )

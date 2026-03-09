@@ -272,20 +272,16 @@ def _load_training_dataset(
     # Lazy loading path (raw HDF5 only)
     lazy_loading = config["TRAINING"].get("lazy_loading", False)
     if lazy_loading and train_path.endswith((".h5", ".hdf5")):
-        logging.info(
-            "Using lazy loading for raw HDF5 training data"
-        )
+        logging.info("Using lazy loading for raw HDF5 training data")
         num_neighbor_samples = config["TRAINING"].get(
             "num_neighbor_samples", 1000
         )
-        e0s, num_elements, avg_num_neighbors = (
-            scan_raw_hdf5_statistics(
-                hdf5_path=train_path,
-                r_max=r_max,
-                r_max_lr=r_max_lr,
-                keyspec=keyspec,
-                num_neighbor_samples=num_neighbor_samples,
-            )
+        e0s, num_elements, avg_num_neighbors = scan_raw_hdf5_statistics(
+            hdf5_path=train_path,
+            r_max=r_max,
+            r_max_lr=r_max_lr,
+            keyspec=keyspec,
+            num_neighbor_samples=num_neighbor_samples,
         )
         dataset = LazyAtomicDataset(
             hdf5_path=train_path,
@@ -616,9 +612,8 @@ def _setup_singlehead_data_loaders(
 
     # Split preprocessed/lazy dataset if no separate val file
     valid_subset = None
-    if (
-        (is_preprocessed or is_lazy)
-        and not config["TRAINING"].get("path_to_val_data")
+    if (is_preprocessed or is_lazy) and not config["TRAINING"].get(
+        "path_to_val_data"
     ):
         valid_ratio = config["TRAINING"].get("valid_ratio", 0.1)
         n_total = len(train_atomic_data)
@@ -645,9 +640,7 @@ def _setup_singlehead_data_loaders(
 
     if is_lazy:
         num_workers = config["TRAINING"].get("num_workers", 4)
-        prefetch_factor = config["TRAINING"].get(
-            "prefetch_factor", 2
-        )
+        prefetch_factor = config["TRAINING"].get("prefetch_factor", 2)
         train_loader = DataLoader(
             dataset=train_atomic_data,
             batch_size=batch_size,
@@ -735,13 +728,9 @@ def _setup_singlehead_data_loaders(
 
     logging.info(f"Training set size: {len(train_atomic_data)}")
     if valid_loader is not None:
-        logging.info(
-            f"Validation set size: "
-            f"{len(valid_loader.dataset)}"
-        )
+        logging.info(f"Validation set size: " f"{len(valid_loader.dataset)}")
     logging.info(
-        f"Number of unique elements in training set: "
-        f"{num_elements}"
+        f"Number of unique elements in training set: " f"{num_elements}"
     )
     return (
         train_loader,
@@ -978,8 +967,7 @@ def setup_optimizer_and_scheduler(
                         "params": [
                             p
                             for n, p in model.named_parameters()
-                            if "lora_A" not in n
-                            and "lora_B" not in n
+                            if "lora_A" not in n and "lora_B" not in n
                         ]
                     },
                 ],
@@ -1024,8 +1012,7 @@ def setup_optimizer_and_scheduler(
         step_size = scheduler_args.get("step_size", 33)
         lr_lambda = lambda epoch: gamma ** (epoch / step_size)
         lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
-            optimizer,
-            lr_lambda=lr_lambda
+            optimizer, lr_lambda=lr_lambda
         )
     elif scheduler_name == "step":
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
@@ -1261,7 +1248,6 @@ def handle_finetuning(
     num_elements: int,
     device_name: str,
 ) -> None:
-
     return setup_finetuning(
         model=model,
         finetune_choice=config["TRAINING"].get("finetune_choice", None),
@@ -1291,7 +1277,6 @@ def handle_finetuning(
 
 
 def set_dtype_model(model: torch.nn.Module, dtype_str: str) -> None:
-
     if dtype_str not in DTYPE_MAP:
         raise ValueError(f"Unsupported dtype: {dtype_str}")
     dtype = DTYPE_MAP[dtype_str]

@@ -114,9 +114,7 @@ def test_pbc_more_edges_than_non_pbc():
 
 def test_long_range_superset():
     """Every short-range edge appears in the long-range edge list."""
-    positions = np.array(
-        [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [6.0, 0.0, 0.0]]
-    )
+    positions = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [6.0, 0.0, 0.0]])
     edge_sr, _, _, _, edge_lr, *_ = get_neighborhood(
         positions=positions,
         cutoff=4.0,
@@ -132,11 +130,9 @@ def test_long_range_superset():
 def test_long_range_none_when_not_requested():
     """Without cutoff_lr, long-range outputs are None."""
     positions = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
-    _, _, _, _, edge_index_lr, shifts_lr, unit_shifts_lr = (
-        get_neighborhood(
-            positions=positions,
-            cutoff=3.0,
-        )
+    _, _, _, _, edge_index_lr, shifts_lr, unit_shifts_lr = get_neighborhood(
+        positions=positions,
+        cutoff=3.0,
     )
 
     assert edge_index_lr is None

@@ -416,9 +416,9 @@ def load_results_hdf5(filename, is_ensemble: bool = False):
                                     key_grp = item_grp[key_type]
                                     att_dict[key_type] = {}
                                     for layer_idx in key_grp.keys():
-                                        att_dict[key_type][int(layer_idx)] = (
-                                            key_grp[layer_idx][()]
-                                        )
+                                        att_dict[key_type][
+                                            int(layer_idx)
+                                        ] = key_grp[layer_idx][()]
 
                             # Load 'senders' and 'receivers' tensors
                             for key_type in ["senders", "receivers"]:
@@ -452,9 +452,9 @@ def load_results_hdf5(filename, is_ensemble: bool = False):
                                 key_grp = item_grp[key_type]
                                 att_dict[key_type] = {}
                                 for layer_idx in key_grp.keys():
-                                    att_dict[key_type][int(layer_idx)] = (
-                                        key_grp[layer_idx][()]
-                                    )
+                                    att_dict[key_type][
+                                        int(layer_idx)
+                                    ] = key_grp[layer_idx][()]
 
                         # Load 'senders' and 'receivers' tensors
                         for key_type in ["senders", "receivers"]:
@@ -684,7 +684,9 @@ def save_results_xyz(input_data, results, filename):
         output_configs.append(atoms)
     write(filename, output_configs)
 
+
 # when evaluating, predicted "REF_{key}" will replace the "real {key}". So I modifed this refering to MACE_{key}.
+
 
 def ensemble_from_folder(path_to_models: str, device: str, dtype: str) -> dict:
     """

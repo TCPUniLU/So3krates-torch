@@ -325,7 +325,6 @@ class MultiAtomicEnergyOutputHead(AtomicEnergyOutputHead):
         data: Dict[str, torch.Tensor],
         atomic_numbers: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-
         for i, (layer_weights, layer_bias) in enumerate(
             zip(self.layers_weights, self.layers_bias)
         ):
@@ -434,7 +433,6 @@ class PartialChargesOutputHead(nn.Module):
         batch_segments: torch.Tensor,
         num_graphs: int,
     ) -> Dict[str, torch.Tensor]:
-
         # q_ - element-dependent bias
         q_ = self.atomic_embedding(atomic_numbers).squeeze(-1)
         x_ = self.transform_inv_features(inv_features).squeeze(-1)
@@ -471,7 +469,6 @@ class DipoleVecOutputHead(nn.Module):
         batch_segments: torch.Tensor,
         num_graphs: int,
     ) -> Dict[str, torch.Tensor]:
-
         mu_i = positions * partial_charges[:, None]
 
         # Compute the total dipole moment for each molecule

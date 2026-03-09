@@ -63,16 +63,14 @@ def test_model_to_lora_preserves_non_lora_weights(base_model):
 
     for name, orig in before.items():
         current = dict(base_model.named_parameters())[name]
-        assert torch.allclose(current, orig), (
-            f"Non-LoRA parameter {name} changed after model_to_lora"
-        )
+        assert torch.allclose(
+            current, orig
+        ), f"Non-LoRA parameter {name} changed after model_to_lora"
 
 
 def test_model_to_dora(base_model):
     """DoRA conversion replaces every attention block with the DoRA variant."""
-    model_to_lora(
-        base_model, rank=4, alpha=8.0, use_dora=True, device="cpu"
-    )
+    model_to_lora(base_model, rank=4, alpha=8.0, use_dora=True, device="cpu")
 
     for transformer in base_model.euclidean_transformers:
         assert isinstance(
@@ -83,9 +81,7 @@ def test_model_to_dora(base_model):
 
 def test_model_to_vera(base_model):
     """VeRA conversion replaces every attention block with the VeRA variant."""
-    model_to_lora(
-        base_model, rank=4, alpha=8.0, use_vera=True, device="cpu"
-    )
+    model_to_lora(base_model, rank=4, alpha=8.0, use_vera=True, device="cpu")
 
     for transformer in base_model.euclidean_transformers:
         assert isinstance(
@@ -103,18 +99,18 @@ def test_fuse_lora_weights(base_model):
     """Fusion removes LoRA parameters and marks block as fused."""
     model_to_lora(base_model, rank=4, alpha=8.0, device="cpu")
 
-    first_block = (
-        base_model.euclidean_transformers[0].euclidean_attention_block
-    )
-    assert hasattr(first_block, "lora_A_q_inv"), (
-        "lora_A_q_inv missing before fusion; fixture broken"
-    )
+    first_block = base_model.euclidean_transformers[
+        0
+    ].euclidean_attention_block
+    assert hasattr(
+        first_block, "lora_A_q_inv"
+    ), "lora_A_q_inv missing before fusion; fixture broken"
 
     fuse_lora_weights(base_model)
 
-    assert not hasattr(first_block, "lora_A_q_inv"), (
-        "lora_A_q_inv still present after fusion"
-    )
+    assert not hasattr(
+        first_block, "lora_A_q_inv"
+    ), "lora_A_q_inv still present after fusion"
     assert first_block.weights_fused
 
 
@@ -135,9 +131,7 @@ def test_freeze_last_layer(base_model):
     assert all(p.requires_grad for p in last_params)
 
     # First transformer: all params frozen
-    first_params = list(
-        base_model.euclidean_transformers[0].parameters()
-    )
+    first_params = list(base_model.euclidean_transformers[0].parameters())
     assert all(not p.requires_grad for p in first_params)
 
     # Sanity: trainable is a strict subset of all params
@@ -181,14 +175,10 @@ def test_lora_device_consistency(base_model):
             devices.add(str(param.device))
         for name, buf in block.named_buffers():
             devices.add(str(buf.device))
-        assert len(devices) == 1, (
-            f"Transformer {i}: mixed devices {devices}"
-        )
+        assert len(devices) == 1, f"Transformer {i}: mixed devices {devices}"
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="CUDA not available"
-)
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_lora_device_consistency_cuda(base_model):
     """LoRA conversion on CUDA places all tensors on the same device."""
     base_model = base_model.to("cuda")
@@ -197,9 +187,9 @@ def test_lora_device_consistency_cuda(base_model):
     for i, transformer in enumerate(base_model.euclidean_transformers):
         block = transformer.euclidean_attention_block
         for name, buf in block.named_buffers():
-            assert buf.device.type == "cuda", (
-                f"Transformer {i}, buffer {name} on {buf.device}"
-            )
+            assert (
+                buf.device.type == "cuda"
+            ), f"Transformer {i}, buffer {name} on {buf.device}"
 
 
 def test_legacy_degree_repeats_migrated_on_to(base_model):

@@ -36,9 +36,7 @@ class EvalArgs(BaseModel):
 
 
 class PreprocessArgs(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid", populate_by_name=True
-    )
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
     input: str
     output: str
     mode: Literal["raw", "preprocessed"]
@@ -51,17 +49,13 @@ class PreprocessArgs(BaseModel):
     charges_key: Optional[str] = None
     description: Optional[str] = None
     dtype: Literal["float32", "float64"] = "float64"
-    validate_output: bool = Field(
-        default=False, alias="validate"
-    )
+    validate_output: bool = Field(default=False, alias="validate")
     batch_size: int = 100_000
 
     @model_validator(mode="after")
     def validate_preprocessed_requires_r_max(self):
         if self.mode == "preprocessed" and self.r_max is None:
-            raise ValueError(
-                "--r-max is required when mode is 'preprocessed'"
-            )
+            raise ValueError("--r-max is required when mode is 'preprocessed'")
         return self
 
 
@@ -103,9 +97,7 @@ class MergeArgs(BaseModel):
     @model_validator(mode="after")
     def validate_min_inputs(self):
         if len(self.inputs) < 2:
-            raise ValueError(
-                "At least 2 input files are required for merging"
-            )
+            raise ValueError("At least 2 input files are required for merging")
         return self
 
 
@@ -150,10 +142,7 @@ class Torch2JaxArgs(BaseModel):
 
     @model_validator(mode="after")
     def validate_at_least_one_save_path(self):
-        if (
-            self.save_settings_path is None
-            and self.save_params_path is None
-        ):
+        if self.save_settings_path is None and self.save_params_path is None:
             raise ValueError(
                 "At least one of --save_settings_path or "
                 "--save_params_path must be provided"

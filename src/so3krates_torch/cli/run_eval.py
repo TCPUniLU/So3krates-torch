@@ -127,7 +127,6 @@ def run_evaluation(
 
 
 def main():
-
     argparser = argparse.ArgumentParser()
     argparser.add_argument("--model_path", type=str, required=True)
     argparser.add_argument("--data_path", type=str, required=True)

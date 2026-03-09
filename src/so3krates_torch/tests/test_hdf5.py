@@ -432,9 +432,7 @@ class TestHDF5Merge:
     def test_merge_raw_two_files(self, example_raw_hdf5, tmp_path):
         """Merge two raw HDF5 files; output contains all configs."""
         out = str(tmp_path / "merged.h5")
-        merge_raw_hdf5_files(
-            [example_raw_hdf5, example_raw_hdf5], out
-        )
+        merge_raw_hdf5_files([example_raw_hdf5, example_raw_hdf5], out)
 
         with h5py.File(out, "r") as f:
             assert int(f.attrs["num_configs"]) == 6
@@ -454,9 +452,7 @@ class TestHDF5Merge:
         loaded = load_atoms_from_hdf5(out)
         assert len(loaded) == 9
 
-    def test_merge_raw_preserves_forces(
-        self, example_raw_hdf5, tmp_path
-    ):
+    def test_merge_raw_preserves_forces(self, example_raw_hdf5, tmp_path):
         """Forces (per-atom property) should be preserved after merge."""
         out = str(tmp_path / "merged_forces.h5")
         merge_raw_hdf5_files([example_raw_hdf5, example_raw_hdf5], out)

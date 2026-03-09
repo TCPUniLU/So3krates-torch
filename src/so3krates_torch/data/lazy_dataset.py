@@ -74,8 +74,7 @@ class LazyAtomicDataset(torch.utils.data.Dataset):
                 )
 
         self.indices = (
-            indices if indices is not None
-            else list(range(self.num_configs))
+            indices if indices is not None else list(range(self.num_configs))
         )
 
         logging.info(
@@ -95,12 +94,8 @@ class LazyAtomicDataset(torch.utils.data.Dataset):
             load_atoms_from_hdf5,
         )
 
-        atoms = load_atoms_from_hdf5(
-            self.hdf5_path, index=actual_idx
-        )
-        config = config_from_atoms(
-            atoms, key_specification=self.keyspec
-        )
+        atoms = load_atoms_from_hdf5(self.hdf5_path, index=actual_idx)
+        config = config_from_atoms(atoms, key_specification=self.keyspec)
         return AtomicData.from_config(
             config,
             z_table=self.z_table,

@@ -532,7 +532,6 @@ class ZBLRepulsion(nn.Module):
         lengths: torch.Tensor,
         num_nodes: int,
     ) -> Dict[str, torch.Tensor]:
-
         cutoffs = cutoffs.squeeze(1)
         lengths = lengths.squeeze(1)
 

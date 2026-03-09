@@ -419,17 +419,17 @@ class TestEquivariance:
         R = _random_rotation()
 
         batch_orig = make_batch(h2o_atoms, r_max=5.0)
-        E_orig = model(
-            batch_orig.to_dict(), compute_stress=False
-        )["energy"].detach()
+        E_orig = model(batch_orig.to_dict(), compute_stress=False)[
+            "energy"
+        ].detach()
 
         h2o_rot = h2o_atoms.copy()
         pos = torch.from_numpy(h2o_atoms.get_positions())
         h2o_rot.set_positions((R @ pos.T).T.numpy())
         batch_rot = make_batch(h2o_rot, r_max=5.0)
-        E_rot = model(
-            batch_rot.to_dict(), compute_stress=False
-        )["energy"].detach()
+        E_rot = model(batch_rot.to_dict(), compute_stress=False)[
+            "energy"
+        ].detach()
 
         assert torch.allclose(E_orig, E_rot, atol=1e-5)
 
@@ -442,17 +442,17 @@ class TestEquivariance:
         R = _random_rotation()
 
         batch_orig = make_batch(h2o_atoms, r_max=5.0)
-        F_orig = model(
-            batch_orig.to_dict(), compute_stress=False
-        )["forces"].detach()
+        F_orig = model(batch_orig.to_dict(), compute_stress=False)[
+            "forces"
+        ].detach()
 
         h2o_rot = h2o_atoms.copy()
         pos = torch.from_numpy(h2o_atoms.get_positions())
         h2o_rot.set_positions((R @ pos.T).T.numpy())
         batch_rot = make_batch(h2o_rot, r_max=5.0)
-        F_rot = model(
-            batch_rot.to_dict(), compute_stress=False
-        )["forces"].detach()
+        F_rot = model(batch_rot.to_dict(), compute_stress=False)[
+            "forces"
+        ].detach()
 
         # F(R*x) must equal R*F(x)
         F_expected = (R @ F_orig.T).T
@@ -466,18 +466,16 @@ class TestEquivariance:
         model.eval()
 
         batch_orig = make_batch(h2o_atoms, r_max=5.0)
-        E_orig = model(
-            batch_orig.to_dict(), compute_stress=False
-        )["energy"].detach()
+        E_orig = model(batch_orig.to_dict(), compute_stress=False)[
+            "energy"
+        ].detach()
 
         h2o_shifted = h2o_atoms.copy()
-        h2o_shifted.set_positions(
-            h2o_atoms.get_positions() + [3.7, -1.2, 5.5]
-        )
+        h2o_shifted.set_positions(h2o_atoms.get_positions() + [3.7, -1.2, 5.5])
         batch_shift = make_batch(h2o_shifted, r_max=5.0)
-        E_shift = model(
-            batch_shift.to_dict(), compute_stress=False
-        )["energy"].detach()
+        E_shift = model(batch_shift.to_dict(), compute_stress=False)[
+            "energy"
+        ].detach()
 
         assert torch.allclose(E_orig, E_shift, atol=1e-6)
 
@@ -496,9 +494,9 @@ class TestForcesFiniteDifferences:
         N = len(h2o_atoms)
 
         batch_ref = make_batch(h2o_atoms, r_max=5.0)
-        F_autograd = model(
-            batch_ref.to_dict(), compute_stress=False
-        )["forces"].detach()
+        F_autograd = model(batch_ref.to_dict(), compute_stress=False)[
+            "forces"
+        ].detach()
 
         F_fd = torch.zeros(N, 3, dtype=torch.float64)
         for i in range(N):
@@ -509,10 +507,14 @@ class TestForcesFiniteDifferences:
                     atoms_pert = h2o_atoms.copy()
                     atoms_pert.set_positions(pos)
                     batch_pert = make_batch(atoms_pert, r_max=5.0)
-                    E_pert = model(
-                        batch_pert.to_dict(),
-                        compute_stress=False,
-                    )["energy"].detach().item()
+                    E_pert = (
+                        model(
+                            batch_pert.to_dict(),
+                            compute_stress=False,
+                        )["energy"]
+                        .detach()
+                        .item()
+                    )
                     F_fd[i, j] -= sign * E_pert / (2 * eps)
 
         assert torch.allclose(F_autograd, F_fd, atol=1e-3)
@@ -528,12 +530,12 @@ class TestStressTensor:
         model = So3krates(**default_model_config)
         model.eval()
         batch = make_batch(si_bulk, r_max=5.0)
-        stress = model(
-            batch.to_dict(), compute_stress=True
-        )["stress"]  # (num_graphs, 3, 3)
+        stress = model(batch.to_dict(), compute_stress=True)[
+            "stress"
+        ]  # (num_graphs, 3, 3)
 
         for g in range(stress.shape[0]):
             s = stress[g]
-            assert torch.allclose(s, s.T, atol=1e-6), (
-                f"Stress tensor not symmetric:\n{s}"
-            )
+            assert torch.allclose(
+                s, s.T, atol=1e-6
+            ), f"Stress tensor not symmetric:\n{s}"

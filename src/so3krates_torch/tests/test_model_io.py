@@ -85,9 +85,7 @@ class TestModelSaveLoad:
         torch.save(model1.state_dict(), save_path)
 
         model2 = So3krates(**default_model_config)
-        model2.load_state_dict(
-            torch.load(save_path, weights_only=True)
-        )
+        model2.load_state_dict(torch.load(save_path, weights_only=True))
         model2.eval()
         out2 = model2(batch.to_dict(), compute_stress=False)
 

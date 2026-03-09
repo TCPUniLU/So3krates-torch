@@ -247,9 +247,11 @@ class EuclideanTransformer(torch.nn.Module):
             return_att=return_att,
         )
         if return_att:
-            (d_att_inv_features, d_att_ev_features, (alpha_inv, alpha_ev)) = (
-                att_output
-            )
+            (
+                d_att_inv_features,
+                d_att_ev_features,
+                (alpha_inv, alpha_ev),
+            ) = att_output
 
         else:
             d_att_inv_features, d_att_ev_features = att_output
@@ -583,7 +585,6 @@ class InteractionBlock(torch.nn.Module):
         inv_features: torch.Tensor,
         ev_features: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-
         ev_invariants = self.so3_conv_invariants(ev_features)
 
         # Eq. 25 in https://doi.org/10.1038/s41467-024-50620-6
@@ -718,7 +719,6 @@ class EuclideanAttentionBlockLORA(EuclideanAttentionBlock):
             self.lora_A_k_ev.requires_grad = False
 
     def _use_lora(self, features, W, lora_A, lora_B):
-
         # lora in two steps to avoid large intermediate tensors
         return torch.einsum(
             "nhd,hde->nhe", features, W
@@ -783,7 +783,6 @@ class EuclideanAttentionBlockLORA(EuclideanAttentionBlock):
         torch.Tensor,
         torch.Tensor,
     ]:
-
         if self.weights_fused:
             # If weights are fused, use the original forward method
             return super()._get_qkv(
@@ -932,7 +931,6 @@ class EuclideanAttentionBlockDoRA(EuclideanAttentionBlockLORA):
     ) -> Tuple[
         torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
     ]:
-
         if self.weights_fused:
             # If weights are fused, use the original forward method
             return super()._get_qkv(
@@ -1000,7 +998,6 @@ class EuclideanAttentionBlockDoRA(EuclideanAttentionBlockLORA):
         # Fuse the LoRA weights into the original weights for inference
         self._get_constant_norms()
         with torch.no_grad():
-
             self.W_q_inv = torch.nn.Parameter(
                 (self.dora_m_q_inv / self.norm_q_inv)[:, :, None]
                 * (
@@ -1248,7 +1245,6 @@ class EuclideanAttentionBlockVeRA(EuclideanAttentionBlockLORA):
     ) -> Tuple[
         torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
     ]:
-
         if self.weights_fused:
             # If weights are fused, use the original forward method
             return super()._get_qkv(

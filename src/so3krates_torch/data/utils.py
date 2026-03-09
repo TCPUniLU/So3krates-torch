@@ -357,9 +357,7 @@ def compute_average_E0s(
     returns dictionary of E0s
     """
     valid = [
-        c
-        for c in collections_train
-        if c.properties.get("energy") is not None
+        c for c in collections_train if c.properties.get("energy") is not None
     ]
     if not valid:
         logging.warning(
@@ -375,9 +373,7 @@ def compute_average_E0s(
     for i in range(len_train):
         B[i] = valid[i].properties["energy"]
         for j, z in enumerate(z_table.zs):
-            A[i, j] = np.count_nonzero(
-                valid[i].atomic_numbers == z
-            )
+            A[i, j] = np.count_nonzero(valid[i].atomic_numbers == z)
     try:
         E0s = np.linalg.lstsq(A, B, rcond=None)[0]
         atomic_energies_dict = {}
@@ -409,15 +405,11 @@ def compute_average_E0s_from_dataset(
     atom_counts = []
     for i in range(len(dataset)):
         data = dataset[i]
-        if (
-            data.energy_weight is None
-            or data.energy_weight.item() == 0.0
-        ):
+        if data.energy_weight is None or data.energy_weight.item() == 0.0:
             continue
         energies.append(data.energy.item())
         atom_counts.append(
-            [(data.atomic_numbers == z).sum().item()
-             for z in z_table.zs]
+            [(data.atomic_numbers == z).sum().item() for z in z_table.zs]
         )
 
     if not energies:
@@ -553,7 +545,6 @@ def get_edge_vectors_and_lengths(
     normalize: bool = False,
     eps: float = 1e-9,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-
     sender = edge_index[0]
     receiver = edge_index[1]
     vectors = positions[receiver] - positions[sender] + shifts  # [n_edges, 3]

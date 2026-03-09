@@ -60,8 +60,7 @@ class ArchitectureConfig(BaseModel):
     @model_validator(mode="after")
     def validate_long_range(self):
         if (
-            self.electrostatic_energy_bool
-            or self.dispersion_energy_bool
+            self.electrostatic_energy_bool or self.dispersion_energy_bool
         ) and self.r_max_lr is None:
             raise ValueError(
                 "Long-range cutoff 'r_max_lr' must be specified "
@@ -73,9 +72,7 @@ class ArchitectureConfig(BaseModel):
                 f"dispersion_energy_bool="
                 f"{self.dispersion_energy_bool}"
             )
-        if self.convert_to_multihead and (
-            self.num_output_heads is None
-        ):
+        if self.convert_to_multihead and (self.num_output_heads is None):
             raise ValueError(
                 "num_output_heads must be specified when using "
                 "convert_to_multihead"

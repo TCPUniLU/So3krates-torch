@@ -66,7 +66,6 @@ def model_to_lora(
     """
     torch.manual_seed(seed)
     for i, transformer in enumerate(model.euclidean_transformers):
-
         if isinstance(
             transformer.euclidean_attention_block, EuclideanAttentionBlock
         ):
@@ -206,7 +205,6 @@ def freeze_model_parameters(
     freeze_embedding: bool = True,
     freeze_lora_A: bool = False,
 ):
-
     if keep_trainable_choice not in POSSIBLE_FINETUNING_CHOICES:
         raise ValueError(
             f"Invalid choice '{keep_trainable_choice}'. Must be one of {POSSIBLE_FINETUNING_CHOICES}."
@@ -245,7 +243,6 @@ def freeze_model_parameters(
     elif (
         keep_trainable_choice == "lora" or keep_trainable_choice == "lora+mlp"
     ):
-
         # Keep only the LoRA parameters trainable
         for i in range(num_layers):
             if freeze_lora_A:
