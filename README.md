@@ -16,9 +16,12 @@ Implementation of the So3krates + SO3LR model in pytorch.
 #### Implemented features:
 1. ASE calculator for MD (including pre-trained SO3LR)
 2. Inference over ase readable datasets: `torchkrates-eval`
-3. Error metrics over ase readable datasets: `torchkrates-test`
+3. Error metrics over ase readable datasets: `torchkrates-metric`
 4. Transforming pyTorch and JAX parameter formates: `torchkrates-jax2torch` or `torchkrates-torch2jax` (for these you need to install jax, flax, and mlff (https://github.com/thorben-frank/mlff/tree/v1.0-lrs-gems))
 5. Training: `torchkrates-train --config config.yaml` (see example)
+6. Data preprocessing: `torchkrates-preprocess`
+7. HDF5 file merging: `torchkrates-merge`
+8. LAMMPS model export: `torchkrates-create-lammps-model`
 
 
 > [!IMPORTANT]
@@ -73,7 +76,32 @@ torchkrates-preprocess --input raw.h5 --output preprocessed.h5 --mode preprocess
 
 ---
 
-### `torchkrates-lammps` — LAMMPS Model Export
+### `torchkrates-merge` — HDF5 File Merging
+
+Merge two or more HDF5 files (raw or preprocessed) into a single file. Both formats are supported; all inputs must be the same type. Raw files are merged with streaming writes to avoid loading everything into memory.
+
+```bash
+# Merge raw HDF5 files
+torchkrates-merge --inputs train_a.h5 train_b.h5 --output train_merged.h5
+
+# Merge preprocessed HDF5 files
+torchkrates-merge --inputs part1.h5 part2.h5 part3.h5 --output all.h5
+
+# With optional metadata and custom batch size
+torchkrates-merge --inputs a.h5 b.h5 --output merged.h5 \
+    --description "combined dataset" --batch-size 50000
+```
+
+| Flag | Description |
+|------|-------------|
+| `--inputs FILE [FILE ...]` | Two or more input HDF5 files to merge (must be the same format) |
+| `--output FILE` | Output HDF5 file path |
+| `--description TEXT` | Optional description stored in the merged file metadata (raw format only) |
+| `--batch-size N` | Structures processed per write batch (raw format only, default: `100000`) |
+
+---
+
+### `torchkrates-create-lammps-model` — LAMMPS Model Export
 
 > [!NOTE]
 > More details and how to use the model in LAMMPS are coming.
@@ -84,7 +112,7 @@ torchkrates-preprocess --input raw.h5 --output preprocessed.h5 --mode preprocess
 Convert a trained SO3LR model to a TorchScript model compatible with the LAMMPS ML-IAP interface.
 
 ```bash
-torchkrates-lammps model.pt --elements Si O
+torchkrates-create-lammps-model model.pt --elements Si O
 ```
 
 | Flag | Description |
@@ -103,7 +131,7 @@ torchkrates-lammps model.pt --elements Si O
 
 Run inference over an ASE-readable dataset.
 
-### `torchkrates-test` — Error Metrics
+### `torchkrates-metric` — Error Metrics
 
 Compute error metrics over an ASE-readable dataset.
 
@@ -214,6 +242,10 @@ These enable the physics-based long-range interactions that distinguish SO3LR fr
 | `num_valid` | `int` | `None` | Limit the number of validation samples. |
 | `batch_size` | `int` | *required* | Number of structures per training batch. |
 | `valid_batch_size` | `int` | *required* | Number of structures per validation batch. Can be larger than `batch_size` since no gradients are computed. |
+| `lazy_loading` | `bool` | `False` | Enable on-the-fly data loading and preprocessing from raw HDF5 files. Instead of loading all structures into memory upfront, each structure is read and its neighbor list computed on the fly by DataLoader worker processes. Only supported for raw HDF5 files (not XYZ). |
+| `num_workers` | `int` | `4` | Number of DataLoader worker processes for parallel preprocessing. Only used when `lazy_loading: true`. Each worker reads structures from HDF5 and computes neighbor lists concurrently. |
+| `prefetch_factor` | `int` | `2` | Number of batches each worker prefetches ahead of time. With `num_workers=4` and `prefetch_factor=2`, up to 8 batches are prepared in the background while the GPU trains. Only used when `lazy_loading: true`. |
+| `num_neighbor_samples` | `int` | `1000` | Number of structures randomly sampled to estimate the average number of neighbors (used for message normalization). Only used when `lazy_loading: true`. |
 
 For multi-head models, data can be specified per head instead of using `path_to_train_data`:
 
@@ -257,7 +289,7 @@ TRAINING:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `optimizer` | `str` | `"adam"` | Optimizer. Currently only `adam` is supported. |
+| `optimizer` | `str` | `"adam"` | Optimizer. Options: `adam`, `adamw`. |
 | `lr` | `float` | *required* | Initial learning rate. |
 | `weight_decay` | `float` | `0.0` | L2 regularization weight. Applied to all parameters. |
 | `amsgrad` | `bool` | `False` | Use the AMSGrad variant of Adam, which keeps a running maximum of the second moment to prevent learning rate from increasing. |
@@ -397,7 +429,7 @@ eprint = {
 }
 ```
 
-Also consider citing MACE, as this software heavlily leans on or uses its code:
+Also consider citing MACE, as this software heavily leans on or uses its code:
 
 
 ```bibtex

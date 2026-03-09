@@ -17,15 +17,17 @@ from typing import Optional
 import ase.io
 import torch
 
+from so3krates_torch.config import PreprocessArgs
 from so3krates_torch.data.atomic_data import AtomicData
 from so3krates_torch.data.hdf5_utils import (
+    compute_and_format_e0s,
     configs_from_hdf5,
     detect_file_format,
     save_atoms_to_hdf5,
     save_preprocessed_hdf5,
     validate_preprocessed_hdf5,
 )
-from so3krates_torch.data.utils import KeySpecification
+from so3krates_torch.data.utils import KeySpecification, update_keyspec_from_kwargs
 from so3krates_torch.tools.default_keys import DefaultKeys
 from so3krates_torch.tools.utils import (
     AtomicNumberTable,
@@ -60,21 +62,25 @@ def _log_progress(current, total, start_time, log_interval=100):
 def process_xyz_input(args):
     """Load XYZ, convert to raw or preprocessed HDF5."""
     logging.info(f"Loading XYZ file: {args.input}")
-    atoms_list = ase.io.read(args.input, index=":")
-    logging.info(f"Loaded {len(atoms_list)} configurations")
 
     if args.mode == "raw":
-        # Save to raw HDF5
+        # Stream directly from XYZ → HDF5; no need to load all into RAM
         keyspec = create_keyspec_from_args(args)
+        atoms_iter = ase.io.iread(args.input, index=":")
         save_atoms_to_hdf5(
-            atoms_list,
+            atoms_iter,
             args.output,
             key_specification=keyspec,
             description=args.description,
+            batch_size=args.batch_size,
         )
         logging.info(f"Saved raw HDF5 to: {args.output}")
 
     elif args.mode == "preprocessed":
+        # Load all structures first (needed for E0 computation)
+        atoms_list = ase.io.read(args.input, index=":")
+        logging.info(f"Loaded {len(atoms_list)} configurations")
+
         # Convert to Configurations
         keyspec = create_keyspec_from_args(args)
         configs = create_configs_from_list(
@@ -87,10 +93,6 @@ def process_xyz_input(args):
         logging.info(f"Using full atomic number table (Z=1-118)")
 
         # Compute E0s from configs
-        from so3krates_torch.data.hdf5_utils import (
-            compute_and_format_e0s,
-        )
-
         atomic_energy_shifts = compute_and_format_e0s(configs, z_table)
         logging.info("Computed atomic energy shifts (E0s)")
 
@@ -155,8 +157,6 @@ def process_hdf5_input(args):
     logging.info(f"Using full atomic number table (Z=1-118)")
 
     # Compute E0s from configs
-    from so3krates_torch.data.hdf5_utils import compute_and_format_e0s
-
     atomic_energy_shifts = compute_and_format_e0s(configs, z_table)
     logging.info("Computed atomic energy shifts (E0s)")
 
@@ -202,8 +202,6 @@ def create_keyspec_from_args(args) -> KeySpecification:
         keydict["dipole_key"] = args.dipole_key
     if args.charges_key:
         keydict["charges_key"] = args.charges_key
-
-    from so3krates_torch.data.utils import update_keyspec_from_kwargs
 
     keyspec = KeySpecification()
     return update_keyspec_from_kwargs(keyspec, keydict)
@@ -284,12 +282,16 @@ def main():
         action="store_true",
         help="Validate output after creation",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=100_000,
+        help="Structures per write batch for raw mode (default: 100000). "
+        "Controls peak RAM usage when streaming large XYZ files.",
+    )
 
     args = parser.parse_args()
-
-    # Validation
-    if args.mode == "preprocessed" and args.r_max is None:
-        parser.error("--r-max required for preprocessed mode")
+    PreprocessArgs.model_validate(vars(args))
 
     # Set PyTorch default dtype
     if args.dtype == "float32":
@@ -298,7 +300,7 @@ def main():
         torch.set_default_dtype(torch.float64)
 
     # Execute
-    if args.input.endswith(".xyz"):
+    if args.input.endswith(".xyz") or args.input.endswith(".extxyz"):
         process_xyz_input(args)
     elif args.input.endswith((".h5", ".hdf5")):
         process_hdf5_input(args)

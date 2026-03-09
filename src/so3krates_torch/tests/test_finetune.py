@@ -170,6 +170,85 @@ def test_freeze_lora_only(base_model):
 # ---------------------------------------------------------------------------
 
 
+def test_lora_device_consistency(base_model):
+    """All buffers and params in LoRA attention blocks share one device."""
+    model_to_lora(base_model, rank=4, alpha=8.0, device="cpu")
+
+    for i, transformer in enumerate(base_model.euclidean_transformers):
+        block = transformer.euclidean_attention_block
+        devices = set()
+        for name, param in block.named_parameters():
+            devices.add(str(param.device))
+        for name, buf in block.named_buffers():
+            devices.add(str(buf.device))
+        assert len(devices) == 1, (
+            f"Transformer {i}: mixed devices {devices}"
+        )
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="CUDA not available"
+)
+def test_lora_device_consistency_cuda(base_model):
+    """LoRA conversion on CUDA places all tensors on the same device."""
+    base_model = base_model.to("cuda")
+    model_to_lora(base_model, rank=4, alpha=8.0, device="cuda")
+
+    for i, transformer in enumerate(base_model.euclidean_transformers):
+        block = transformer.euclidean_attention_block
+        for name, buf in block.named_buffers():
+            assert buf.device.type == "cuda", (
+                f"Transformer {i}, buffer {name} on {buf.device}"
+            )
+
+
+def test_legacy_degree_repeats_migrated_on_to(base_model):
+    """Legacy models with degree_repeats as plain attr migrate on .to().
+
+    Older pickled models stored degree_repeats in __dict__ instead of
+    _buffers. The __setstate__ migration must promote it to a registered
+    buffer so that .to(device) moves it correctly.
+    """
+    import pickle
+
+    for transformer in base_model.euclidean_transformers:
+        for block in [
+            transformer.euclidean_attention_block,
+            transformer.interaction_block,
+        ]:
+            # Simulate legacy pickle: move buffer → plain attribute
+            tensor = block._buffers.pop("degree_repeats")
+            block.__dict__["degree_repeats"] = tensor
+
+    # Round-trip through pickle triggers __setstate__
+    data = pickle.dumps(base_model)
+    restored = pickle.loads(data)
+
+    # After migration, degree_repeats must be a registered buffer
+    for i, transformer in enumerate(restored.euclidean_transformers):
+        for name, block in [
+            ("attention", transformer.euclidean_attention_block),
+            ("interaction", transformer.interaction_block),
+        ]:
+            assert "degree_repeats" in block._buffers, (
+                f"Transformer {i} {name}: degree_repeats not "
+                f"migrated to buffer"
+            )
+
+    # .to() must now move degree_repeats with everything else
+    target = "cpu"
+    restored = restored.to(target)
+    for i, transformer in enumerate(restored.euclidean_transformers):
+        for name, block in [
+            ("attention", transformer.euclidean_attention_block),
+            ("interaction", transformer.interaction_block),
+        ]:
+            assert str(block.degree_repeats.device) == target, (
+                f"Transformer {i} {name}: degree_repeats on "
+                f"{block.degree_repeats.device}, expected {target}"
+            )
+
+
 def test_preserve_grad_state_restores(base_model):
     """Context manager restores requires_grad state on exit."""
     params = list(base_model.parameters())

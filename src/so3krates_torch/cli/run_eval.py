@@ -1,6 +1,8 @@
 import argparse
+
+from so3krates_torch.config import EvalArgs
 from so3krates_torch.tools.eval import evaluate_model, ensemble_prediction
-from so3krates_torch.tools.utils import save_results_hdf5
+from so3krates_torch.tools.utils import save_results_hdf5, save_results_xyz
 from ase.io import read
 import torch
 from so3krates_torch.data.utils import KeySpecification
@@ -199,34 +201,35 @@ def main():
     argparser.add_argument("--dtype", type=str, default="float32")
     argparser.add_argument("--return_att", action="store_true")
     args = argparser.parse_args()
+    validated = EvalArgs.model_validate(vars(args))
     # turn all args into variables
-    model_path = args.model_path
-    data_path = args.data_path
-    output_file = args.output_file
-    ensemble_size = args.ensemble_size
-    device = args.device
-    batch_size = args.batch_size
-    model_type = args.model_type
-    r_max_lr = args.r_max_lr
-    multispecies = args.multispecies
-    multihead_model = args.multihead_model
-    compute_dipole = args.compute_dipole
-    compute_stress = args.compute_stress
-    compute_hirshfeld = args.compute_hirshfeld
-    compute_partial_charges = args.compute_partial_charges
+    model_path = validated.model_path
+    data_path = validated.data_path
+    output_file = validated.output_file
+    ensemble_size = validated.ensemble_size
+    device = validated.device
+    batch_size = validated.batch_size
+    model_type = validated.model_type
+    r_max_lr = validated.r_max_lr
+    multispecies = validated.multispecies
+    multihead_model = validated.multihead_model
+    compute_dipole = validated.compute_dipole
+    compute_stress = validated.compute_stress
+    compute_hirshfeld = validated.compute_hirshfeld
+    compute_partial_charges = validated.compute_partial_charges
     dispersion_energy_cutoff_lr_damping = (
-        args.dispersion_energy_cutoff_lr_damping
+        validated.dispersion_energy_cutoff_lr_damping
     )
-    energy_key = args.energy_key
-    forces_key = args.forces_key
-    stress_key = args.stress_key
-    virials_key = args.virials_key
-    dipole_key = args.dipole_key
-    charges_key = args.charges_key
-    total_charge_key = args.total_charge_key
-    total_spin_key = args.total_spin_key
-    hirshfeld_key = args.hirshfeld_key
-    head_key = args.head_key
+    energy_key = validated.energy_key
+    forces_key = validated.forces_key
+    stress_key = validated.stress_key
+    virials_key = validated.virials_key
+    dipole_key = validated.dipole_key
+    charges_key = validated.charges_key
+    total_charge_key = validated.total_charge_key
+    total_spin_key = validated.total_spin_key
+    hirshfeld_key = validated.hirshfeld_key
+    head_key = validated.head_key
     dtype = args.dtype
     return_att = args.return_att
 
@@ -261,8 +264,6 @@ def main():
     if extension == ".h5" or extension == ".hdf5" or extension == "":
         save_results_hdf5(result, output_file, is_ensemble=is_ensemble)
     elif is_ensemble == False and extension == ".xyz":
-        from so3krates_torch.tools.utils import save_results_xyz
-
         save_results_xyz(data_path, result, output_file)
     else:
         raise ValueError(

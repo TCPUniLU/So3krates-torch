@@ -11,6 +11,14 @@ from so3krates_torch.modules.models import (
 )
 
 
+def _random_rotation():
+    """Random rotation matrix via QR decomposition."""
+    Q, _ = torch.linalg.qr(torch.randn(3, 3, dtype=torch.float64))
+    if torch.linalg.det(Q) < 0:
+        Q[:, 0] *= -1  # ensure det = +1
+    return Q
+
+
 class TestSo3kratesInference:
     """Test So3krates base model inference."""
 
@@ -397,3 +405,135 @@ class TestSO3LRReferenceValues:
         )
         dipole_magnitude = np.linalg.norm(out["dipole"].detach().numpy())
         assert dipole_magnitude > 0
+
+
+class TestEquivariance:
+    """Test SO(3) equivariance and translation invariance."""
+
+    def test_energy_rotation_invariant(
+        self, default_model_config, make_batch, h2o_atoms
+    ):
+        """E(R*x) == E(x) for a random rotation R."""
+        model = So3krates(**default_model_config)
+        model.eval()
+        R = _random_rotation()
+
+        batch_orig = make_batch(h2o_atoms, r_max=5.0)
+        E_orig = model(
+            batch_orig.to_dict(), compute_stress=False
+        )["energy"].detach()
+
+        h2o_rot = h2o_atoms.copy()
+        pos = torch.from_numpy(h2o_atoms.get_positions())
+        h2o_rot.set_positions((R @ pos.T).T.numpy())
+        batch_rot = make_batch(h2o_rot, r_max=5.0)
+        E_rot = model(
+            batch_rot.to_dict(), compute_stress=False
+        )["energy"].detach()
+
+        assert torch.allclose(E_orig, E_rot, atol=1e-5)
+
+    def test_forces_rotation_equivariant(
+        self, default_model_config, make_batch, h2o_atoms
+    ):
+        """F(R*x) == R*F(x) for a random rotation R."""
+        model = So3krates(**default_model_config)
+        model.eval()
+        R = _random_rotation()
+
+        batch_orig = make_batch(h2o_atoms, r_max=5.0)
+        F_orig = model(
+            batch_orig.to_dict(), compute_stress=False
+        )["forces"].detach()
+
+        h2o_rot = h2o_atoms.copy()
+        pos = torch.from_numpy(h2o_atoms.get_positions())
+        h2o_rot.set_positions((R @ pos.T).T.numpy())
+        batch_rot = make_batch(h2o_rot, r_max=5.0)
+        F_rot = model(
+            batch_rot.to_dict(), compute_stress=False
+        )["forces"].detach()
+
+        # F(R*x) must equal R*F(x)
+        F_expected = (R @ F_orig.T).T
+        assert torch.allclose(F_rot, F_expected, atol=1e-5)
+
+    def test_energy_translation_invariant(
+        self, default_model_config, make_batch, h2o_atoms
+    ):
+        """E(x + t) == E(x) for any constant shift t."""
+        model = So3krates(**default_model_config)
+        model.eval()
+
+        batch_orig = make_batch(h2o_atoms, r_max=5.0)
+        E_orig = model(
+            batch_orig.to_dict(), compute_stress=False
+        )["energy"].detach()
+
+        h2o_shifted = h2o_atoms.copy()
+        h2o_shifted.set_positions(
+            h2o_atoms.get_positions() + [3.7, -1.2, 5.5]
+        )
+        batch_shift = make_batch(h2o_shifted, r_max=5.0)
+        E_shift = model(
+            batch_shift.to_dict(), compute_stress=False
+        )["energy"].detach()
+
+        assert torch.allclose(E_orig, E_shift, atol=1e-6)
+
+
+class TestForcesFiniteDifferences:
+    """Test autograd forces against finite difference reference."""
+
+    def test_forces_match_finite_differences(
+        self, default_model_config, make_batch, h2o_atoms
+    ):
+        """Autograd forces match central finite differences."""
+        model = So3krates(**default_model_config)
+        model.eval()
+        eps = 1e-4
+        positions = h2o_atoms.get_positions().copy()
+        N = len(h2o_atoms)
+
+        batch_ref = make_batch(h2o_atoms, r_max=5.0)
+        F_autograd = model(
+            batch_ref.to_dict(), compute_stress=False
+        )["forces"].detach()
+
+        F_fd = torch.zeros(N, 3, dtype=torch.float64)
+        for i in range(N):
+            for j in range(3):
+                for sign, delta in [(+1, eps), (-1, -eps)]:
+                    pos = positions.copy()
+                    pos[i, j] += delta
+                    atoms_pert = h2o_atoms.copy()
+                    atoms_pert.set_positions(pos)
+                    batch_pert = make_batch(atoms_pert, r_max=5.0)
+                    E_pert = model(
+                        batch_pert.to_dict(),
+                        compute_stress=False,
+                    )["energy"].detach().item()
+                    F_fd[i, j] -= sign * E_pert / (2 * eps)
+
+        assert torch.allclose(F_autograd, F_fd, atol=1e-3)
+
+
+class TestStressTensor:
+    """Test stress tensor properties."""
+
+    def test_stress_tensor_symmetric(
+        self, default_model_config, make_batch, si_bulk
+    ):
+        """Stress tensor from model forward pass must be symmetric."""
+        model = So3krates(**default_model_config)
+        model.eval()
+        batch = make_batch(si_bulk, r_max=5.0)
+        stress = model(
+            batch.to_dict(), compute_stress=True
+        )["stress"]  # (num_graphs, 3, 3)
+
+        for g in range(stress.shape[0]):
+            s = stress[g]
+            assert torch.allclose(s, s.T, atol=1e-6), (
+                f"Stress tensor not symmetric:\n{s}"
+            )

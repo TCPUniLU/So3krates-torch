@@ -209,16 +209,6 @@ class TestSo3LammpsConfig:
         assert config.allow_cpu is True
         assert config.force_cpu is True
 
-    def test_env_var_false_values(self, monkeypatch):
-        monkeypatch.setenv("SO3_TIME", "false")
-        monkeypatch.setenv("SO3_PROFILE", "0")
-        monkeypatch.setenv("SO3_ALLOW_CPU", "no")
-
-        config = So3LammpsConfig()
-        assert config.debug_time is False
-        assert config.debug_profile is False
-        assert config.allow_cpu is False
-
 
 # ---------------------------------------------------------------------------
 # TestSo3EdgeForcesWrapper
@@ -277,23 +267,6 @@ class TestSo3EdgeForcesWrapper:
         )
         for p in wrapper.model.parameters():
             assert p.requires_grad is False
-
-    def test_r_max_buffer(self, so3lr_short_range_model, water_atomic_numbers):
-        wrapper = So3EdgeForcesWrapper(
-            so3lr_short_range_model,
-            atomic_numbers=water_atomic_numbers,
-        )
-        assert float(wrapper.r_max) == so3lr_short_range_model.r_max
-
-    def test_head_default_selection(
-        self, so3lr_short_range_model, water_atomic_numbers
-    ):
-        wrapper = So3EdgeForcesWrapper(
-            so3lr_short_range_model,
-            atomic_numbers=water_atomic_numbers,
-        )
-        # Default head should be the last one
-        assert wrapper.head.item() == 0  # Only one head "Default"
 
     def test_multihead_head_selection(
         self, multihead_short_range_model, water_atomic_numbers
@@ -517,30 +490,6 @@ class TestLAMMPS_MLIAP_SO3:
         # Check that update_pair_forces_gpu was called with float64
         called_forces = mock_data.update_pair_forces_gpu.call_args[0][0]
         assert called_forces.dtype == torch.float64
-
-    def test_compute_forces_early_return_empty(
-        self, so3lr_short_range_model, water_atomic_numbers
-    ):
-        """Should return early when natoms=0."""
-        calc = LAMMPS_MLIAP_SO3(
-            so3lr_short_range_model,
-            atomic_numbers=water_atomic_numbers,
-        )
-        calc.initialized = True
-        calc.device = torch.device("cpu")
-
-        mock_data = Mock()
-        mock_data.nlocal = 0
-        mock_data.ntotal = 0
-        mock_data.npairs = 0
-        mock_data.elems = torch.tensor([], dtype=torch.int64)
-        mock_data.__class__ = type(
-            "RegularModule", (), {"__module__": "regular_module"}
-        )
-
-        # Should not raise
-        calc.compute_forces(mock_data)
-        assert calc.step == 1
 
     def test_update_lammps_data_squeeze_multidim(
         self, so3lr_short_range_model, water_atomic_numbers

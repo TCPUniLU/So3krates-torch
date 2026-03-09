@@ -1,3 +1,4 @@
+from so3krates_torch.config import Jax2TorchArgs
 from so3krates_torch.tools.jax_torch_conversion import convert_flax_to_torch
 import argparse
 import torch
@@ -67,15 +68,9 @@ def main():
     )
 
     args = argparser.parse_args()
+    validated = Jax2TorchArgs.model_validate(vars(args))
 
-    # assert that either save_settings_path or save_state_dict_path or save_model_path is provided
-    assert (
-        args.save_settings_path is not None
-        or args.save_state_dict_path is not None
-        or args.save_model_path is not None
-    ), "At least one of --save_settings_path, --save_state_dict_path, or --save_model_path must be provided"
-
-    dtype = getattr(torch, args.dtype, torch.float32)
+    dtype = getattr(torch, validated.dtype, torch.float32)
     model = convert_flax_to_torch(
         path_to_flax_hyperparams=args.path_to_hyperparams,
         path_to_flax_params=args.path_to_params,
