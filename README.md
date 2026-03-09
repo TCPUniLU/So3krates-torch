@@ -19,6 +19,9 @@ Lightweight implementation of the So3krates model in pytorch. This package is mo
 3. Error metrics over ase readable datasets: `torchkrates-metric`
 4. Transforming pyTorch and JAX parameter formates: `torchkrates-jax2torch` or `torchkrates-torch2jax` (for these you need to install jax, flax, and mlff (https://github.com/thorben-frank/mlff/tree/v1.0-lrs-gems))
 5. Training: `torchkrates-train --config config.yaml` (see example)
+6. Data preprocessing: `torchkrates-preprocess`
+7. HDF5 file merging: `torchkrates-merge`
+8. LAMMPS model export: `torchkrates-create-lammps-model`
 
 
 > [!IMPORTANT]
@@ -125,7 +128,7 @@ torchkrates-create-lammps-model model.pt --elements Si O
 
 Run inference over an ASE-readable dataset.
 
-### `torchkrates-test` — Error Metrics
+### `torchkrates-metric` — Error Metrics
 
 Compute error metrics over an ASE-readable dataset.
 
@@ -283,7 +286,7 @@ TRAINING:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `optimizer` | `str` | `"adam"` | Optimizer. Currently only `adam` is supported. |
+| `optimizer` | `str` | `"adam"` | Optimizer. Options: `adam`, `adamw`. |
 | `lr` | `float` | *required* | Initial learning rate. |
 | `weight_decay` | `float` | `0.0` | L2 regularization weight. Applied to all parameters. |
 | `amsgrad` | `bool` | `False` | Use the AMSGrad variant of Adam, which keeps a running maximum of the second moment to prevent learning rate from increasing. |
@@ -423,7 +426,7 @@ eprint = {
 }
 ```
 
-Also consider citing MACE, as this software heavlily leans on or uses its code:
+Also consider citing MACE, as this software heavily leans on or uses its code:
 
 
 ```bibtex
