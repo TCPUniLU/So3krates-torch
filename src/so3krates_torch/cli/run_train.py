@@ -733,24 +733,24 @@ def _setup_singlehead_data_loaders(
         valid_subset=valid_subset,
     )
 
-        logging.info(f"Training set size: {len(train_atomic_data)}")
-        if valid_loader is not None:
-            logging.info(
-                f"Validation set size: "
-                f"{len(valid_loader.dataset)}"
-            )
+    logging.info(f"Training set size: {len(train_atomic_data)}")
+    if valid_loader is not None:
         logging.info(
-            f"Number of unique elements in training set: "
-            f"{num_elements}"
+            f"Validation set size: "
+            f"{len(valid_loader.dataset)}"
         )
-        return (
-            train_loader,
-            {"main": valid_loader} if valid_loader else {},
-            train_sampler,
-            avg_num_neighbors,
-            num_elements,
-            average_atomic_energy_shifts,
-        )
+    logging.info(
+        f"Number of unique elements in training set: "
+        f"{num_elements}"
+    )
+    return (
+        train_loader,
+        {"main": valid_loader} if valid_loader else {},
+        train_sampler,
+        avg_num_neighbors,
+        num_elements,
+        average_atomic_energy_shifts,
+    )
 
 
 def setup_data_loaders(
@@ -947,12 +947,14 @@ def setup_optimizer_and_scheduler(
     weight_decay = train_config.get("weight_decay", 0.0)
     amsgrad = train_config.get("amsgrad", False)
 
+    use_lora_plus = train_config.get("use_lora_plus", False)
+    lora_B_lr = train_config.get("lora_B_lr", None)
+
     if optimizer_name == "adam":
         if use_lora_plus:
             assert (
                 lora_B_lr is not None
-            ), "lora_A_lr must be provided for LoRA+"
-            lr = lora_B_lr
+            ), "lora_B_lr must be provided for LoRA+"
             # for LoRA+ adjust learning rate for A and B matrices
             optimizer = torch.optim.Adam(
                 [
@@ -976,21 +978,14 @@ def setup_optimizer_and_scheduler(
                         "params": [
                             p
                             for n, p in model.named_parameters()
-                            if "lora_A" not in n and "lora_B" not in n
+                            if "lora_A" not in n
+                            and "lora_B" not in n
                         ]
                     },
                 ],
                 lr=lr,
                 weight_decay=weight_decay,
                 amsgrad=amsgrad,
-            )
-        elif optimizer_name == "adamw":
-            optimizer = torch.optim.AdamW(
-                model.parameters(),
-                lr=lr,
-                weight_decay=weight_decay,  
-                betas=train_config.get("betas", (0.9, 0.999)),
-                eps=train_config.get("eps", 1e-8),
             )
         else:
             optimizer = torch.optim.Adam(
@@ -999,7 +994,14 @@ def setup_optimizer_and_scheduler(
                 weight_decay=weight_decay,
                 amsgrad=amsgrad,
             )
-
+    elif optimizer_name == "adamw":
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+            betas=train_config.get("betas", (0.9, 0.999)),
+            eps=train_config.get("eps", 1e-8),
+        )
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_name}")
 
@@ -1009,9 +1011,13 @@ def setup_optimizer_and_scheduler(
     scheduler_args = train_config.get("scheduler_args", {})
 
     if scheduler_name == "exponential_decay":
+        gamma = train_config.get(
+            "lr_scheduler_gamma",
+            scheduler_args.get("gamma", 0.9993),
+        )
         lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(
             optimizer,
-            **{"gamma": scheduler_args.get("gamma", 0.9993)},
+            gamma=gamma,
         )
     elif scheduler_name == "lambda":
         gamma = scheduler_args.get("gamma", 0.85)
