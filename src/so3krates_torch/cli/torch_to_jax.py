@@ -1,3 +1,4 @@
+from so3krates_torch.config import Torch2JaxArgs
 from so3krates_torch.tools.jax_torch_conversion import convert_torch_to_flax
 import argparse
 import yaml
@@ -63,6 +64,8 @@ def main():
     )
 
     args = argparser.parse_args()
+    validated = Torch2JaxArgs.model_validate(vars(args))
+
     path_to_settings_dir = Path(args.save_settings_path)
     path_to_params_dir = Path(args.save_params_path)
     # check if the directories exist, if not create them
@@ -70,12 +73,6 @@ def main():
         path_to_settings_dir.mkdir(parents=True, exist_ok=True)
     if args.save_params_path:
         path_to_params_dir.mkdir(parents=True, exist_ok=True)
-
-    # assert that either save_settings_path or save_state_dict_path or save_model_path is provided
-    assert (
-        args.save_settings_path is not None
-        or args.save_params_path is not None
-    ), "At least one of --save_settings_path or --save_params_path must be provided"
 
     with open(args.path_to_hyperparams, "r") as f:
         torch_settings = yaml.safe_load(f)

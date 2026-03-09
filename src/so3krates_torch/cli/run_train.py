@@ -1,7 +1,10 @@
 import argparse
 import logging
+
 import yaml
 import torch
+
+from so3krates_torch.config import TrainConfig
 import torch.nn as nn
 from ase.io import read
 import random
@@ -68,8 +71,9 @@ DTYPE_MAP = {
 def setup_config_from_yaml(config_path: str) -> dict:
     """Load and parse configuration from YAML file."""
     with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-    return config
+        raw = yaml.safe_load(f)
+    validated = TrainConfig.model_validate(raw)
+    return validated.model_dump()
 
 
 def setup_logging(config: dict) -> None:
@@ -85,27 +89,6 @@ def setup_logging(config: dict) -> None:
 def create_model(config: dict, device: torch.device) -> SO3LR:
     """Create and initialize the SO3LR model."""
     arch_config = config["ARCHITECTURE"]
-
-    # Validate long-range configuration
-    r_max_lr = arch_config.get("r_max_lr", None)
-    electrostatic_bool = arch_config.get("electrostatic_energy_bool", True)
-    dispersion_bool = arch_config.get("dispersion_energy_bool", True)
-
-    if (electrostatic_bool or dispersion_bool) and r_max_lr is None:
-        raise ValueError(
-            "Long-range cutoff 'r_max_lr' must be specified when "
-            "electrostatic_energy_bool or dispersion_energy_bool is True. "
-            f"Current: r_max_lr={r_max_lr}, "
-            f"electrostatic_energy_bool={electrostatic_bool}, "
-            f"dispersion_energy_bool={dispersion_bool}"
-        )
-
-    if r_max_lr is not None and not electrostatic_bool and not dispersion_bool:
-        logging.warning(
-            f"Long-range cutoff r_max_lr={r_max_lr} is set but both "
-            "electrostatic_energy_bool and dispersion_energy_bool are False. "
-            "Long-range neighbor lists will be computed but not used."
-        )
 
     # Map YAML parameters to model parameters
     model_params = {
@@ -181,11 +164,6 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
         model_params["num_output_heads"] = arch_config.get(
             "num_output_heads", None
         )
-        if model_params["num_output_heads"] is None:
-            raise ValueError(
-                "num_output_heads must be specified when using "
-                "convert_to_multihead"
-            )
         logging.info(
             f"Creating Multi-Head SO3LR model with {model_params['num_output_heads']} heads"
         )

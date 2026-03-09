@@ -17,6 +17,7 @@ from typing import Optional
 import ase.io
 import torch
 
+from so3krates_torch.config import PreprocessArgs
 from so3krates_torch.data.atomic_data import AtomicData
 from so3krates_torch.data.hdf5_utils import (
     compute_and_format_e0s,
@@ -290,10 +291,7 @@ def main():
     )
 
     args = parser.parse_args()
-
-    # Validation
-    if args.mode == "preprocessed" and args.r_max is None:
-        parser.error("--r-max required for preprocessed mode")
+    PreprocessArgs.model_validate(vars(args))
 
     # Set PyTorch default dtype
     if args.dtype == "float32":

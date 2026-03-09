@@ -9,6 +9,7 @@ from ase.data import atomic_numbers as ase_atomic_numbers
 from ase.data import chemical_symbols
 
 from so3krates_torch.calculator.lammps_mliap_so3 import LAMMPS_MLIAP_SO3
+from so3krates_torch.config import CreateLammpsArgs
 from so3krates_torch.modules.models import MultiHeadSO3LR, SO3LR
 
 
@@ -122,6 +123,7 @@ def select_head(model):
 
 def main():
     args = parse_args()
+    CreateLammpsArgs.model_validate(vars(args))
     model_path = args.model_path
 
     if not os.path.isfile(model_path):

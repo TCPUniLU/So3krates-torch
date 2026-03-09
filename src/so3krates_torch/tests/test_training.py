@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 import torch
 from ase.io import read
+from pydantic import ValidationError
 
 from so3krates_torch.cli.run_train import create_model
+from so3krates_torch.config import ArchitectureConfig
 from so3krates_torch.data.utils import KeySpecification
 from so3krates_torch.modules.loss import (
     WeightedEnergyForcesLoss,
@@ -246,75 +248,47 @@ def test_all_parameters_receive_gradients(
     ), f"Parameters without gradients after backward: {no_grad}"
 
 
-def test_create_model_validates_lr_cutoff_missing(device):
-    """Test that create_model raises error when r_max_lr is None but
-    long-range physics is enabled."""
-    config = {
-        "GENERAL": {
-            "name_exp": "test",
-            "seed": 42,
-            "default_dtype": "float32",
-        },
-        "ARCHITECTURE": {
-            "degrees": [1, 2],
-            "r_max": 5.0,
-            "r_max_lr": None,  # Missing!
-            "electrostatic_energy_bool": True,  # Enabled
-            "dispersion_energy_bool": False,
-        },
-    }
-
+def test_arch_config_validates_lr_cutoff_missing():
+    """Test that ArchitectureConfig raises error when r_max_lr is
+    None but long-range physics is enabled."""
     with pytest.raises(
-        ValueError, match="Long-range cutoff.*must be specified"
+        ValidationError, match="Long-range cutoff.*must be specified"
     ):
-        create_model(config, device)
+        ArchitectureConfig(
+            degrees=[1, 2],
+            r_max=5.0,
+            r_max_lr=None,
+            electrostatic_energy_bool=True,
+            dispersion_energy_bool=False,
+        )
 
 
-def test_create_model_validates_lr_cutoff_with_dispersion(device):
-    """Test that create_model raises error when r_max_lr is None but
-    dispersion is enabled."""
-    config = {
-        "GENERAL": {
-            "name_exp": "test",
-            "seed": 42,
-            "default_dtype": "float32",
-        },
-        "ARCHITECTURE": {
-            "degrees": [1, 2],
-            "r_max": 5.0,
-            "r_max_lr": None,  # Missing!
-            "electrostatic_energy_bool": False,
-            "dispersion_energy_bool": True,  # Enabled
-        },
-    }
-
+def test_arch_config_validates_lr_cutoff_with_dispersion():
+    """Test that ArchitectureConfig raises error when r_max_lr is
+    None but dispersion is enabled."""
     with pytest.raises(
-        ValueError, match="Long-range cutoff.*must be specified"
+        ValidationError, match="Long-range cutoff.*must be specified"
     ):
-        create_model(config, device)
+        ArchitectureConfig(
+            degrees=[1, 2],
+            r_max=5.0,
+            r_max_lr=None,
+            electrostatic_energy_bool=False,
+            dispersion_energy_bool=True,
+        )
 
 
-def test_create_model_warns_unused_lr_cutoff(device, caplog):
-    """Test that create_model warns when r_max_lr is set but both
+def test_arch_config_accepts_unused_lr_cutoff():
+    """Test that ArchitectureConfig accepts r_max_lr when both
     long-range physics features are disabled."""
-    config = {
-        "GENERAL": {
-            "name_exp": "test",
-            "seed": 42,
-            "default_dtype": "float32",
-        },
-        "ARCHITECTURE": {
-            "degrees": [1, 2],
-            "r_max": 5.0,
-            "r_max_lr": 10.0,  # Set but not used
-            "electrostatic_energy_bool": False,  # Disabled
-            "dispersion_energy_bool": False,  # Disabled
-        },
-    }
-
-    model = create_model(config, device)
-    assert model is not None
-    assert "will be computed but not used" in caplog.text
+    cfg = ArchitectureConfig(
+        degrees=[1, 2],
+        r_max=5.0,
+        r_max_lr=10.0,
+        electrostatic_energy_bool=False,
+        dispersion_energy_bool=False,
+    )
+    assert cfg.r_max_lr == 10.0
 
 
 def test_create_model_accepts_valid_lr_config(device):

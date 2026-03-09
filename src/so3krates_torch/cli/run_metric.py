@@ -1,3 +1,4 @@
+from so3krates_torch.config import MetricArgs
 from so3krates_torch.tools.eval import test_ensemble
 from so3krates_torch.tools.utils import ensemble_from_folder
 import torch
@@ -114,6 +115,7 @@ def main():
     )
 
     args = parser.parse_args()
+    MetricArgs.model_validate(vars(args))
     # setup logger to save to 'test_ensemble.log'
     logging.basicConfig(filename=args.log_file, level=logging.INFO)
     logging.info("Starting test.")
