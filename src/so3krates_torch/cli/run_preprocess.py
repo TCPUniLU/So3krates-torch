@@ -205,6 +205,10 @@ def create_keyspec_from_args(args) -> KeySpecification:
         keydict["dipole_key"] = args.dipole_key
     if args.charges_key:
         keydict["charges_key"] = args.charges_key
+    if args.total_charge_key:
+        keydict["total_charge_key"] = args.total_charge_key
+    if args.total_spin_key:
+        keydict["total_spin_key"] = args.total_spin_key
 
     keyspec = KeySpecification()
     return update_keyspec_from_kwargs(keyspec, keydict)
@@ -269,6 +273,18 @@ def main():
         type=str,
         default=None,
         help="Key for charges (default: REF_charges)",
+    )
+    parser.add_argument(
+        "--total-charge-key",
+        type=str,
+        default=None,
+        help="Key for total charge in XYZ info (default: total_charge)",
+    )
+    parser.add_argument(
+        "--total-spin-key",
+        type=str,
+        default=None,
+        help="Key for total spin in XYZ info (default: total_spin)",
     )
     parser.add_argument(
         "--description", type=str, default=None, help="Dataset description"
