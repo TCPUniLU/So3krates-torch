@@ -595,7 +595,7 @@ def _setup_singlehead_data_loaders(
 ) -> tuple:
     """Setup data loaders for single-head training."""
     keydict = DefaultKeys.keydict()
-    keydict.update(config["TRAINING"].get("keys", {}))
+    keydict.update(config["TRAINING"].get("keys") or {})
     keyspec = update_keyspec_from_kwargs(KeySpecification(), keydict)
 
     r_max = config["ARCHITECTURE"].get("r_max", None)
@@ -759,27 +759,6 @@ def _setup_singlehead_data_loaders(
         avg_num_neighbors,
         num_elements,
         average_atomic_energy_shifts,
-    )
-
-
-def setup_data_loaders(
-    config: dict,
-    distributed: bool = False,
-    rank: int = 0,
-    world_size: int = 1,
-) -> tuple:
-    """Setup training and validation data loaders.
-
-    Returns (train_loader, valid_loaders, train_sampler,
-             avg_num_neighbors, num_elements,
-             average_atomic_energy_shifts).
-    """
-    if config["TRAINING"].get("heads", None) is not None:
-        return _setup_multihead_data_loaders(
-            config, distributed, rank, world_size
-        )
-    return _setup_singlehead_data_loaders(
-        config, distributed, rank, world_size
     )
 
 
