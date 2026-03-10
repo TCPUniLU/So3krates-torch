@@ -640,9 +640,7 @@ def _setup_singlehead_data_loaders(
             f"Split data: {n_train} train, "
             f"{n_valid} valid (ratio={valid_ratio})"
         )
-    elif (is_preprocessed or is_lazy) and config["TRAINING"].get(
-        "num_train"
-    ):
+    elif (is_preprocessed or is_lazy) and config["TRAINING"].get("num_train"):
         num_train = config["TRAINING"]["num_train"]
         n = min(len(train_atomic_data), num_train)
         indices = list(range(len(train_atomic_data)))
