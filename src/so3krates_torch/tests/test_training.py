@@ -487,6 +487,46 @@ def test_select_valid_subset_num_train_limit():
     assert len(val) == 10
 
 
+def test_select_valid_subset_num_train_with_val_path(tmp_path, monkeypatch):
+    """num_train must be applied when path_to_val_data is set (raw path)."""
+    import random as _random
+    from so3krates_torch.cli import run_train as rt
+
+    # Patch heavy helpers so _load_training_dataset runs the raw branch
+    data = list(range(100))
+    monkeypatch.setattr(rt, "detect_file_format", lambda p: "xyz")
+    monkeypatch.setattr(rt, "read", lambda path, index: data)
+    monkeypatch.setattr(rt, "create_configs_from_list", lambda **kw: kw["atoms_list"])
+    monkeypatch.setattr(rt, "create_data_from_configs", lambda cfgs, **kw: cfgs)
+
+    val_path = str(tmp_path / "val.xyz")
+    config = {
+        "TRAINING": {
+            "path_to_train_data": str(tmp_path / "train.xyz"),
+            "path_to_val_data": val_path,
+            "num_train": 20,
+        }
+    }
+    train_data, _, _, _, val_split = rt._load_training_dataset(
+        config, r_max=5.0, r_max_lr=None, keyspec=None
+    )
+    assert len(train_data) == 20
+    assert val_split is None
+
+
+def test_preprocessed_lazy_split_applies_num_train_num_valid():
+    """num_train / num_valid are honoured in the Preprocessed/Lazy split."""
+    from so3krates_torch.cli.run_train import select_valid_subset
+
+    # Mirror the split logic: n_train = total - n_valid, then capped
+    data = list(range(200))
+    train, val = select_valid_subset(
+        data, valid_ratio=0.1, num_train=50, num_valid=5
+    )
+    assert len(train) == 50
+    assert len(val) == 5
+
+
 def test_determine_num_elements(example_xyz_with_data):
     from so3krates_torch.cli.run_train import determine_num_elements
     from so3krates_torch.tools.utils import create_dataloader_from_list

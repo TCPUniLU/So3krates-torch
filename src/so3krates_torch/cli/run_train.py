@@ -305,7 +305,12 @@ def _load_training_dataset(
         raise ValueError(f"Unsupported training file format: {train_path}")
 
     if val_data_path:
-        train_data = data
+        num_train = config["TRAINING"].get("num_train", None)
+        if num_train is not None:
+            random.shuffle(data)
+            train_data = data[:num_train]
+        else:
+            train_data = data
         val_split = None
     else:
         valid_ratio = config["TRAINING"].get("valid_ratio", 0.1)
@@ -616,17 +621,34 @@ def _setup_singlehead_data_loaders(
         "path_to_val_data"
     ):
         valid_ratio = config["TRAINING"].get("valid_ratio", 0.1)
+        num_train = config["TRAINING"].get("num_train", None)
+        num_valid = config["TRAINING"].get("num_valid", None)
         n_total = len(train_atomic_data)
         indices = list(range(n_total))
         random.shuffle(indices)
         n_valid = int(n_total * valid_ratio)
         n_train = n_total - n_valid
-        valid_subset = Subset(train_atomic_data, indices[n_train:])
+        if num_train is not None:
+            n_train = min(n_train, num_train)
+        if num_valid is not None:
+            n_valid = min(n_valid, num_valid)
+        valid_subset = Subset(
+            train_atomic_data, indices[n_train : n_train + n_valid]
+        )
         train_atomic_data = Subset(train_atomic_data, indices[:n_train])
         logging.info(
             f"Split data: {n_train} train, "
             f"{n_valid} valid (ratio={valid_ratio})"
         )
+    elif (is_preprocessed or is_lazy) and config["TRAINING"].get(
+        "num_train"
+    ):
+        num_train = config["TRAINING"]["num_train"]
+        n = min(len(train_atomic_data), num_train)
+        indices = list(range(len(train_atomic_data)))
+        random.shuffle(indices)
+        train_atomic_data = Subset(train_atomic_data, indices[:n])
+        logging.info(f"Limiting training data to {n} samples")
 
     # Train loader + optional DDP sampler
     train_sampler = None
