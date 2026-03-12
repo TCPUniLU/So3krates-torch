@@ -52,7 +52,7 @@ from so3krates_torch.tools.checkpoint import (
 from torch_ema import ExponentialMovingAverage
 from so3krates_torch.tools.train import train
 from so3krates_torch.tools.finetune import fuse_lora_weights, setup_finetuning
-from so3krates_torch.tools.torch_geometric import DataLoader
+from so3krates_torch.tools.torch_geometric import DataLoader, seed_everything
 import os
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Subset
@@ -1377,6 +1377,10 @@ def run_training(config: dict) -> None:
 
     dtype_str = config["GENERAL"].get("default_dtype", "float32")
     torch.set_default_dtype(DTYPE_MAP[dtype_str])
+
+    seed = config["GENERAL"].get("seed", 42)
+    seed_everything(seed)
+    logging.info(f"Global seed set to {seed}")
 
     no_checkpoint = config["MISC"].get("no_checkpoint", False)
 
