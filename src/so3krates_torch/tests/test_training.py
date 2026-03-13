@@ -8,7 +8,7 @@ import torch
 from ase.io import read
 from pydantic import ValidationError
 
-from so3krates_torch.cli.run_train import create_model
+from so3krates_torch.tools.model_setup import create_model
 from so3krates_torch.config import ArchitectureConfig
 from so3krates_torch.data.utils import KeySpecification
 from so3krates_torch.modules.loss import (
@@ -315,7 +315,7 @@ def test_create_model_accepts_valid_lr_config(device):
 
 
 def test_setup_optimizer_and_scheduler_adam(default_model_config):
-    from so3krates_torch.cli.run_train import setup_optimizer_and_scheduler
+    from so3krates_torch.tools.training_setup import setup_optimizer_and_scheduler
     from so3krates_torch.modules.models import So3krates
 
     model = So3krates(**default_model_config)
@@ -337,7 +337,7 @@ def test_setup_optimizer_and_scheduler_adam(default_model_config):
 
 
 def test_setup_optimizer_and_scheduler_plateau(default_model_config):
-    from so3krates_torch.cli.run_train import setup_optimizer_and_scheduler
+    from so3krates_torch.tools.training_setup import setup_optimizer_and_scheduler
     from so3krates_torch.modules.models import So3krates
 
     model = So3krates(**default_model_config)
@@ -356,7 +356,7 @@ def test_setup_optimizer_and_scheduler_plateau(default_model_config):
 
 
 def test_setup_optimizer_invalid_name_raises(default_model_config):
-    from so3krates_torch.cli.run_train import setup_optimizer_and_scheduler
+    from so3krates_torch.tools.training_setup import setup_optimizer_and_scheduler
     from so3krates_torch.modules.models import So3krates
 
     model = So3krates(**default_model_config)
@@ -366,7 +366,7 @@ def test_setup_optimizer_invalid_name_raises(default_model_config):
 
 
 def test_process_config_atomic_energies_int_keys():
-    from so3krates_torch.cli.run_train import process_config_atomic_energies
+    from so3krates_torch.tools.model_setup import process_config_atomic_energies
 
     shifts = process_config_atomic_energies({1: -13.6, 6: -1027.0, 8: -2042.0})
     assert shifts[1] == -13.6
@@ -379,7 +379,7 @@ def test_process_config_atomic_energies_int_keys():
 
 
 def test_process_config_atomic_energies_str_keys():
-    from so3krates_torch.cli.run_train import process_config_atomic_energies
+    from so3krates_torch.tools.model_setup import process_config_atomic_energies
 
     shifts = process_config_atomic_energies({"1": -13.6, "6": -1027.0})
     assert shifts[1] == -13.6
@@ -387,7 +387,7 @@ def test_process_config_atomic_energies_str_keys():
 
 
 def test_set_avg_num_neighbors_in_model(default_model_config):
-    from so3krates_torch.cli.run_train import set_avg_num_neighbors_in_model
+    from so3krates_torch.tools.model_setup import set_avg_num_neighbors_in_model
     from so3krates_torch.modules.models import So3krates
 
     model = So3krates(**default_model_config)
@@ -399,7 +399,7 @@ def test_set_avg_num_neighbors_in_model(default_model_config):
 
 
 def test_set_atomic_energy_shifts_in_model(default_model_config, device):
-    from so3krates_torch.cli.run_train import (
+    from so3krates_torch.tools.model_setup import (
         set_atomic_energy_shifts_in_model,
     )
     from so3krates_torch.modules.models import So3krates
@@ -415,7 +415,7 @@ def test_set_atomic_energy_shifts_in_model(default_model_config, device):
 
 
 def test_set_dtype_model_float32(default_model_config):
-    from so3krates_torch.cli.run_train import set_dtype_model
+    from so3krates_torch.tools.model_setup import set_dtype_model
     from so3krates_torch.modules.models import So3krates
 
     model = So3krates(**default_model_config)
@@ -425,7 +425,7 @@ def test_set_dtype_model_float32(default_model_config):
 
 
 def test_set_dtype_model_float64(default_model_config):
-    from so3krates_torch.cli.run_train import set_dtype_model
+    from so3krates_torch.tools.model_setup import set_dtype_model
     from so3krates_torch.modules.models import So3krates
 
     model = So3krates(**default_model_config)
@@ -435,7 +435,7 @@ def test_set_dtype_model_float64(default_model_config):
 
 
 def test_set_dtype_model_invalid_raises(default_model_config):
-    from so3krates_torch.cli.run_train import set_dtype_model
+    from so3krates_torch.tools.model_setup import set_dtype_model
     from so3krates_torch.modules.models import So3krates
 
     model = So3krates(**default_model_config)
@@ -444,7 +444,7 @@ def test_set_dtype_model_invalid_raises(default_model_config):
 
 
 def test_setup_loss_function_auto_energy_forces():
-    from so3krates_torch.cli.run_train import setup_loss_function
+    from so3krates_torch.tools.training_setup import setup_loss_function
     from so3krates_torch.modules.loss import WeightedEnergyForcesLoss
 
     config = {
@@ -460,7 +460,7 @@ def test_setup_loss_function_auto_energy_forces():
 
 
 def test_setup_loss_function_invalid_type_raises():
-    from so3krates_torch.cli.run_train import setup_loss_function
+    from so3krates_torch.tools.training_setup import setup_loss_function
 
     config = {"TRAINING": {"loss_type": "nonexistent"}}
     with pytest.raises(ValueError, match="Unknown loss_type"):
@@ -468,7 +468,7 @@ def test_setup_loss_function_invalid_type_raises():
 
 
 def test_select_valid_subset_split_ratio():
-    from so3krates_torch.cli.run_train import select_valid_subset
+    from so3krates_torch.tools.data_setup import select_valid_subset
 
     data = list(range(100))
     train, val = select_valid_subset(data, valid_ratio=0.2)
@@ -479,7 +479,7 @@ def test_select_valid_subset_split_ratio():
 
 
 def test_select_valid_subset_num_train_limit():
-    from so3krates_torch.cli.run_train import select_valid_subset
+    from so3krates_torch.tools.data_setup import select_valid_subset
 
     data = list(range(100))
     train, val = select_valid_subset(data, valid_ratio=0.1, num_train=30)
@@ -490,7 +490,7 @@ def test_select_valid_subset_num_train_limit():
 def test_select_valid_subset_num_train_with_val_path(tmp_path, monkeypatch):
     """num_train must be applied when path_to_val_data is set (raw path)."""
     import random as _random
-    from so3krates_torch.cli import run_train as rt
+    from so3krates_torch.tools import data_setup as rt
 
     # Patch heavy helpers so _load_training_dataset runs the raw branch
     data = list(range(100))
@@ -520,7 +520,7 @@ def test_select_valid_subset_num_train_with_val_path(tmp_path, monkeypatch):
 
 def test_preprocessed_lazy_split_applies_num_train_num_valid():
     """num_train / num_valid are honoured in the Preprocessed/Lazy split."""
-    from so3krates_torch.cli.run_train import select_valid_subset
+    from so3krates_torch.tools.data_setup import select_valid_subset
 
     # Mirror the split logic: n_train = total - n_valid, then capped
     data = list(range(200))
@@ -532,7 +532,7 @@ def test_preprocessed_lazy_split_applies_num_train_num_valid():
 
 
 def test_determine_num_elements(example_xyz_with_data):
-    from so3krates_torch.cli.run_train import determine_num_elements
+    from so3krates_torch.tools.model_setup import determine_num_elements
     from so3krates_torch.tools.utils import create_dataloader_from_list
     from ase.io import read
 
