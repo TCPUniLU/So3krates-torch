@@ -221,9 +221,7 @@ class CheckpointHandler:
         keep_last: bool = False,
         config: Optional[dict] = None,
     ) -> None:
-        checkpoint = self.builder.create_checkpoint(
-            state, config=config
-        )
+        checkpoint = self.builder.create_checkpoint(state, config=config)
         self.io.save(checkpoint, epochs, keep_last)
 
     def load_latest(
