@@ -174,6 +174,9 @@ def train(
     distributed_model: Optional[DistributedDataParallel] = None,
     train_sampler: Optional[DistributedSampler] = None,
     rank: Optional[int] = 0,
+    config: Optional[dict] = None,
+    early_stopping_min_delta: float = 0.0,
+    early_stopping_warmup: int = 0,
 ):
     lowest_loss = np.inf
     valid_loss = np.inf
@@ -215,6 +218,8 @@ def train(
         valid_loss_head  # consider only the last head for the checkpoint
     )
 
+    epoch_times = []
+
     while epoch < max_num_epochs:
         # LR scheduler and SWA update
         if swa is None or epoch < swa.start:
@@ -247,6 +252,7 @@ def train(
             train_sampler.set_epoch(epoch)
         if "ScheduleFree" in type(optimizer).__name__:
             optimizer.train()
+        t0 = time.time()
         train_one_epoch(
             model=model,
             loss_fn=loss_fn,
@@ -264,6 +270,10 @@ def train(
         )
         if distributed:
             torch.distributed.barrier()
+        epoch_duration = time.time() - t0
+        epoch_times.append(epoch_duration)
+        if len(epoch_times) > 10:
+            epoch_times.pop(0)
 
         # Validate
         if epoch % eval_interval == 0:
@@ -309,20 +319,57 @@ def train(
                     except Exception as e:  # pylint: disable=broad-except
                         logging.debug(f"Plotting failed: {e}")
                 valid_loss = valid_loss_head  # consider only the last head for the checkpoint
+                if rank == 0:
+                    avg_epoch_time = sum(epoch_times) / len(epoch_times)
+                    remaining = max_num_epochs - epoch
+                    eta_sec = avg_epoch_time * remaining
+                    eta_h = int(eta_sec // 3600)
+                    eta_m = int((eta_sec % 3600) // 60)
+                    logging.info(
+                        f"Throughput: {avg_epoch_time:.1f}s/epoch"
+                        f" | ETA: {eta_h}h {eta_m}m"
+                        f" ({remaining} epochs remaining)"
+                    )
             if log_wandb:
                 wandb.log(wandb_log_dict)
             if rank == 0:
-                if valid_loss >= lowest_loss:
+                improvement = lowest_loss - valid_loss
+                if improvement > early_stopping_min_delta:
+                    lowest_loss = valid_loss
+                    patience_counter = 0
+                    param_context = (
+                        ema.average_parameters()
+                        if ema is not None
+                        else nullcontext()
+                    )
+                    with param_context:
+                        checkpoint_handler.save(
+                            state=CheckpointState(
+                                model, optimizer, lr_scheduler
+                            ),
+                            epochs=epoch,
+                            keep_last=keep_last,
+                            config=config,
+                        )
+                        keep_last = False or save_all_checkpoints
+                else:
                     patience_counter += 1
-                    if patience_counter >= patience:
+                    if (
+                        patience_counter >= patience
+                        and epoch >= early_stopping_warmup
+                    ):
                         if swa is not None and epoch < swa.start:
                             logging.info(
-                                f"Stopping optimization after {patience_counter} epochs without improvement and starting Stage Two"
+                                f"Stopping optimization after"
+                                f" {patience_counter} epochs without"
+                                f" improvement and starting Stage Two"
                             )
                             epoch = swa.start
                         else:
                             logging.info(
-                                f"Stopping optimization after {patience_counter} epochs without improvement"
+                                f"Stopping optimization after"
+                                f" {patience_counter} epochs without"
+                                f" improvement"
                             )
                             break
                     if save_all_checkpoints:
@@ -338,24 +385,8 @@ def train(
                                 ),
                                 epochs=epoch,
                                 keep_last=True,
+                                config=config,
                             )
-                else:
-                    lowest_loss = valid_loss
-                    patience_counter = 0
-                    param_context = (
-                        ema.average_parameters()
-                        if ema is not None
-                        else nullcontext()
-                    )
-                    with param_context:
-                        checkpoint_handler.save(
-                            state=CheckpointState(
-                                model, optimizer, lr_scheduler
-                            ),
-                            epochs=epoch,
-                            keep_last=keep_last,
-                        )
-                        keep_last = False or save_all_checkpoints
         if distributed:
             torch.distributed.barrier()
         epoch += 1
@@ -393,6 +424,13 @@ def train_one_epoch(
             distributed=distributed,
             rank=rank,
         )
+        if not np.isfinite(opt_metrics["loss"]):
+            raise RuntimeError(
+                f"Loss became non-finite ({opt_metrics['loss']})"
+                f" at epoch {epoch}. "
+                "Check: (1) learning rate, (2) loss weights, "
+                "(3) input data for NaN/Inf values."
+            )
         opt_metrics["mode"] = "opt"
         opt_metrics["epoch"] = epoch
         if rank == 0:
@@ -409,6 +447,14 @@ def train_one_epoch(
                 max_grad_norm=max_grad_norm,
                 device=device,
             )
+            if not np.isfinite(opt_metrics["loss"]):
+                raise RuntimeError(
+                    f"Loss became non-finite"
+                    f" ({opt_metrics['loss']})"
+                    f" at epoch {epoch}. "
+                    "Check: (1) learning rate, (2) loss weights,"
+                    " (3) input data for NaN/Inf values."
+                )
             opt_metrics["mode"] = "opt"
             opt_metrics["epoch"] = epoch
             if rank == 0:
@@ -428,8 +474,10 @@ def take_step(
     start_time = time.time()
     batch = batch.to(device)
     batch_dict = batch.to_dict()
+    grad_norm = None
 
     def closure():
+        nonlocal grad_norm
         optimizer.zero_grad(set_to_none=True)
         output = model(
             batch_dict,
@@ -441,9 +489,11 @@ def take_step(
         loss = loss_fn(pred=output, ref=batch)
         loss.backward()
         if max_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(
+            grad_norm = torch.nn.utils.clip_grad_norm_(
                 model.parameters(), max_norm=max_grad_norm
             )
+        else:
+            grad_norm = None
 
         return loss
 
@@ -456,6 +506,7 @@ def take_step(
     loss_dict = {
         "loss": to_numpy(loss),
         "time": time.time() - start_time,
+        "grad_norm": (to_numpy(grad_norm) if grad_norm is not None else None),
     }
 
     return loss, loss_dict
@@ -490,8 +541,10 @@ def take_step_lbfgs(
         total_sample_count = global_sample_count.item()
 
     signal = torch.zeros(1, device=device) if distributed else None
+    grad_norm = None
 
     def closure():
+        nonlocal grad_norm
         if distributed:
             if rank == 0:
                 signal.fill_(1)
@@ -521,9 +574,11 @@ def take_step_lbfgs(
             total_loss += batch_loss
 
         if max_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(
+            grad_norm = torch.nn.utils.clip_grad_norm_(
                 model.parameters(), max_norm=max_grad_norm
             )
+        else:
+            grad_norm = None
 
         if distributed:
             torch.distributed.all_reduce(
@@ -556,6 +611,7 @@ def take_step_lbfgs(
     loss_dict = {
         "loss": to_numpy(loss),
         "time": time.time() - start_time,
+        "grad_norm": (to_numpy(grad_norm) if grad_norm is not None else None),
     }
 
     return loss, loss_dict
