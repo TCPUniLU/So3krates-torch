@@ -39,6 +39,11 @@ Train an SO3LR (or multi-head SO3LR) model from a YAML configuration file.
 torchkrates-train --config config.yaml
 ```
 
+| Flag | Description |
+|------|-------------|
+| `--config` | Path to the YAML training configuration file |
+| `--dry-run` | Validates the config, builds the model, runs one forward pass, prints parameter count, then exits. Use this to check a config before submitting a long HPC job. |
+
 See the **[Training Configuration](#training-configuration)** section below for detailed documentation of all configuration options.
 
 ---
@@ -131,9 +136,80 @@ torchkrates-create-lammps-model model.pt --elements Si O
 
 Run inference over an ASE-readable dataset.
 
+```bash
+torchkrates-eval --model_path my_model.model --data_path test_set.xyz
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--model_path` | *required* | Path to a single `.model` file, or a directory of `.model` files (use with `--ensemble_size N` for ensemble inference) |
+| `--data_path` | *required* | ASE-readable dataset (xyz, extxyz, HDF5) |
+| `--output_file` | `results.h5` | Output HDF5 file |
+| `--ensemble_size` | `1` | Number of models to load from a directory |
+| `--device` | `cuda` | `cuda` or `cpu` |
+| `--batch_size` | `5` | Structures per batch |
+| `--dtype` | `float32` | `float32` or `float64` |
+| `--multihead_model` | `False` | Enable multi-head model support |
+| `--compute_dipole` | `False` | Compute dipole predictions |
+| `--compute_stress` | `False` | Compute stress predictions |
+| `--compute_hirshfeld` | `False` | Compute Hirshfeld ratio predictions |
+| `--compute_partial_charges` | `False` | Compute partial charge predictions |
+| `--energy_key` | `REF_energy` | Key for reference energies in the dataset |
+| `--forces_key` | `REF_forces` | Key for reference forces |
+| `--dipole_key` | `REF_dipoles` | Key for reference dipoles |
+| `--charges_key` | `REF_charges` | Key for reference partial charges |
+| `--hirshfeld_key` | `REF_hirsh_ratios` | Key for reference Hirshfeld ratios |
+| `--total_charge_key` | `charge` | Key for total charge |
+| `--total_spin_key` | `total_spin` | Key for total spin |
+
+---
+
 ### `torchkrates-metric` — Error Metrics
 
-Compute error metrics over an ASE-readable dataset.
+Compute error metrics over an ASE-readable dataset. Prints a table with MAE and RMSE per atom for each property.
+
+```bash
+torchkrates-metric --models my_model.model --data test_set.xyz
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--models` | *required* | Path to a model file or a directory of model files |
+| `--data` | *required* | Dataset path (must contain reference values) |
+| `--output_args` | `energy forces` | Properties to evaluate. Can include `stress`, `dipole`, `hirshfeld_ratios`, etc. |
+| `--batch_size` | `16` | Structures per batch |
+| `--device` | `cpu` | `cuda` or `cpu` |
+| `--save` | `./` | Directory for output files |
+| `--results_file` | `ensemble_test_results.npz` | `.npz` file with raw error arrays |
+| `--r_max_lr` | `None` | Long-range cutoff when model uses electrostatics/dispersion |
+| `--multihead_model` | `False` | Enable multi-head model support |
+| `--multihead_return_mean` | `False` | Return mean prediction across heads |
+| `--energy_key` | `REF_energy` | Key for reference energies |
+| `--forces_key` | `REF_forces` | Key for reference forces |
+| `--dipole_key` | `REF_dipoles` | Key for reference dipoles |
+| `--charges_key` | `REF_charges` | Key for reference partial charges |
+| `--hirshfeld_key` | `REF_hirsh_ratios` | Key for reference Hirshfeld ratios |
+| `--total_charge_key` | `charge` | Key for total charge |
+| `--total_spin_key` | `total_spin` | Key for total spin |
+
+#### End-to-End Workflow
+
+```bash
+# Validate config before submitting a long training job
+torchkrates-train --config config.yaml --dry-run
+
+# Run inference on a test set
+torchkrates-eval \
+  --model_path my_model.model \
+  --data_path test_set.xyz \
+  --output_file predictions.h5
+
+# Compute error metrics
+torchkrates-metric \
+  --models my_model.model \
+  --data test_set.xyz \
+  --output_args energy forces
+```
 
 ### `torchkrates-jax2torch` / `torchkrates-torch2jax` — Weight Conversion
 
@@ -298,10 +374,18 @@ TRAINING:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `scheduler` | `str` | `"exponential_decay"` | Learning rate scheduler. Options: `exponential_decay`, `reduce_on_plateau`. |
+| `scheduler` | `str` | `"exponential_decay"` | Learning rate scheduler. Options: `exponential_decay`, `reduce_on_plateau`, `cosine_annealing`, `warmup_cosine`. |
 | `lr_scheduler_gamma` | `float` | `0.9993` | Multiplicative decay factor applied every epoch (for `exponential_decay`). An effective learning rate after *N* epochs is `lr * gamma^N`. |
 | `scheduler_patience` | `int` | `5` | Number of epochs with no improvement before reducing the learning rate (for `reduce_on_plateau`). |
 | `lr_factor` | `float` | `0.85` | Factor by which the learning rate is reduced when the plateau is reached (for `reduce_on_plateau`). |
+| `scheduler_args` | `dict` | `{}` | Additional keyword arguments passed to the scheduler (e.g. `T_max`, `eta_min` for `cosine_annealing`). |
+| `warmup_steps` | `int` | `0` | Number of warmup epochs for the `warmup_cosine` scheduler. During warmup, the learning rate increases linearly from 0 to `lr`. |
+
+Scheduler options:
+- `exponential_decay` — multiplies learning rate by `lr_scheduler_gamma` every epoch.
+- `reduce_on_plateau` — reduces learning rate by `lr_factor` after `scheduler_patience` epochs without improvement.
+- `cosine_annealing` — cosine decay to `eta_min` over `T_max` epochs (configurable via `scheduler_args`).
+- `warmup_cosine` — linear warmup for `warmup_steps` epochs, then cosine annealing.
 
 #### Loss Function
 
@@ -322,6 +406,8 @@ The loss function is automatically determined based on which weights are non-zer
 | `num_epochs` | `int` | *required* | Maximum number of training epochs. |
 | `eval_interval` | `int` | `1` | Run validation every N epochs. |
 | `patience` | `int` | `50` | Early stopping patience: training stops after this many consecutive epochs without improvement on the validation loss. |
+| `early_stopping_min_delta` | `float` | `0.0` | Minimum loss improvement required to reset the patience counter. |
+| `early_stopping_warmup` | `int` | `0` | Number of epochs before early stopping becomes active. |
 | `clip_grad` | `float` | `10.0` | Maximum gradient norm for gradient clipping. Set to `null` to disable. |
 
 #### Exponential Moving Average (EMA)
@@ -392,7 +478,14 @@ These apply when `finetune_choice` is one of `lora`, `dora`, `vera`, or their `+
 | `restart_latest` | `bool` | `True` | Automatically resume from the latest checkpoint in `checkpoints_dir` if one exists. |
 | `keep_checkpoints` | `bool` | `False` | Keep all checkpoints. When `False`, only the best checkpoint (lowest validation loss) is kept. |
 | `no_checkpoint` | `bool` | `False` | Disable checkpoint loading entirely (overrides `restart_latest`). Useful for forcing a fresh start. |
+| `deterministic_seed` | `bool` | `False` | Enable `cudnn.deterministic` for full reproducibility (slower). See [Reproducibility](#reproducibility) below. |
 
+
+## Reproducibility
+
+Set `seed` in the `GENERAL` section to fix random weight initialization and data shuffling. For full determinism (at the cost of ~10–20% slower training), also set `deterministic_seed: true` in `MISC`. The training config is automatically saved to `{checkpoints_dir}/config.yaml` at the start of each run and embedded in each checkpoint file.
+
+---
 
 ## Cite
 If you are using the models implemented here please cite:
