@@ -315,7 +315,9 @@ def test_create_model_accepts_valid_lr_config(device):
 
 
 def test_setup_optimizer_and_scheduler_adam(default_model_config):
-    from so3krates_torch.tools.training_setup import setup_optimizer_and_scheduler
+    from so3krates_torch.tools.training_setup import (
+        setup_optimizer_and_scheduler,
+    )
     from so3krates_torch.modules.models import So3krates
 
     model = So3krates(**default_model_config)
@@ -337,7 +339,9 @@ def test_setup_optimizer_and_scheduler_adam(default_model_config):
 
 
 def test_setup_optimizer_and_scheduler_plateau(default_model_config):
-    from so3krates_torch.tools.training_setup import setup_optimizer_and_scheduler
+    from so3krates_torch.tools.training_setup import (
+        setup_optimizer_and_scheduler,
+    )
     from so3krates_torch.modules.models import So3krates
 
     model = So3krates(**default_model_config)
@@ -356,7 +360,9 @@ def test_setup_optimizer_and_scheduler_plateau(default_model_config):
 
 
 def test_setup_optimizer_invalid_name_raises(default_model_config):
-    from so3krates_torch.tools.training_setup import setup_optimizer_and_scheduler
+    from so3krates_torch.tools.training_setup import (
+        setup_optimizer_and_scheduler,
+    )
     from so3krates_torch.modules.models import So3krates
 
     model = So3krates(**default_model_config)
@@ -366,7 +372,9 @@ def test_setup_optimizer_invalid_name_raises(default_model_config):
 
 
 def test_process_config_atomic_energies_int_keys():
-    from so3krates_torch.tools.model_setup import process_config_atomic_energies
+    from so3krates_torch.tools.model_setup import (
+        process_config_atomic_energies,
+    )
 
     shifts = process_config_atomic_energies({1: -13.6, 6: -1027.0, 8: -2042.0})
     assert shifts[1] == -13.6
@@ -379,7 +387,9 @@ def test_process_config_atomic_energies_int_keys():
 
 
 def test_process_config_atomic_energies_str_keys():
-    from so3krates_torch.tools.model_setup import process_config_atomic_energies
+    from so3krates_torch.tools.model_setup import (
+        process_config_atomic_energies,
+    )
 
     shifts = process_config_atomic_energies({"1": -13.6, "6": -1027.0})
     assert shifts[1] == -13.6
@@ -387,7 +397,9 @@ def test_process_config_atomic_energies_str_keys():
 
 
 def test_set_avg_num_neighbors_in_model(default_model_config):
-    from so3krates_torch.tools.model_setup import set_avg_num_neighbors_in_model
+    from so3krates_torch.tools.model_setup import (
+        set_avg_num_neighbors_in_model,
+    )
     from so3krates_torch.modules.models import So3krates
 
     model = So3krates(**default_model_config)
