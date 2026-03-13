@@ -1,6 +1,7 @@
 import argparse
 import logging
 
+import numpy as np
 import yaml
 import torch
 
@@ -66,6 +67,12 @@ DTYPE_MAP = {
     "float16": torch.float16,
     "bfloat16": torch.bfloat16,
 }
+
+
+def _worker_init_fn(worker_id: int) -> None:
+    seed = torch.initial_seed() % (2**32)
+    np.random.seed(seed)
+    random.seed(seed)
 
 
 def setup_config_from_yaml(config_path: str) -> dict:
@@ -670,6 +677,7 @@ def _setup_singlehead_data_loaders(
             prefetch_factor=prefetch_factor,
             persistent_workers=(num_workers > 0),
             collate_fn=Collater([None], [None]),
+            worker_init_fn=_worker_init_fn,
         )
         logging.info(
             f"Lazy DataLoader: num_workers={num_workers}, "
@@ -1029,6 +1037,43 @@ def setup_optimizer_and_scheduler(
             factor=train_config.get("lr_factor", 0.85),
             min_lr=1e-6,
         )
+    elif scheduler_name == "cosine_annealing":
+        T_max = scheduler_args.get(
+            "T_max",
+            train_config.get("num_epochs", 1000),
+        )
+        eta_min = scheduler_args.get("eta_min", 0.0)
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=T_max,
+            eta_min=eta_min,
+        )
+    elif scheduler_name == "warmup_cosine":
+        warmup_steps = train_config.get("warmup_steps", 100)
+        T_max = scheduler_args.get(
+            "T_max",
+            train_config.get("num_epochs", 1000),
+        )
+        eta_min = scheduler_args.get("eta_min", 0.0)
+        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=1e-3,
+            end_factor=1.0,
+            total_iters=warmup_steps,
+        )
+        cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(T_max - warmup_steps, 1),
+            eta_min=eta_min,
+        )
+        lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[
+                warmup_scheduler,
+                cosine_scheduler,
+            ],
+            milestones=[warmup_steps],
+        )
     else:
         raise ValueError(f"Unsupported scheduler: {scheduler_name}")
 
@@ -1375,11 +1420,27 @@ def run_training(config: dict) -> None:
             f"local_rank={local_rank}, world_size={world_size}"
         )
 
+    if rank == 0:
+        config_save_path = os.path.join(
+            config["GENERAL"]["checkpoints_dir"],
+            "config.yaml",
+        )
+        os.makedirs(
+            config["GENERAL"]["checkpoints_dir"],
+            exist_ok=True,
+        )
+        with open(config_save_path, "w") as f:
+            yaml.dump(config, f, default_flow_style=False)
+        logging.info(f"Config saved to {config_save_path}")
+
     dtype_str = config["GENERAL"].get("default_dtype", "float32")
     torch.set_default_dtype(DTYPE_MAP[dtype_str])
 
     seed = config["GENERAL"].get("seed", 42)
-    seed_everything(seed)
+    seed_everything(
+        seed,
+        deterministic=config["MISC"].get("deterministic_seed", False),
+    )
     logging.info(f"Global seed set to {seed}")
 
     no_checkpoint = config["MISC"].get("no_checkpoint", False)
@@ -1489,6 +1550,16 @@ def run_training(config: dict) -> None:
             config=config,
         )
 
+    if rank == 0:
+        _first_batch = next(iter(train_loader))
+        for _key in ["energy", "forces"]:
+            _val = getattr(_first_batch, _key, None)
+            if _val is not None and not torch.isfinite(_val).all():
+                raise RuntimeError(
+                    f"Training data contains NaN/Inf"
+                    f" in '{_key}'. Check your dataset."
+                )
+
     logging.info("Model, data loaders, and training components initialized")
     if start_epoch > 0:
         logging.info(f"Resuming training from epoch {start_epoch}")
@@ -1544,6 +1615,13 @@ def run_training(config: dict) -> None:
         distributed_model=ddp_model,
         train_sampler=train_sampler,
         rank=rank,
+        early_stopping_min_delta=config["TRAINING"].get(
+            "early_stopping_min_delta", 0.0
+        ),
+        early_stopping_warmup=config["TRAINING"].get(
+            "early_stopping_warmup", 0
+        ),
+        config=config,
     )
     logging.info("Training completed successfully!")
 
@@ -1596,6 +1674,63 @@ def wrap_model_ddp(model, local_rank):
     )
 
 
+def run_dry_run(config: dict) -> None:
+    """Validate config and run one forward pass, then exit."""
+    logging.getLogger().handlers.clear()
+    logging.Logger.manager.loggerDict.clear()
+    setup_logging(config)
+    logging.info(
+        "Dry-run mode: validating config and running one forward pass"
+    )
+
+    dtype_str = config["GENERAL"].get("default_dtype", "float32")
+    torch.set_default_dtype(DTYPE_MAP[dtype_str])
+
+    device_name = config["MISC"].get("device", "cuda")
+    device = torch.device(device_name)
+    logging.info(f"Using device: {device}")
+
+    model, _ = _setup_model_for_training(config, device)
+
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(
+        p.numel() for p in model.parameters() if p.requires_grad
+    )
+    logging.info(f"Total parameters: {total_params}")
+    logging.info(f"Trainable parameters: {trainable_params}")
+
+    (
+        train_loader,
+        _valid_loaders,
+        _train_sampler,
+        avg_num_neighbors,
+        _num_elements,
+        average_atomic_energy_shifts,
+    ) = setup_data_loaders(config, distributed=False, rank=0, world_size=1)
+
+    set_atomic_energy_shifts_in_model(model, average_atomic_energy_shifts)
+    set_avg_num_neighbors_in_model(model, avg_num_neighbors)
+    set_dtype_model(model, dtype_str)
+
+    batch = next(iter(train_loader))
+    batch = batch.to(device)
+    batch_dict = batch.to_dict()
+
+    logging.info("Running one forward pass...")
+    with torch.no_grad():
+        output = model(
+            batch_dict,
+            training=False,
+            compute_force=True,
+            compute_virials=False,
+            compute_stress=False,
+        )
+    logging.info(
+        f"Forward pass successful. Output keys: {list(output.keys())}"
+    )
+    logging.info("Dry-run completed successfully. Exiting.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train SO3LR model")
     parser.add_argument(
@@ -1604,13 +1739,24 @@ def main():
         required=True,
         help="Path to configuration YAML file",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Validate config and run one forward pass,"
+            " then exit without training"
+        ),
+    )
     args = parser.parse_args()
 
     # Load configuration
     config = setup_config_from_yaml(args.config)
 
     # Run the training pipeline
-    run_training(config)
+    if args.dry_run:
+        run_dry_run(config)
+    else:
+        run_training(config)
 
 
 if __name__ == "__main__":
