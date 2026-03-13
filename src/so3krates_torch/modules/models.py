@@ -88,7 +88,6 @@ class So3krates(torch.nn.Module):
         if isinstance(dtype, str):
             dtype = getattr(torch, dtype)
         torch.set_default_dtype(dtype)
-        torch.manual_seed(seed)
 
         # Store all constructor arguments as model attributes
         self.r_max = r_max
