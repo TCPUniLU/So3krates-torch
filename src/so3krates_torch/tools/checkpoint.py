@@ -28,12 +28,18 @@ class CheckpointState:
 
 class CheckpointBuilder:
     @staticmethod
-    def create_checkpoint(state: CheckpointState) -> Checkpoint:
-        return {
+    def create_checkpoint(
+        state: CheckpointState,
+        config: Optional[dict] = None,
+    ) -> Checkpoint:
+        ckpt = {
             "model": state.model.state_dict(),
             "optimizer": state.optimizer.state_dict(),
             "lr_scheduler": state.lr_scheduler.state_dict(),
         }
+        if config is not None:
+            ckpt["config"] = config
+        return ckpt
 
     @staticmethod
     def load_checkpoint(
@@ -209,9 +215,15 @@ class CheckpointHandler:
         self.builder = CheckpointBuilder()
 
     def save(
-        self, state: CheckpointState, epochs: int, keep_last: bool = False
+        self,
+        state: CheckpointState,
+        epochs: int,
+        keep_last: bool = False,
+        config: Optional[dict] = None,
     ) -> None:
-        checkpoint = self.builder.create_checkpoint(state)
+        checkpoint = self.builder.create_checkpoint(
+            state, config=config
+        )
         self.io.save(checkpoint, epochs, keep_last)
 
     def load_latest(
