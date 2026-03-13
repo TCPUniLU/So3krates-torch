@@ -92,6 +92,7 @@ class TrainingConfig(BaseModel):
     amsgrad: bool = False
     scheduler: str = "exponential_decay"
     lr_scheduler_gamma: float = 0.85
+    warmup_steps: int = 0
     energy_weight: float = 1.0
     forces_weight: float = 1000.0
     dipole_weight: float = 0.0
@@ -101,6 +102,8 @@ class TrainingConfig(BaseModel):
     clip_grad: float = 10.0
     neighbors_lr_cutoff: float = 100.0
     patience: int = 50
+    early_stopping_min_delta: float = 0.0
+    early_stopping_warmup: int = 0
     loss_type: str = "auto"
     path_to_val_data: Optional[str] = None
     keys: Optional[Dict[str, str]] = None
@@ -140,6 +143,7 @@ class MiscConfig(BaseModel):
     log_wandb: bool = False
     keep_checkpoints: bool = False
     error_table: str = "PerAtomMAE"
+    deterministic_seed: bool = False
 
 
 class TrainConfig(BaseModel):
