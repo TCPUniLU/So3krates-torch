@@ -1047,3 +1047,20 @@ def filter_nonzero_weight(
 
     quantity_l[-1] = filtered_q
     return 1.0
+
+
+def create_dataloader_from_dataset(
+    dataset,
+    batch_size: int,
+    shuffle: bool = False,
+    drop_last: bool = False,
+    num_workers: int = 0,
+):
+    """Create a PyG DataLoader from a map-style BaseAtomicDataset."""
+    return DataLoader(
+        dataset=dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        drop_last=drop_last,
+        num_workers=num_workers,
+    )
