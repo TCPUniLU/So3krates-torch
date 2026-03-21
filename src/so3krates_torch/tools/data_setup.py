@@ -1,6 +1,7 @@
+import math
 import random
 import logging
-from typing import Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -206,6 +207,128 @@ def _compute_e0s(
         present_e0s = compute_average_E0s_from_dataset(train_dataset, z_table)
 
     return {z: present_e0s.get(z, 0.0) for z in range(1, 119)}
+
+
+def _load_replay_data(
+    config: dict,
+    r_max: float,
+    r_max_lr: float,
+    keyspec,
+) -> list:
+    """Load and subsample replay datasets.
+
+    Returns a flat list of AtomicData objects drawn from
+    the configured replay datasets according to the specified
+    fractions and total count.
+    """
+    replay_paths = config["TRAINING"]["replay_datasets"]
+    fractions = config["TRAINING"]["replay_fractions"]
+    total = config["TRAINING"]["replay_total"]
+
+    # Compute per-dataset counts with remainder distribution
+    counts = [int(math.floor(f * total)) for f in fractions]
+    remainder = total - sum(counts)
+    for i in range(remainder):
+        counts[i] += 1
+
+    all_replay = []
+    for path, count in zip(replay_paths, counts):
+        if count == 0:
+            continue
+        file_format = detect_file_format(path)
+        logging.info(
+            f"Loading replay dataset: {path} "
+            f"(format={file_format}, n={count})"
+        )
+
+        if file_format == "hdf5_preprocessed":
+            dataset = PreprocessedHDF5Dataset(
+                hdf5_path=path,
+                validate_cutoffs=True,
+                expected_r_max=r_max,
+                expected_r_max_lr=r_max_lr,
+            )
+            n_available = len(dataset)
+            if count > n_available:
+                logging.warning(
+                    f"Replay dataset {path} has {n_available} "
+                    f"structures but {count} requested. "
+                    f"Sampling with replacement."
+                )
+                indices = random.choices(range(n_available), k=count)
+            else:
+                indices = random.sample(range(n_available), count)
+            replay_data = [dataset[i] for i in indices]
+        else:
+            # Raw HDF5 or XYZ — load atoms
+            if path.endswith((".h5", ".hdf5")):
+                atoms_list = load_atoms_from_hdf5(path, index=None)
+            elif path.endswith((".xyz", ".extxyz")):
+                atoms_list = read(path, index=":")
+            else:
+                raise ValueError(f"Unsupported replay file format: {path}")
+
+            n_available = len(atoms_list)
+            if count > n_available:
+                logging.warning(
+                    f"Replay dataset {path} has {n_available} "
+                    f"structures but {count} requested. "
+                    f"Sampling with replacement."
+                )
+                indices = random.choices(range(n_available), k=count)
+            else:
+                indices = random.sample(range(n_available), count)
+            sampled_atoms = [atoms_list[i] for i in indices]
+            replay_data = create_data_from_list(
+                sampled_atoms,
+                r_max=r_max,
+                r_max_lr=r_max_lr,
+                key_specification=keyspec,
+            )
+
+        all_replay.extend(replay_data)
+
+    logging.info(
+        f"Loaded {len(all_replay)} total replay structures "
+        f"from {len(replay_paths)} datasets"
+    )
+    return all_replay
+
+
+def _materialize_dataset(dataset) -> list:
+    """Convert a Subset or Dataset to a plain list."""
+    if isinstance(dataset, list):
+        return list(dataset)
+    return [dataset[i] for i in range(len(dataset))]
+
+
+def _build_combined_train_data(
+    finetune_data: list,
+    replay_data: list,
+    oversample: bool,
+) -> list:
+    """Combine fine-tune and replay data with optional
+    oversampling of fine-tune data for ~1:1 ratio."""
+    n_ft = len(finetune_data)
+    n_replay = len(replay_data)
+
+    if oversample and n_ft < n_replay:
+        repeats = math.ceil(n_replay / n_ft)
+        finetune_data = (finetune_data * repeats)[:n_replay]
+        logging.info(
+            f"Oversampled fine-tune data: {n_ft} -> "
+            f"{len(finetune_data)} to match "
+            f"{n_replay} replay structures"
+        )
+
+    combined = finetune_data + replay_data
+    random.shuffle(combined)
+    logging.info(
+        f"Combined training set: {len(combined)} "
+        f"({len(finetune_data)} fine-tune + "
+        f"{n_replay} replay)"
+    )
+    return combined
 
 
 def _load_validation_loader(
@@ -427,6 +550,7 @@ def _setup_multihead_data_loaders(
         avg_num_neighbors,
         num_elements,
         average_atomic_energy_shifts,
+        None,  # replay_builder (not supported for multi-head)
     )
 
 
@@ -578,6 +702,89 @@ def _setup_singlehead_data_loaders(
             train_configs=train_configs,
         )
 
+    # Replay data injection
+    replay_builder = None
+    replay_datasets_cfg = config["TRAINING"].get("replay_datasets", None)
+    if replay_datasets_cfg:
+        oversample = config["TRAINING"].get("replay_oversample_finetune", True)
+        resample = config["TRAINING"].get("replay_resample_per_epoch", False)
+
+        # Materialize fine-tune data once
+        ft_data = _materialize_dataset(train_atomic_data)
+
+        replay_data = _load_replay_data(config, r_max, r_max_lr, keyspec)
+        combined = _build_combined_train_data(
+            list(ft_data), replay_data, oversample
+        )
+
+        # Rebuild train_loader and train_sampler
+        train_sampler = None
+        if distributed:
+            train_sampler = DistributedSampler(
+                combined,
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=True,
+            )
+        train_loader = create_dataloader_from_data(
+            config_list=combined,
+            batch_size=batch_size,
+            shuffle=(train_sampler is None),
+            sampler=train_sampler,
+        )
+
+        if resample:
+
+            def _make_replay_builder(
+                _ft_data,
+                _config,
+                _r_max,
+                _r_max_lr,
+                _keyspec,
+                _oversample,
+                _batch_size,
+                _distributed,
+                _world_size,
+                _rank,
+            ):
+                def builder():
+                    replay = _load_replay_data(
+                        _config, _r_max, _r_max_lr, _keyspec
+                    )
+                    combined = _build_combined_train_data(
+                        list(_ft_data), replay, _oversample
+                    )
+                    sampler = None
+                    if _distributed:
+                        sampler = DistributedSampler(
+                            combined,
+                            num_replicas=_world_size,
+                            rank=_rank,
+                            shuffle=True,
+                        )
+                    loader = create_dataloader_from_data(
+                        config_list=combined,
+                        batch_size=_batch_size,
+                        shuffle=(sampler is None),
+                        sampler=sampler,
+                    )
+                    return loader, sampler
+
+                return builder
+
+            replay_builder = _make_replay_builder(
+                ft_data,
+                config,
+                r_max,
+                r_max_lr,
+                keyspec,
+                oversample,
+                batch_size,
+                distributed,
+                world_size,
+                rank,
+            )
+
     # Validation loader
     valid_loader = _load_validation_loader(
         config,
@@ -590,7 +797,7 @@ def _setup_singlehead_data_loaders(
         valid_subset=valid_subset,
     )
 
-    logging.info(f"Training set size: {len(train_atomic_data)}")
+    logging.info(f"Training set size: {len(train_loader.dataset)}")
     if valid_loader is not None:
         logging.info(f"Validation set size: " f"{len(valid_loader.dataset)}")
     logging.info(
@@ -603,6 +810,7 @@ def _setup_singlehead_data_loaders(
         avg_num_neighbors,
         num_elements,
         average_atomic_energy_shifts,
+        replay_builder,
     )
 
 
@@ -616,7 +824,12 @@ def setup_data_loaders(
 
     Returns (train_loader, valid_loaders, train_sampler,
              avg_num_neighbors, num_elements,
-             average_atomic_energy_shifts).
+             average_atomic_energy_shifts, replay_builder).
+
+    replay_builder is a callable that returns
+    (DataLoader, Optional[DistributedSampler]) for per-epoch
+    replay resampling, or None when replay is disabled or
+    resample_per_epoch is False.
     """
     if config["TRAINING"].get("heads", None) is not None:
         return _setup_multihead_data_loaders(

@@ -192,8 +192,13 @@ def _detect_prop_meta(
     """
     meta: Dict[str, Tuple[bool, tuple, type]] = {}
 
+    # Keys already stored in config_metadata as strings — skip them here
+    _METADATA_KEYS = {"head"}
+
     # Info keys — per-config (scalar or small array)
     for _prop_name, key in key_spec.info_keys.items():
+        if key in _METADATA_KEYS:
+            continue
         for a in batch:
             if key in a.info and a.info[key] is not None:
                 val = np.asarray(a.info[key], dtype=np.float64)

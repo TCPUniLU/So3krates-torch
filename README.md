@@ -451,6 +451,35 @@ These apply when `finetune_choice` is one of `lora`, `dora`, `vera`, or their `+
 | `lora_freeze_A` | `bool` | `False` | Freeze the A (down-projection) matrices and only train B. Reduces trainable parameters by half. |
 | `dora_scaling_to_one` | `bool` | `True` | Initialize DoRA magnitude vectors to normalize columns to unit norm. |
 
+#### Data Replay
+
+When fine-tuning, data replay prevents catastrophic forgetting by mixing a subset of pre-training data into each training epoch. The replay data is combined with the fine-tuning data at an approximate 1:1 ratio (when oversampling is enabled).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `replay_datasets` | `list[str]` | `None` | Paths to replay datasets (XYZ, raw HDF5, or preprocessed HDF5). |
+| `replay_fractions` | `list[float]` | `None` | Fraction of `replay_total` to draw from each dataset. Must sum to 1.0. |
+| `replay_total` | `int` | `None` | Total number of replay structures to sample across all replay datasets. |
+| `replay_oversample_finetune` | `bool` | `True` | When the fine-tune set is smaller than the replay set, oversample (repeat) fine-tune data to maintain ~1:1 ratio. When `False`, fine-tune and replay data are combined as-is without balancing. |
+| `replay_resample_per_epoch` | `bool` | `False` | Re-draw a fresh random replay subset each epoch. When `False`, the subset is fixed at the start of training. |
+
+**Example:**
+
+```yaml
+TRAINING:
+  path_to_train_data: finetune.xyz
+  finetune_choice: lora
+  replay_datasets:
+    - /data/pretrain_A.xyz
+    - /data/pretrain_B.h5
+  replay_fractions: [0.7, 0.3]
+  replay_total: 5000
+  replay_oversample_finetune: true
+  replay_resample_per_epoch: false
+```
+
+This samples 3500 structures from `pretrain_A.xyz` and 1500 from `pretrain_B.h5`, then combines them with the fine-tuning data (oversampled to ~5000) for a total of ~10000 training structures per epoch.
+
 
 ### General Settings (`GENERAL`)
 

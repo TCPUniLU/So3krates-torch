@@ -158,6 +158,7 @@ def run_training(config: dict) -> None:
         avg_num_neighbors,
         num_elements,
         average_atomic_energy_shifts,
+        replay_builder,
     ) = setup_data_loaders(
         config,
         distributed=distributed,
@@ -312,6 +313,7 @@ def run_training(config: dict) -> None:
             "early_stopping_warmup", 0
         ),
         config=config,
+        replay_builder=replay_builder,
     )
     logging.info("Training completed successfully!")
 
@@ -369,6 +371,7 @@ def run_dry_run(config: dict) -> None:
         avg_num_neighbors,
         _num_elements,
         average_atomic_energy_shifts,
+        _replay_builder,
     ) = setup_data_loaders(config, distributed=False, rank=0, world_size=1)
 
     set_atomic_energy_shifts_in_model(model, average_atomic_energy_shifts)

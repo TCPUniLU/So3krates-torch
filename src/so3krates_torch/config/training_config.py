@@ -118,6 +118,12 @@ class TrainingConfig(BaseModel):
     data_preprocessed: Optional[bool] = None
     ema: bool = False
     ema_decay: float = 0.99
+    # Replay settings
+    replay_datasets: Optional[List[str]] = None
+    replay_fractions: Optional[List[float]] = None
+    replay_total: Optional[int] = None
+    replay_oversample_finetune: bool = True
+    replay_resample_per_epoch: bool = False
 
     @model_validator(mode="after")
     def validate_pretrained(self):
@@ -128,6 +134,46 @@ class TrainingConfig(BaseModel):
             raise ValueError(
                 "Cannot specify both 'pretrained_weights' and "
                 "'pretrained_model'. Use one or the other."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_replay(self):
+        replay_fields = [
+            self.replay_datasets,
+            self.replay_fractions,
+            self.replay_total,
+        ]
+        any_set = any(f is not None for f in replay_fields)
+        all_set = all(f is not None for f in replay_fields)
+        if any_set and not all_set:
+            raise ValueError(
+                "'replay_datasets', 'replay_fractions', and "
+                "'replay_total' must all be specified together."
+            )
+        if not any_set:
+            return self
+        if len(self.replay_datasets) != len(self.replay_fractions):
+            raise ValueError(
+                f"replay_datasets has {len(self.replay_datasets)} "
+                f"entries but replay_fractions has "
+                f"{len(self.replay_fractions)}. They must match."
+            )
+        if any(f < 0 for f in self.replay_fractions):
+            raise ValueError("All replay_fractions must be >= 0.")
+        if abs(sum(self.replay_fractions) - 1.0) > 1e-6:
+            raise ValueError(
+                f"replay_fractions must sum to 1.0, "
+                f"got {sum(self.replay_fractions):.6f}."
+            )
+        if self.replay_total <= 0:
+            raise ValueError(
+                f"replay_total must be > 0, got {self.replay_total}."
+            )
+        if self.heads is not None:
+            raise ValueError(
+                "Data replay is not supported with multi-head "
+                "training. Remove 'heads' or 'replay_datasets'."
             )
         return self
 

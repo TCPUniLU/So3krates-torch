@@ -192,13 +192,17 @@ def config_from_atoms(
         if not atoms_key in atoms.arrays:
             property_weights[name] = 0.0
 
+    # Use per-structure head from atoms.info if available,
+    # otherwise fall back to the caller-supplied default.
+    head = atoms.info.get("head", head_name)
+
     return Configuration(
         atomic_numbers=atomic_numbers,
         positions=atoms.get_positions(),
         properties=properties,
         weight=weight,
         property_weights=property_weights,
-        head=head_name,
+        head=head,
         config_type=config_type,
         pbc=pbc,
         cell=cell,

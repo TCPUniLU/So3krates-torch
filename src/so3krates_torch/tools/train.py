@@ -177,6 +177,7 @@ def train(
     config: Optional[dict] = None,
     early_stopping_min_delta: float = 0.0,
     early_stopping_warmup: int = 0,
+    replay_builder=None,
 ):
     lowest_loss = np.inf
     valid_loss = np.inf
@@ -246,6 +247,10 @@ def train(
             swa.model.update_parameters(model)
             if epoch > start_epoch:
                 swa.scheduler.step()
+
+        # Rebuild DataLoader with fresh replay data if needed
+        if replay_builder is not None:
+            train_loader, train_sampler = replay_builder()
 
         # Train
         if distributed:
