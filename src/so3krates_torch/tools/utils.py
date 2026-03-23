@@ -661,7 +661,9 @@ def save_results_hdf5(results, filename, is_ensemble: bool = False):
 
 # TODO: Add support for multi-head outputs
 # TODO: Add support from more output types
-def save_results_xyz(input_data, results, filename):
+def save_results_xyz(
+    input_data, results, filename, prefix: str = "SO3"
+):
     """Save results to an XYZ file."""
     scalar_keys = [
         "energies",
@@ -676,11 +678,11 @@ def save_results_xyz(input_data, results, filename):
         for key, value in results.items():
             if key in scalar_keys:
                 if key == "energies":
-                    atoms.info[f"SO3_energy"] = value[i].item()
+                    atoms.info[f"{prefix}_energy"] = value[i].item()
                 else:
-                    atoms.info[f"SO3_{key}"] = value[i].item()
+                    atoms.info[f"{prefix}_{key}"] = value[i].item()
             elif key in tensor_keys:
-                atoms.arrays[f"SO3_{key}"] = value[i]
+                atoms.arrays[f"{prefix}_{key}"] = value[i]
         output_configs.append(atoms)
     write(filename, output_configs)
 

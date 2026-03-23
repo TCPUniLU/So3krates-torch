@@ -199,6 +199,13 @@ def main():
     argparser.add_argument("--head", type=str, help="Head key", default="head")
     argparser.add_argument("--dtype", type=str, default="float32")
     argparser.add_argument("--return_att", action="store_true")
+    argparser.add_argument(
+        "--output_prefix",
+        type=str,
+        default="SO3",
+        help="Prefix for predicted property names in XYZ output "
+        "(default: 'SO3', giving SO3_energy, SO3_forces, …)",
+    )
     args = argparser.parse_args()
     validated = EvalArgs.model_validate(vars(args))
     # turn all args into variables
@@ -231,6 +238,7 @@ def main():
     head_key = validated.head_key
     dtype = args.dtype
     return_att = args.return_att
+    output_prefix = validated.output_prefix
 
     result, is_ensemble = run_evaluation(
         model_path=model_path,
@@ -263,7 +271,7 @@ def main():
     if extension == ".h5" or extension == ".hdf5" or extension == "":
         save_results_hdf5(result, output_file, is_ensemble=is_ensemble)
     elif is_ensemble == False and extension == ".xyz":
-        save_results_xyz(data_path, result, output_file)
+        save_results_xyz(data_path, result, output_file, prefix=output_prefix)
     else:
         raise ValueError(
             f"Unsupported output file format: {extension} or ensemble results cannot be saved in .xyz"

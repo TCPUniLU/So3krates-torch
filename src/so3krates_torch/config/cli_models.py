@@ -33,6 +33,7 @@ class EvalArgs(BaseModel):
     head: str = "head"
     dtype: Literal["float32", "float64"] = "float32"
     return_att: bool = False
+    output_prefix: str = "SO3"
 
 
 class PreprocessArgs(BaseModel):
