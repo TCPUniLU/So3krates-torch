@@ -87,9 +87,7 @@ class DiskCache:
     def save(self, idx: int, data: AtomicData) -> None:
         path = self._item_path(idx)
         # Atomic write: save to temp file then rename
-        fd, tmp_path = tempfile.mkstemp(
-            dir=self.cache_dir, suffix=".pt.tmp"
-        )
+        fd, tmp_path = tempfile.mkstemp(dir=self.cache_dir, suffix=".pt.tmp")
         try:
             os.close(fd)
             torch.save(data, tmp_path)

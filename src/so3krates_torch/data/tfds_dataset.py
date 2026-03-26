@@ -86,9 +86,7 @@ class TFDSDataset(BaseAtomicDataset):
             else KeySpecification()
         )
 
-        ds = tfds.load(
-            dataset_name, split=split, data_dir=data_dir
-        )
+        ds = tfds.load(dataset_name, split=split, data_dir=data_dir)
         # Materialize as a list for random access
         self._examples = list(ds.as_numpy_iterator())
         self._length = len(self._examples)
@@ -101,9 +99,7 @@ class TFDSDataset(BaseAtomicDataset):
     def _tfds_to_atoms(example: dict) -> Atoms:
         """Convert a TFDS example dict to an ASE Atoms object."""
         positions = np.array(example["positions"], dtype=np.float64)
-        atomic_numbers = np.array(
-            example["atomic_numbers"], dtype=np.int32
-        )
+        atomic_numbers = np.array(example["atomic_numbers"], dtype=np.int32)
 
         cell = None
         pbc = False
@@ -125,7 +121,8 @@ class TFDSDataset(BaseAtomicDataset):
             if tfds_key in example and example[tfds_key] is not None:
                 val = example[tfds_key]
                 atoms.info[ase_key] = (
-                    float(val) if np.ndim(val) == 0
+                    float(val)
+                    if np.ndim(val) == 0
                     else np.array(val, dtype=np.float64)
                 )
 
