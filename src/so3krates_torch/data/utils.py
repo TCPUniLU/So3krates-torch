@@ -582,7 +582,11 @@ def prepare_graph(
         )
         vectors = data["vectors"].requires_grad_(True)
         lengths = torch.linalg.vector_norm(vectors, dim=1, keepdim=True)
-        vectors_lr, lengths_lr = None, None  # No long-range in MLIAP mode
+        if "vectors_lr" in data and data["vectors_lr"] is not None:
+            vectors_lr = data["vectors_lr"].requires_grad_(True)
+            lengths_lr = torch.linalg.vector_norm(vectors_lr, dim=1, keepdim=True)
+        else:
+            vectors_lr, lengths_lr = None, None
         ikw = InteractionKwargs(data["lammps_class"], (n_real, n_total))
     else:
         data["positions"].requires_grad_(True)
