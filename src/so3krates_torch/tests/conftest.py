@@ -1,4 +1,5 @@
 """Shared pytest fixtures for So3krates-torch tests."""
+
 import os
 import pytest
 import torch
@@ -24,9 +25,7 @@ def set_deterministic():
 @pytest.fixture
 def device():
     """Return available device (CUDA if available, else CPU)."""
-    return torch.device(
-        "cuda" if torch.cuda.is_available() else "cpu"
-    )
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 @pytest.fixture
@@ -102,17 +101,49 @@ def multihead_model_config(so3lr_model_config):
     return {
         **so3lr_model_config,
         "num_output_heads": 4,
-        "energy_regression_dim": so3lr_model_config[
-            "num_features"
-        ],
+        "energy_regression_dim": so3lr_model_config["num_features"],
     }
+
+
+@pytest.fixture
+def mock_batch_for_loss():
+    """Batch-like object with known values for hand-computing loss."""
+    from so3krates_torch.tools.torch_geometric import Batch
+
+    # 2 graphs: 3 atoms (graph 0) + 4 atoms (graph 1)
+    # Known energy/forces/weights for manual loss calculation
+    batch = Batch(
+        ptr=torch.tensor([0, 3, 7]),  # Graph boundaries
+        batch=torch.tensor([0, 0, 0, 1, 1, 1, 1]),  # Atom mapping
+        energy=torch.tensor([10.0, 20.0]),
+        forces=torch.tensor(
+            [
+                [1.0, 0.0, 0.0],  # Graph 0
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [2.0, 0.0, 0.0],  # Graph 1
+                [0.0, 2.0, 0.0],
+                [0.0, 0.0, 2.0],
+                [1.0, 1.0, 1.0],
+            ]
+        ),
+        dipole=torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+        hirshfeld_ratios=torch.ones(7),
+        weight=torch.tensor([1.0, 2.0]),  # Per-graph
+        energy_weight=torch.tensor([1.0, 1.5]),
+        forces_weight=torch.tensor([10.0, 20.0]),
+        dipole_weight=torch.tensor([[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]]),
+        hirshfeld_ratios_weight=torch.tensor([1.0, 2.0]),
+    )
+
+    return batch
 
 
 @pytest.fixture
 def make_batch(device):
     """Factory fixture to convert ASE Atoms to model-ready batch."""
-    def _make(atoms, r_max, cutoff_lr=None,
-              dtype=torch.float64):
+
+    def _make(atoms, r_max, cutoff_lr=None, dtype=torch.float64):
         from so3krates_torch.data.utils import (
             KeySpecification,
             config_from_atoms,
@@ -124,12 +155,8 @@ def make_batch(device):
         )
 
         torch.set_default_dtype(dtype)
-        z_table = AtomicNumberTable(
-            [int(z) for z in range(1, 119)]
-        )
-        config = config_from_atoms(
-            atoms, key_specification=KeySpecification()
-        )
+        z_table = AtomicNumberTable([int(z) for z in range(1, 119)])
+        config = config_from_atoms(atoms, key_specification=KeySpecification())
         data_loader = torch_geometric.dataloader.DataLoader(
             dataset=[
                 AtomicData.from_config(
@@ -151,8 +178,8 @@ def make_batch(device):
 @pytest.fixture
 def make_batch_list(device):
     """Factory fixture to batch multiple ASE Atoms."""
-    def _make(atoms_list, r_max, cutoff_lr=None,
-              dtype=torch.float64):
+
+    def _make(atoms_list, r_max, cutoff_lr=None, dtype=torch.float64):
         from so3krates_torch.data.utils import (
             KeySpecification,
             config_from_atoms,
@@ -164,9 +191,7 @@ def make_batch_list(device):
         )
 
         torch.set_default_dtype(dtype)
-        z_table = AtomicNumberTable(
-            [int(z) for z in range(1, 119)]
-        )
+        z_table = AtomicNumberTable([int(z) for z in range(1, 119)])
         dataset = [
             AtomicData.from_config(
                 config_from_atoms(
@@ -202,9 +227,7 @@ def example_xyz_with_data(tmp_path):
         atoms = molecule(mol_name)
         # Add fake energy and forces
         atoms.info["REF_energy"] = -10.0 * len(atoms)
-        atoms.arrays["REF_forces"] = np.random.randn(
-            len(atoms), 3
-        ) * 0.1
+        atoms.arrays["REF_forces"] = np.random.randn(len(atoms), 3) * 0.1
         atoms_list.append(atoms)
 
     # Write to XYZ
@@ -225,9 +248,7 @@ def example_raw_hdf5(tmp_path):
     for mol_name in ["H2O", "NH3", "CH4"]:
         atoms = molecule(mol_name)
         atoms.info["REF_energy"] = -10.0 * len(atoms)
-        atoms.arrays["REF_forces"] = np.random.randn(
-            len(atoms), 3
-        ) * 0.1
+        atoms.arrays["REF_forces"] = np.random.randn(len(atoms), 3) * 0.1
         atoms_list.append(atoms)
 
     # Save to raw HDF5
@@ -259,9 +280,7 @@ def example_preprocessed_hdf5(tmp_path):
     for mol_name in ["H2O", "NH3", "CH4"]:
         atoms = molecule(mol_name)
         atoms.info["REF_energy"] = -10.0 * len(atoms)
-        atoms.arrays["REF_forces"] = np.random.randn(
-            len(atoms), 3
-        ) * 0.1
+        atoms.arrays["REF_forces"] = np.random.randn(len(atoms), 3) * 0.1
         atoms_list.append(atoms)
 
     # Convert to AtomicData
@@ -269,9 +288,7 @@ def example_preprocessed_hdf5(tmp_path):
         info_keys={"energy": "REF_energy"},
         arrays_keys={"forces": "REF_forces"},
     )
-    configs = [
-        config_from_atoms(atoms, keyspec) for atoms in atoms_list
-    ]
+    configs = [config_from_atoms(atoms, keyspec) for atoms in atoms_list]
 
     # Create z_table
     all_zs = set()

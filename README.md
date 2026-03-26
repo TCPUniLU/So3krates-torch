@@ -16,9 +16,12 @@ Implementation of the So3krates + SO3LR model in pytorch.
 #### Implemented features:
 1. ASE calculator for MD (including pre-trained SO3LR)
 2. Inference over ase readable datasets: `torchkrates-eval`
-3. Error metrics over ase readable datasets: `torchkrates-test`
+3. Error metrics over ase readable datasets: `torchkrates-metric`
 4. Transforming pyTorch and JAX parameter formates: `torchkrates-jax2torch` or `torchkrates-torch2jax` (for these you need to install jax, flax, and mlff (https://github.com/thorben-frank/mlff/tree/v1.0-lrs-gems))
 5. Training: `torchkrates-train --config config.yaml` (see example)
+6. Data preprocessing: `torchkrates-preprocess`
+7. HDF5 file merging: `torchkrates-merge`
+8. LAMMPS model export: `torchkrates-create-lammps-model`
 
 
 > [!IMPORTANT]
@@ -35,6 +38,11 @@ Train an SO3LR (or multi-head SO3LR) model from a YAML configuration file.
 ```bash
 torchkrates-train --config config.yaml
 ```
+
+| Flag | Description |
+|------|-------------|
+| `--config` | Path to the YAML training configuration file |
+| `--dry-run` | Validates the config, builds the model, runs one forward pass, prints parameter count, then exits. Use this to check a config before submitting a long HPC job. |
 
 See the **[Training Configuration](#training-configuration)** section below for detailed documentation of all configuration options.
 
@@ -73,7 +81,32 @@ torchkrates-preprocess --input raw.h5 --output preprocessed.h5 --mode preprocess
 
 ---
 
-### `torchkrates-lammps` — LAMMPS Model Export
+### `torchkrates-merge` — HDF5 File Merging
+
+Merge two or more HDF5 files (raw or preprocessed) into a single file. Both formats are supported; all inputs must be the same type. Raw files are merged with streaming writes to avoid loading everything into memory.
+
+```bash
+# Merge raw HDF5 files
+torchkrates-merge --inputs train_a.h5 train_b.h5 --output train_merged.h5
+
+# Merge preprocessed HDF5 files
+torchkrates-merge --inputs part1.h5 part2.h5 part3.h5 --output all.h5
+
+# With optional metadata and custom batch size
+torchkrates-merge --inputs a.h5 b.h5 --output merged.h5 \
+    --description "combined dataset" --batch-size 50000
+```
+
+| Flag | Description |
+|------|-------------|
+| `--inputs FILE [FILE ...]` | Two or more input HDF5 files to merge (must be the same format) |
+| `--output FILE` | Output HDF5 file path |
+| `--description TEXT` | Optional description stored in the merged file metadata (raw format only) |
+| `--batch-size N` | Structures processed per write batch (raw format only, default: `100000`) |
+
+---
+
+### `torchkrates-create-lammps-model` — LAMMPS Model Export
 
 > [!NOTE]
 > More details and how to use the model in LAMMPS are coming.
@@ -84,7 +117,7 @@ torchkrates-preprocess --input raw.h5 --output preprocessed.h5 --mode preprocess
 Convert a trained SO3LR model to a TorchScript model compatible with the LAMMPS ML-IAP interface.
 
 ```bash
-torchkrates-lammps model.pt --elements Si O
+torchkrates-create-lammps-model model.pt --elements Si O
 ```
 
 | Flag | Description |
@@ -103,9 +136,80 @@ torchkrates-lammps model.pt --elements Si O
 
 Run inference over an ASE-readable dataset.
 
-### `torchkrates-test` — Error Metrics
+```bash
+torchkrates-eval --model_path my_model.model --data_path test_set.xyz
+```
 
-Compute error metrics over an ASE-readable dataset.
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--model_path` | *required* | Path to a single `.model` file, or a directory of `.model` files (use with `--ensemble_size N` for ensemble inference) |
+| `--data_path` | *required* | ASE-readable dataset (xyz, extxyz, HDF5) |
+| `--output_file` | `results.h5` | Output HDF5 file |
+| `--ensemble_size` | `1` | Number of models to load from a directory |
+| `--device` | `cuda` | `cuda` or `cpu` |
+| `--batch_size` | `5` | Structures per batch |
+| `--dtype` | `float32` | `float32` or `float64` |
+| `--multihead_model` | `False` | Enable multi-head model support |
+| `--compute_dipole` | `False` | Compute dipole predictions |
+| `--compute_stress` | `False` | Compute stress predictions |
+| `--compute_hirshfeld` | `False` | Compute Hirshfeld ratio predictions |
+| `--compute_partial_charges` | `False` | Compute partial charge predictions |
+| `--energy_key` | `REF_energy` | Key for reference energies in the dataset |
+| `--forces_key` | `REF_forces` | Key for reference forces |
+| `--dipole_key` | `REF_dipoles` | Key for reference dipoles |
+| `--charges_key` | `REF_charges` | Key for reference partial charges |
+| `--hirshfeld_key` | `REF_hirsh_ratios` | Key for reference Hirshfeld ratios |
+| `--total_charge_key` | `charge` | Key for total charge |
+| `--total_spin_key` | `total_spin` | Key for total spin |
+
+---
+
+### `torchkrates-metric` — Error Metrics
+
+Compute error metrics over an ASE-readable dataset. Prints a table with MAE and RMSE per atom for each property.
+
+```bash
+torchkrates-metric --models my_model.model --data test_set.xyz
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--models` | *required* | Path to a model file or a directory of model files |
+| `--data` | *required* | Dataset path (must contain reference values) |
+| `--output_args` | `energy forces` | Properties to evaluate. Can include `stress`, `dipole`, `hirshfeld_ratios`, etc. |
+| `--batch_size` | `16` | Structures per batch |
+| `--device` | `cpu` | `cuda` or `cpu` |
+| `--save` | `./` | Directory for output files |
+| `--results_file` | `ensemble_test_results.npz` | `.npz` file with raw error arrays |
+| `--r_max_lr` | `None` | Long-range cutoff when model uses electrostatics/dispersion |
+| `--multihead_model` | `False` | Enable multi-head model support |
+| `--multihead_return_mean` | `False` | Return mean prediction across heads |
+| `--energy_key` | `REF_energy` | Key for reference energies |
+| `--forces_key` | `REF_forces` | Key for reference forces |
+| `--dipole_key` | `REF_dipoles` | Key for reference dipoles |
+| `--charges_key` | `REF_charges` | Key for reference partial charges |
+| `--hirshfeld_key` | `REF_hirsh_ratios` | Key for reference Hirshfeld ratios |
+| `--total_charge_key` | `charge` | Key for total charge |
+| `--total_spin_key` | `total_spin` | Key for total spin |
+
+#### End-to-End Workflow
+
+```bash
+# Validate config before submitting a long training job
+torchkrates-train --config config.yaml --dry-run
+
+# Run inference on a test set
+torchkrates-eval \
+  --model_path my_model.model \
+  --data_path test_set.xyz \
+  --output_file predictions.h5
+
+# Compute error metrics
+torchkrates-metric \
+  --models my_model.model \
+  --data test_set.xyz \
+  --output_args energy forces
+```
 
 ### `torchkrates-jax2torch` / `torchkrates-torch2jax` — Weight Conversion
 
@@ -214,6 +318,10 @@ These enable the physics-based long-range interactions that distinguish SO3LR fr
 | `num_valid` | `int` | `None` | Limit the number of validation samples. |
 | `batch_size` | `int` | *required* | Number of structures per training batch. |
 | `valid_batch_size` | `int` | *required* | Number of structures per validation batch. Can be larger than `batch_size` since no gradients are computed. |
+| `lazy_loading` | `bool` | `False` | Enable on-the-fly data loading and preprocessing from raw HDF5 files. Instead of loading all structures into memory upfront, each structure is read and its neighbor list computed on the fly by DataLoader worker processes. Only supported for raw HDF5 files (not XYZ). |
+| `num_workers` | `int` | `4` | Number of DataLoader worker processes for parallel preprocessing. Only used when `lazy_loading: true`. Each worker reads structures from HDF5 and computes neighbor lists concurrently. |
+| `prefetch_factor` | `int` | `2` | Number of batches each worker prefetches ahead of time. With `num_workers=4` and `prefetch_factor=2`, up to 8 batches are prepared in the background while the GPU trains. Only used when `lazy_loading: true`. |
+| `num_neighbor_samples` | `int` | `1000` | Number of structures randomly sampled to estimate the average number of neighbors (used for message normalization). Only used when `lazy_loading: true`. |
 
 For multi-head models, data can be specified per head instead of using `path_to_train_data`:
 
@@ -257,7 +365,7 @@ TRAINING:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `optimizer` | `str` | `"adam"` | Optimizer. Currently only `adam` is supported. |
+| `optimizer` | `str` | `"adam"` | Optimizer. Options: `adam`, `adamw`. |
 | `lr` | `float` | *required* | Initial learning rate. |
 | `weight_decay` | `float` | `0.0` | L2 regularization weight. Applied to all parameters. |
 | `amsgrad` | `bool` | `False` | Use the AMSGrad variant of Adam, which keeps a running maximum of the second moment to prevent learning rate from increasing. |
@@ -266,10 +374,18 @@ TRAINING:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `scheduler` | `str` | `"exponential_decay"` | Learning rate scheduler. Options: `exponential_decay`, `reduce_on_plateau`. |
+| `scheduler` | `str` | `"exponential_decay"` | Learning rate scheduler. Options: `exponential_decay`, `reduce_on_plateau`, `cosine_annealing`, `warmup_cosine`. |
 | `lr_scheduler_gamma` | `float` | `0.9993` | Multiplicative decay factor applied every epoch (for `exponential_decay`). An effective learning rate after *N* epochs is `lr * gamma^N`. |
 | `scheduler_patience` | `int` | `5` | Number of epochs with no improvement before reducing the learning rate (for `reduce_on_plateau`). |
 | `lr_factor` | `float` | `0.85` | Factor by which the learning rate is reduced when the plateau is reached (for `reduce_on_plateau`). |
+| `scheduler_args` | `dict` | `{}` | Additional keyword arguments passed to the scheduler (e.g. `T_max`, `eta_min` for `cosine_annealing`). |
+| `warmup_steps` | `int` | `0` | Number of warmup epochs for the `warmup_cosine` scheduler. During warmup, the learning rate increases linearly from 0 to `lr`. |
+
+Scheduler options:
+- `exponential_decay` — multiplies learning rate by `lr_scheduler_gamma` every epoch.
+- `reduce_on_plateau` — reduces learning rate by `lr_factor` after `scheduler_patience` epochs without improvement.
+- `cosine_annealing` — cosine decay to `eta_min` over `T_max` epochs (configurable via `scheduler_args`).
+- `warmup_cosine` — linear warmup for `warmup_steps` epochs, then cosine annealing.
 
 #### Loss Function
 
@@ -290,6 +406,8 @@ The loss function is automatically determined based on which weights are non-zer
 | `num_epochs` | `int` | *required* | Maximum number of training epochs. |
 | `eval_interval` | `int` | `1` | Run validation every N epochs. |
 | `patience` | `int` | `50` | Early stopping patience: training stops after this many consecutive epochs without improvement on the validation loss. |
+| `early_stopping_min_delta` | `float` | `0.0` | Minimum loss improvement required to reset the patience counter. |
+| `early_stopping_warmup` | `int` | `0` | Number of epochs before early stopping becomes active. |
 | `clip_grad` | `float` | `10.0` | Maximum gradient norm for gradient clipping. Set to `null` to disable. |
 
 #### Exponential Moving Average (EMA)
@@ -333,6 +451,35 @@ These apply when `finetune_choice` is one of `lora`, `dora`, `vera`, or their `+
 | `lora_freeze_A` | `bool` | `False` | Freeze the A (down-projection) matrices and only train B. Reduces trainable parameters by half. |
 | `dora_scaling_to_one` | `bool` | `True` | Initialize DoRA magnitude vectors to normalize columns to unit norm. |
 
+#### Data Replay
+
+When fine-tuning, data replay prevents catastrophic forgetting by mixing a subset of pre-training data into each training epoch. The replay data is combined with the fine-tuning data at an approximate 1:1 ratio (when oversampling is enabled).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `replay_datasets` | `list[str]` | `None` | Paths to replay datasets (XYZ, raw HDF5, or preprocessed HDF5). |
+| `replay_fractions` | `list[float]` | `None` | Fraction of `replay_total` to draw from each dataset. Must sum to 1.0. |
+| `replay_total` | `int` | `None` | Total number of replay structures to sample across all replay datasets. |
+| `replay_oversample_finetune` | `bool` | `True` | When the fine-tune set is smaller than the replay set, oversample (repeat) fine-tune data to maintain ~1:1 ratio. When `False`, fine-tune and replay data are combined as-is without balancing. |
+| `replay_resample_per_epoch` | `bool` | `False` | Re-draw a fresh random replay subset each epoch. When `False`, the subset is fixed at the start of training. |
+
+**Example:**
+
+```yaml
+TRAINING:
+  path_to_train_data: finetune.xyz
+  finetune_choice: lora
+  replay_datasets:
+    - /data/pretrain_A.xyz
+    - /data/pretrain_B.h5
+  replay_fractions: [0.7, 0.3]
+  replay_total: 5000
+  replay_oversample_finetune: true
+  replay_resample_per_epoch: false
+```
+
+This samples 3500 structures from `pretrain_A.xyz` and 1500 from `pretrain_B.h5`, then combines them with the fine-tuning data (oversampled to ~5000) for a total of ~10000 training structures per epoch.
+
 
 ### General Settings (`GENERAL`)
 
@@ -360,7 +507,14 @@ These apply when `finetune_choice` is one of `lora`, `dora`, `vera`, or their `+
 | `restart_latest` | `bool` | `True` | Automatically resume from the latest checkpoint in `checkpoints_dir` if one exists. |
 | `keep_checkpoints` | `bool` | `False` | Keep all checkpoints. When `False`, only the best checkpoint (lowest validation loss) is kept. |
 | `no_checkpoint` | `bool` | `False` | Disable checkpoint loading entirely (overrides `restart_latest`). Useful for forcing a fresh start. |
+| `deterministic_seed` | `bool` | `False` | Enable `cudnn.deterministic` for full reproducibility (slower). See [Reproducibility](#reproducibility) below. |
 
+
+## Reproducibility
+
+Set `seed` in the `GENERAL` section to fix random weight initialization and data shuffling. For full determinism (at the cost of ~10–20% slower training), also set `deterministic_seed: true` in `MISC`. The training config is automatically saved to `{checkpoints_dir}/config.yaml` at the start of each run and embedded in each checkpoint file.
+
+---
 
 ## Cite
 If you are using the models implemented here please cite:
@@ -397,7 +551,7 @@ eprint = {
 }
 ```
 
-Also consider citing MACE, as this software heavlily leans on or uses its code:
+Also consider citing MACE, as this software heavily leans on or uses its code:
 
 
 ```bibtex

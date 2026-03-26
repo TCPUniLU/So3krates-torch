@@ -28,12 +28,18 @@ class CheckpointState:
 
 class CheckpointBuilder:
     @staticmethod
-    def create_checkpoint(state: CheckpointState) -> Checkpoint:
-        return {
+    def create_checkpoint(
+        state: CheckpointState,
+        config: Optional[dict] = None,
+    ) -> Checkpoint:
+        ckpt = {
             "model": state.model.state_dict(),
             "optimizer": state.optimizer.state_dict(),
             "lr_scheduler": state.lr_scheduler.state_dict(),
         }
+        if config is not None:
+            ckpt["config"] = config
+        return ckpt
 
     @staticmethod
     def load_checkpoint(
@@ -54,7 +60,11 @@ class CheckpointPathInfo:
 
 class CheckpointIO:
     def __init__(
-        self, directory: str, tag: str, keep: bool = False, swa_start: int = None
+        self,
+        directory: str,
+        tag: str,
+        keep: bool = False,
+        swa_start: int = None,
     ) -> None:
         self.directory = directory
         self.tag = tag
@@ -91,7 +101,9 @@ class CheckpointIO:
         ]
         return [path for path in all_paths if os.path.isfile(path)]
 
-    def _parse_checkpoint_path(self, path: str) -> Optional[CheckpointPathInfo]:
+    def _parse_checkpoint_path(
+        self, path: str
+    ) -> Optional[CheckpointPathInfo]:
         filename = os.path.basename(path)
         regex = re.compile(
             rf"^(?P<tag>.+){self._epochs_string}(?P<epochs>\d+)\.{self._filename_extension}$"
@@ -121,7 +133,9 @@ class CheckpointIO:
             self._parse_checkpoint_path(path) for path in all_file_paths
         ]
         selected_checkpoint_info_list = [
-            info for info in checkpoint_info_list if info and info.tag == self.tag
+            info
+            for info in checkpoint_info_list
+            if info and info.tag == self.tag
         ]
 
         if len(selected_checkpoint_info_list) == 0:
@@ -141,7 +155,8 @@ class CheckpointIO:
         if swa:
             try:
                 latest_checkpoint_info = max(
-                    selected_checkpoint_info_list_swa, key=lambda info: info.epochs
+                    selected_checkpoint_info_list_swa,
+                    key=lambda info: info.epochs,
                 )
             except ValueError:
                 logging.warning(
@@ -149,7 +164,8 @@ class CheckpointIO:
                 )
         else:
             latest_checkpoint_info = max(
-                selected_checkpoint_info_list_no_swa, key=lambda info: info.epochs
+                selected_checkpoint_info_list_no_swa,
+                key=lambda info: info.epochs,
             )
         return latest_checkpoint_info.path
 
@@ -168,7 +184,9 @@ class CheckpointIO:
         self.old_path = path
 
     def load_latest(
-        self, swa: Optional[bool] = False, device: Optional[torch.device] = None
+        self,
+        swa: Optional[bool] = False,
+        device: Optional[torch.device] = None,
     ) -> Optional[Tuple[Checkpoint, int]]:
         path = self._get_latest_checkpoint_path(swa=swa)
         if path is None:
@@ -197,9 +215,13 @@ class CheckpointHandler:
         self.builder = CheckpointBuilder()
 
     def save(
-        self, state: CheckpointState, epochs: int, keep_last: bool = False
+        self,
+        state: CheckpointState,
+        epochs: int,
+        keep_last: bool = False,
+        config: Optional[dict] = None,
     ) -> None:
-        checkpoint = self.builder.create_checkpoint(state)
+        checkpoint = self.builder.create_checkpoint(state, config=config)
         self.io.save(checkpoint, epochs, keep_last)
 
     def load_latest(
@@ -214,7 +236,9 @@ class CheckpointHandler:
             return None
 
         checkpoint, epochs = result
-        self.builder.load_checkpoint(state=state, checkpoint=checkpoint, strict=strict)
+        self.builder.load_checkpoint(
+            state=state, checkpoint=checkpoint, strict=strict
+        )
         return epochs
 
     def load(
@@ -225,5 +249,7 @@ class CheckpointHandler:
         device: Optional[torch.device] = None,
     ) -> int:
         checkpoint, epochs = self.io.load(path, device=device)
-        self.builder.load_checkpoint(state=state, checkpoint=checkpoint, strict=strict)
+        self.builder.load_checkpoint(
+            state=state, checkpoint=checkpoint, strict=strict
+        )
         return epochs

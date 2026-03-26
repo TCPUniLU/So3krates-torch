@@ -88,7 +88,6 @@ class So3krates(torch.nn.Module):
         if isinstance(dtype, str):
             dtype = getattr(torch, dtype)
         torch.set_default_dtype(dtype)
-        torch.manual_seed(seed)
 
         # Store all constructor arguments as model attributes
         self.r_max = r_max
@@ -229,8 +228,9 @@ class So3krates(torch.nn.Module):
         """
         # Check if state dict is missing the new buffer keys
         missing_buffer_keys = [
-            key for key in self.state_dict().keys()
-            if 'degree_repeats' in key or 'vera_' in key
+            key
+            for key in self.state_dict().keys()
+            if "degree_repeats" in key or "vera_" in key
         ]
 
         has_missing_buffers = any(
@@ -240,8 +240,10 @@ class So3krates(torch.nn.Module):
         if has_missing_buffers and strict:
             # Old state dict detected - load with strict=False
             # The missing buffers are already initialized correctly in __init__
-            print("Loading old state dict format (missing degree_repeats/vera buffers). "
-                  "Using strict=False to skip non-trainable computed buffers.")
+            print(
+                "Loading old state dict format (missing degree_repeats/vera buffers). "
+                "Using strict=False to skip non-trainable computed buffers."
+            )
             return super().load_state_dict(state_dict, strict=False)
         else:
             # New state dict or strict=False explicitly requested
@@ -277,7 +279,6 @@ class So3krates(torch.nn.Module):
         lammps_mliap: bool = False,
         return_att: bool = False,
     ):
-
         self._get_graph(
             data=data,
             compute_virials=compute_virials,
@@ -368,9 +369,11 @@ class So3krates(torch.nn.Module):
                 return_att=return_att,
             )
             if return_att:
-                (inv_features, ev_features, (alpha_inv, alpha_ev)) = (
-                    transformer_output
-                )
+                (
+                    inv_features,
+                    ev_features,
+                    (alpha_inv, alpha_ev),
+                ) = transformer_output
                 att_scores["inv"][layer_idx] = alpha_inv
                 att_scores["ev"][layer_idx] = alpha_ev
 
@@ -456,7 +459,6 @@ class So3krates(torch.nn.Module):
         return_descriptors: bool = False,
         return_att: bool = False,
     ) -> Dict[str, Optional[torch.Tensor]]:
-
         self.batch_segments = data["batch"]
         self.data_ptr = data["ptr"]
 
@@ -598,8 +600,9 @@ class SO3LR(So3krates):
         """
         # Check if state dict is missing the new buffer keys
         missing_buffer_keys = [
-            key for key in self.state_dict().keys()
-            if 'degree_repeats' in key or 'vera_' in key
+            key
+            for key in self.state_dict().keys()
+            if "degree_repeats" in key or "vera_" in key
         ]
 
         has_missing_buffers = any(
@@ -609,8 +612,10 @@ class SO3LR(So3krates):
         if has_missing_buffers and strict:
             # Old state dict detected - load with strict=False
             # The missing buffers are already initialized correctly in __init__
-            print("Loading old state dict format (missing degree_repeats/vera buffers). "
-                  "Using strict=False to skip non-trainable computed buffers.")
+            print(
+                "Loading old state dict format (missing degree_repeats/vera buffers). "
+                "Using strict=False to skip non-trainable computed buffers."
+            )
             return super().load_state_dict(state_dict, strict=False)
         else:
             # New state dict or strict=False explicitly requested
@@ -641,7 +646,6 @@ class SO3LR(So3krates):
         electrostatic_energies: Optional[torch.Tensor] = None,
         dispersion_energies: Optional[torch.Tensor] = None,
     ):
-
         torch.set_printoptions(precision=8)
         if self.zbl_repulsion_bool and zbl_atomic_energies is not None:
             atomic_energies += zbl_atomic_energies
@@ -700,7 +704,6 @@ class SO3LR(So3krates):
         node_energy: Optional[torch.Tensor] = None,
         training: bool = False,
     ) -> Dict[str, Optional[torch.Tensor]]:
-
         return {
             "energy": total_energy,
             "forces": forces,
@@ -732,7 +735,6 @@ class SO3LR(So3krates):
         lammps_mliap: bool = False,
         return_att: bool = False,
     ) -> Dict[str, Optional[torch.Tensor]]:
-
         self.batch_segments = data["batch"]
         self.data_ptr = data["ptr"]
         repr_output = self.get_representation(
@@ -942,7 +944,6 @@ class MultiHeadSO3LR(SO3LR):
         compute_edge_forces: bool = False,
         batch: Optional[torch.tensor] = None,
     ):
-
         forces, virials, stress, hessian, edge_forces = utils.get_outputs(
             energy=energy,
             positions=positions,
@@ -983,7 +984,6 @@ class MultiHeadSO3LR(SO3LR):
         self,
         output_dict: dict,
     ) -> dict:
-
         row_indices = torch.arange(
             output_dict["energy"].shape[1],
             device=self.device,
@@ -1030,7 +1030,6 @@ class MultiHeadSO3LR(SO3LR):
         node_energy: Optional[torch.Tensor] = None,
         training: bool = False,
     ) -> Dict[str, Optional[torch.Tensor]]:
-
         # total_energy has shape (num_graphs, num_output_heads)
         # permute to shape (num_output_heads, num_graphs)
         total_energy = total_energy.permute(1, 0)

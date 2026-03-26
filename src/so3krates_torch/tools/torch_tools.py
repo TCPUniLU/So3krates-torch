@@ -62,7 +62,9 @@ def init_device(device_str: str) -> torch.device:
         torch.cuda.init()
         return torch.device(device_str)
     if device_str == "mps":
-        assert torch.backends.mps.is_available(), "No MPS backend is available!"
+        assert (
+            torch.backends.mps.is_available()
+        ), "No MPS backend is available!"
         logging.info("Using MPS GPU acceleration")
         return torch.device("mps")
     if device_str == "xpu":
@@ -92,8 +94,6 @@ def spherical_to_cartesian(t: torch.Tensor, change_of_basis: torch.Tensor):
     return torch.einsum("ijk,...i->...jk", change_of_basis, t)
 
 
-
-
 def voigt_to_matrix(t: torch.Tensor):
     """
     Convert voigt notation to matrix notation
@@ -119,7 +119,9 @@ def voigt_to_matrix(t: torch.Tensor):
     )
 
 
-def init_wandb(project: str, entity: str, name: str, config: dict, directory: str):
+def init_wandb(
+    project: str, entity: str, name: str, config: dict, directory: str
+):
     import wandb
 
     wandb.init(

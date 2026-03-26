@@ -14,7 +14,6 @@ class CosineCutoff(torch.nn.Module):
         self.r_max = r_max
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-
         return (
             0.5 * (torch.cos(torch.pi * x / self.r_max) + 1.0)
             if isinstance(x, torch.Tensor)

@@ -60,24 +60,17 @@ class L0Contraction(nn.Module):
         # Segment IDs
         segment_ids = list(
             it.chain(
-                *[
-                    [n] * (2 * degrees[n] + 1)
-                    for n in range(len(degrees))
-                ]
+                *[[n] * (2 * degrees[n] + 1) for n in range(len(degrees))]
             )
         )
         self.register_buffer(
             "segment_ids",
-            torch.tensor(
-                segment_ids, dtype=torch.long, device=device
-            ),
+            torch.tensor(segment_ids, dtype=torch.long, device=device),
         )
 
         # Segment sum matrix for efficient matmul
         m_tot = len(segment_ids)
-        S = torch.zeros(
-            m_tot, self.num_segments, dtype=dtype, device=device
-        )
+        S = torch.zeros(m_tot, self.num_segments, dtype=dtype, device=device)
         S[
             torch.arange(m_tot, device=device),
             self.segment_ids,
@@ -105,6 +98,4 @@ class L0Contraction(nn.Module):
             ] = 1.0
             self.register_buffer("segment_sum_matrix", S)
         weighted = sphc * sphc * self.cg_rep
-        return weighted @ self.segment_sum_matrix.to(
-            weighted.dtype
-        )
+        return weighted @ self.segment_sum_matrix.to(weighted.dtype)

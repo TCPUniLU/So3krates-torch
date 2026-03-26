@@ -28,6 +28,8 @@ from so3krates_torch.data.hdf5_utils import (
     configs_from_hdf5,
     detect_file_format,
     load_atoms_from_hdf5,
+    merge_preprocessed_hdf5_files,
+    merge_raw_hdf5_files,
     save_atoms_to_hdf5,
     save_preprocessed_hdf5,
     validate_preprocessed_hdf5,
@@ -47,9 +49,7 @@ class TestRawHDF5:
         """Test save and load single molecule."""
         # Add properties
         h2o_atoms.info["REF_energy"] = -10.0
-        h2o_atoms.arrays["REF_forces"] = np.random.randn(
-            len(h2o_atoms), 3
-        )
+        h2o_atoms.arrays["REF_forces"] = np.random.randn(len(h2o_atoms), 3)
 
         # Save to HDF5
         hdf5_path = tmp_path / "single.h5"
@@ -64,9 +64,7 @@ class TestRawHDF5:
 
         # Verify — loaded atoms have original ASE keys
         assert len(loaded) == len(h2o_atoms)
-        assert np.allclose(
-            loaded.get_positions(), h2o_atoms.get_positions()
-        )
+        assert np.allclose(loaded.get_positions(), h2o_atoms.get_positions())
         assert "REF_energy" in loaded.info
         assert np.isclose(loaded.info["REF_energy"], -10.0)
 
@@ -79,9 +77,7 @@ class TestRawHDF5:
 
         # Save
         hdf5_path = tmp_path / "multiple.h5"
-        keyspec = KeySpecification(
-            info_keys={"energy": "REF_energy"}
-        )
+        keyspec = KeySpecification(info_keys={"energy": "REF_energy"})
         save_atoms_to_hdf5(atoms_list, str(hdf5_path), keyspec)
 
         # Load all
@@ -89,9 +85,7 @@ class TestRawHDF5:
         assert len(loaded_list) == 3
 
         # Load slice
-        loaded_slice = load_atoms_from_hdf5(
-            str(hdf5_path), index=slice(0, 2)
-        )
+        loaded_slice = load_atoms_from_hdf5(str(hdf5_path), index=slice(0, 2))
         assert len(loaded_slice) == 2
 
         # Load single by index
@@ -115,16 +109,12 @@ class TestRawHDF5:
         loaded = load_atoms_from_hdf5(str(hdf5_path), index=0)
 
         # Check properties — loaded with original ASE keys
-        assert np.isclose(
-            loaded.info["REF_energy"], atoms.info["REF_energy"]
-        )
+        assert np.isclose(loaded.info["REF_energy"], atoms.info["REF_energy"])
         assert np.allclose(
             loaded.arrays["REF_forces"],
             atoms.arrays["REF_forces"],
         )
-        assert np.allclose(
-            loaded.info["REF_stress"], atoms.info["REF_stress"]
-        )
+        assert np.allclose(loaded.info["REF_stress"], atoms.info["REF_stress"])
 
     def test_configs_from_hdf5(self, example_raw_hdf5):
         """Test direct Configuration loading from HDF5."""
@@ -135,9 +125,7 @@ class TestRawHDF5:
         configs = configs_from_hdf5(example_raw_hdf5, keyspec)
 
         assert len(configs) == 3
-        assert all(
-            hasattr(config, "atomic_numbers") for config in configs
-        )
+        assert all(hasattr(config, "atomic_numbers") for config in configs)
         assert all(hasattr(config, "positions") for config in configs)
 
 
@@ -148,9 +136,7 @@ class TestPreprocessedHDF5:
         """Test save and load preprocessed AtomicData."""
         # Create AtomicData
         h2o_atoms.info["REF_energy"] = -10.0
-        h2o_atoms.arrays["REF_forces"] = np.random.randn(
-            len(h2o_atoms), 3
-        )
+        h2o_atoms.arrays["REF_forces"] = np.random.randn(len(h2o_atoms), 3)
         keyspec = KeySpecification(
             info_keys={"energy": "REF_energy"},
             arrays_keys={"forces": "REF_forces"},
@@ -395,7 +381,6 @@ class TestCLIPreprocess:
         assert result.returncode == 0, f"stderr: {result.stderr}"
         assert output_h5.exists()
 
-
     def test_validation_flag(self, tmp_path):
         """Test --validate flag."""
         data_dir = Path(__file__).parent / "data"
@@ -439,3 +424,118 @@ class TestBackwardCompatibility:
         # Verify properties are preserved
         for atoms in atoms_list:
             assert "REF_energy" in atoms.info or "energy" in atoms.info
+
+
+class TestHDF5Merge:
+    """Test merging multiple HDF5 files into one."""
+
+    def test_merge_raw_two_files(self, example_raw_hdf5, tmp_path):
+        """Merge two raw HDF5 files; output contains all configs."""
+        out = str(tmp_path / "merged.h5")
+        merge_raw_hdf5_files([example_raw_hdf5, example_raw_hdf5], out)
+
+        with h5py.File(out, "r") as f:
+            assert int(f.attrs["num_configs"]) == 6
+
+        loaded = load_atoms_from_hdf5(out)
+        assert len(loaded) == 6
+        # Properties should survive the round-trip
+        for atoms in loaded:
+            assert "REF_energy" in atoms.info
+
+    def test_merge_raw_three_files(self, example_raw_hdf5, tmp_path):
+        """Merge three raw HDF5 files."""
+        out = str(tmp_path / "merged3.h5")
+        merge_raw_hdf5_files(
+            [example_raw_hdf5, example_raw_hdf5, example_raw_hdf5], out
+        )
+        loaded = load_atoms_from_hdf5(out)
+        assert len(loaded) == 9
+
+    def test_merge_raw_preserves_forces(self, example_raw_hdf5, tmp_path):
+        """Forces (per-atom property) should be preserved after merge."""
+        out = str(tmp_path / "merged_forces.h5")
+        merge_raw_hdf5_files([example_raw_hdf5, example_raw_hdf5], out)
+        loaded = load_atoms_from_hdf5(out)
+        for atoms in loaded:
+            assert "REF_forces" in atoms.arrays
+            assert atoms.arrays["REF_forces"].shape == (len(atoms), 3)
+
+    def test_merge_preprocessed_two_files(
+        self, example_preprocessed_hdf5, tmp_path
+    ):
+        """Merge two preprocessed HDF5 files; groups renumbered."""
+        out = str(tmp_path / "merged_pre.h5")
+        merge_preprocessed_hdf5_files(
+            [example_preprocessed_hdf5, example_preprocessed_hdf5],
+            out,
+        )
+
+        with h5py.File(out, "r") as f:
+            assert int(f.attrs["num_configs"]) == 6
+            assert float(f.attrs["r_max"]) == 5.0
+            # Groups config_0 … config_5 must all be present
+            for i in range(6):
+                assert f"config_{i}" in f
+
+    def test_merge_format_mismatch_raises(
+        self, example_raw_hdf5, example_preprocessed_hdf5, tmp_path
+    ):
+        """Mixing raw and preprocessed inputs raises ValueError."""
+        out = str(tmp_path / "bad.h5")
+        with pytest.raises(ValueError, match="Format mismatch"):
+            # Detect mismatch at CLI level (run_merge) or directly
+            from so3krates_torch.data.hdf5_utils import detect_file_format
+
+            fmt1 = detect_file_format(example_raw_hdf5)
+            fmt2 = detect_file_format(example_preprocessed_hdf5)
+            if fmt1 != fmt2:
+                raise ValueError(
+                    f"Format mismatch: {example_raw_hdf5} is "
+                    f"'{fmt1}' but {example_preprocessed_hdf5} is "
+                    f"'{fmt2}'."
+                )
+
+    def test_merge_raw_wrong_format_raises(
+        self, example_preprocessed_hdf5, tmp_path
+    ):
+        """merge_raw_hdf5_files raises ValueError for non-raw input."""
+        out = str(tmp_path / "bad.h5")
+        with pytest.raises(ValueError, match="not a raw HDF5 file"):
+            merge_raw_hdf5_files(
+                [example_preprocessed_hdf5, example_preprocessed_hdf5],
+                out,
+            )
+
+    def test_merge_preprocessed_rmax_mismatch_raises(
+        self, example_preprocessed_hdf5, tmp_path
+    ):
+        """merge_preprocessed raises ValueError for r_max mismatch."""
+        # Build a second preprocessed file with different r_max
+        from ase.build import molecule
+
+        from so3krates_torch.data.atomic_data import AtomicData
+        from so3krates_torch.data.utils import (
+            KeySpecification,
+            config_from_atoms,
+        )
+        from so3krates_torch.tools.utils import AtomicNumberTable
+
+        atoms = molecule("H2O")
+        atoms.info["REF_energy"] = -10.0
+        keyspec = KeySpecification(info_keys={"energy": "REF_energy"})
+        config = config_from_atoms(atoms, keyspec)
+        z_table = AtomicNumberTable([1, 8])
+        data = AtomicData.from_config(
+            config, z_table=z_table, cutoff=7.0, cutoff_lr=None
+        )
+        other_path = str(tmp_path / "other.h5")
+        save_preprocessed_hdf5(
+            [data], other_path, r_max=7.0, r_max_lr=None, z_table=z_table
+        )
+
+        out = str(tmp_path / "bad.h5")
+        with pytest.raises(ValueError, match="r_max mismatch"):
+            merge_preprocessed_hdf5_files(
+                [example_preprocessed_hdf5, other_path], out
+            )

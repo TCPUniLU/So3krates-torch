@@ -247,9 +247,11 @@ class EuclideanTransformer(torch.nn.Module):
             return_att=return_att,
         )
         if return_att:
-            (d_att_inv_features, d_att_ev_features, (alpha_inv, alpha_ev)) = (
-                att_output
-            )
+            (
+                d_att_inv_features,
+                d_att_ev_features,
+                (alpha_inv, alpha_ev),
+            ) = att_output
 
         else:
             d_att_inv_features, d_att_ev_features = att_output
@@ -262,9 +264,7 @@ class EuclideanTransformer(torch.nn.Module):
             att_inv_features = self.layer_norm_inv_1(att_inv_features)
 
         if self.residual_mlp_1:
-            att_inv_features = att_inv_features + self.mlp_1(
-                att_inv_features
-            )
+            att_inv_features = att_inv_features + self.mlp_1(att_inv_features)
 
         d_inv_features, d_ev_features = self.interaction_block(
             att_inv_features, att_ev_features
@@ -274,9 +274,7 @@ class EuclideanTransformer(torch.nn.Module):
         new_ev_features = att_ev_features + d_ev_features
 
         if self.residual_mlp_2:
-            new_inv_features = new_inv_features + self.mlp_2(
-                new_inv_features
-            )
+            new_inv_features = new_inv_features + self.mlp_2(new_inv_features)
 
         if self.layer_normalization_2:
             new_inv_features = self.layer_norm_inv_2(new_inv_features)
@@ -407,8 +405,19 @@ class EuclideanAttentionBlock(torch.nn.Module):
 
         self.register_buffer(
             "degree_repeats",
-            torch.tensor([2 * y + 1 for y in degrees]),
+            torch.tensor([2 * y + 1 for y in degrees], device=device),
         )
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        # Migrate legacy models where degree_repeats was a plain
+        # tensor attribute, not a registered buffer.  .to(device)
+        # only moves registered buffers, so plain attrs cause
+        # device mismatches.
+        if "degree_repeats" not in self._buffers:
+            tensor = self.__dict__.pop("degree_repeats", None)
+            if tensor is not None:
+                self.register_buffer("degree_repeats", tensor)
 
     def _get_qkv(
         self,
@@ -422,27 +431,19 @@ class EuclideanAttentionBlock(torch.nn.Module):
         # computing the queries, keys, and values and immediately
         # selecting receivers (i) and senders (j) (Eq. 21 https://doi.org/10.1038/s41467-024-50620-6)
         q_inv = self.qk_non_linearity(
-            torch.einsum(
-                "nhd,hde->nhe", inv_features_inv, self.W_q_inv
-            )
+            torch.einsum("nhd,hde->nhe", inv_features_inv, self.W_q_inv)
         )[receivers]
         k_inv = self.qk_non_linearity(
-            torch.einsum(
-                "nhd,hde->nhe", inv_features_inv, self.W_k_inv
-            )
+            torch.einsum("nhd,hde->nhe", inv_features_inv, self.W_k_inv)
         )[senders]
-        v_inv = torch.einsum(
-            "nhd,hde->nhe", inv_features_inv, self.W_v_inv
-        )[senders]
+        v_inv = torch.einsum("nhd,hde->nhe", inv_features_inv, self.W_v_inv)[
+            senders
+        ]
         q_ev = self.qk_non_linearity(
-            torch.einsum(
-                "nhd,hde->nhe", inv_features_ev, self.W_q_ev
-            )
+            torch.einsum("nhd,hde->nhe", inv_features_ev, self.W_q_ev)
         )[receivers]
         k_ev = self.qk_non_linearity(
-            torch.einsum(
-                "nhd,hde->nhe", inv_features_ev, self.W_k_ev
-            )
+            torch.einsum("nhd,hde->nhe", inv_features_ev, self.W_k_ev)
         )[senders]
         return q_inv, k_inv, v_inv, q_ev, k_ev
 
@@ -468,9 +469,7 @@ class EuclideanAttentionBlock(torch.nn.Module):
             -1, self.inv_heads, self.inv_head_dim
         )
         # now has shape [neighbors, len(degrees), ev_head_dim]
-        filter_w_ev = filter_w_ev.reshape(
-            -1, self.ev_heads, self.ev_head_dim
-        )
+        filter_w_ev = filter_w_ev.reshape(-1, self.ev_heads, self.ev_head_dim)
         # split features into heads
         # first for invariants; has shape [nodes, num_heads, inv_head_dim] now
         inv_features_inv = inv_features.view(
@@ -562,8 +561,15 @@ class InteractionBlock(torch.nn.Module):
         # e.g. for degrees=[0,1,2], we have repeats = [1, 3, 5]
         self.register_buffer(
             "degree_repeats",
-            torch.tensor([2 * y + 1 for y in degrees]),
+            torch.tensor([2 * y + 1 for y in degrees], device=device),
         )
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        if "degree_repeats" not in self._buffers:
+            tensor = self.__dict__.pop("degree_repeats", None)
+            if tensor is not None:
+                self.register_buffer("degree_repeats", tensor)
 
     def reset_parameters(self):
         # JAX init (lecun normal)
@@ -579,7 +585,6 @@ class InteractionBlock(torch.nn.Module):
         inv_features: torch.Tensor,
         ev_features: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-
         ev_invariants = self.so3_conv_invariants(ev_features)
 
         # Eq. 25 in https://doi.org/10.1038/s41467-024-50620-6
@@ -714,7 +719,6 @@ class EuclideanAttentionBlockLORA(EuclideanAttentionBlock):
             self.lora_A_k_ev.requires_grad = False
 
     def _use_lora(self, features, W, lora_A, lora_B):
-
         # lora in two steps to avoid large intermediate tensors
         return torch.einsum(
             "nhd,hde->nhe", features, W
@@ -779,7 +783,6 @@ class EuclideanAttentionBlockLORA(EuclideanAttentionBlock):
         torch.Tensor,
         torch.Tensor,
     ]:
-
         if self.weights_fused:
             # If weights are fused, use the original forward method
             return super()._get_qkv(
@@ -928,7 +931,6 @@ class EuclideanAttentionBlockDoRA(EuclideanAttentionBlockLORA):
     ) -> Tuple[
         torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
     ]:
-
         if self.weights_fused:
             # If weights are fused, use the original forward method
             return super()._get_qkv(
@@ -996,7 +998,6 @@ class EuclideanAttentionBlockDoRA(EuclideanAttentionBlockLORA):
         # Fuse the LoRA weights into the original weights for inference
         self._get_constant_norms()
         with torch.no_grad():
-
             self.W_q_inv = torch.nn.Parameter(
                 (self.dora_m_q_inv / self.norm_q_inv)[:, :, None]
                 * (
@@ -1165,16 +1166,12 @@ class EuclideanAttentionBlockVeRA(EuclideanAttentionBlockLORA):
         )
 
     def _use_lora(self, features, W, lora_A, lora_B, vera_b, vera_d):
-        features_lora = torch.einsum(
-            "nhd,hdr->nhr", features, lora_A
-        )
+        features_lora = torch.einsum("nhd,hdr->nhr", features, lora_A)
 
         features_lora = features_lora * vera_d[None, :, :]
         B_scaled = lora_B * vera_b[:, :, None]
 
-        features_lora = torch.einsum(
-            "nhr,hre->nhe", features_lora, B_scaled
-        )
+        features_lora = torch.einsum("nhr,hre->nhe", features_lora, B_scaled)
 
         return (
             torch.einsum("nhd,hde->nhe", features, W)
@@ -1248,7 +1245,6 @@ class EuclideanAttentionBlockVeRA(EuclideanAttentionBlockLORA):
     ) -> Tuple[
         torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
     ]:
-
         if self.weights_fused:
             # If weights are fused, use the original forward method
             return super()._get_qkv(

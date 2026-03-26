@@ -57,6 +57,18 @@ TRAINING:
   clip_grad: 10.0
   neighbors_lr_cutoff: 0.
   patience: 50
+  # lazy_loading: false       # on-the-fly preprocessing from raw HDF5 (default: false)
+  # num_workers: 4            # DataLoader worker processes (only with lazy_loading)
+  # prefetch_factor: 2        # batches prefetched per worker (only with lazy_loading)
+  # num_neighbor_samples: 1000  # structures sampled for avg_num_neighbors estimate
+  # --- Data replay (for fine-tuning) ---
+  # replay_datasets:            # paths to replay datasets (XYZ, raw/preprocessed HDF5)
+  #   - /path/to/pretrain_A.xyz
+  #   - /path/to/pretrain_B.h5
+  # replay_fractions: [0.7, 0.3]  # fraction of replay_total from each dataset (must sum to 1.0)
+  # replay_total: 5000            # total number of replay structures to sample
+  # replay_oversample_finetune: true   # repeat fine-tune data to match replay size (default: true)
+  # replay_resample_per_epoch: false   # re-draw replay subset each epoch (default: false)
 
 
 MISC:

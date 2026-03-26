@@ -9,6 +9,7 @@ from ase.data import atomic_numbers as ase_atomic_numbers
 from ase.data import chemical_symbols
 
 from so3krates_torch.calculator.lammps_mliap_so3 import LAMMPS_MLIAP_SO3
+from so3krates_torch.config import CreateLammpsArgs
 from so3krates_torch.modules.models import MultiHeadSO3LR, SO3LR
 
 
@@ -91,7 +92,11 @@ def validate_model(model):
 #        )
 
 
-    zbl_status = "enabled" if getattr(model, "zbl_repulsion_bool", False) else "disabled"
+    zbl_status = (
+        "enabled"
+        if getattr(model, "zbl_repulsion_bool", False)
+        else "disabled"
+    )
     print(f"Model validation passed. ZBL repulsion: {zbl_status}")
 
 
@@ -103,7 +108,9 @@ def select_head(model):
         heads = [None]
 
     if len(heads) == 1:
-        print(f"Only one head found in the model: {heads[0]}. Skipping selection.")
+        print(
+            f"Only one head found in the model: {heads[0]}. Skipping selection."
+        )
         return heads[0]
 
     print("Available heads in the model:")
@@ -125,6 +132,7 @@ def select_head(model):
 
 def main():
     args = parse_args()
+    CreateLammpsArgs.model_validate(vars(args))
     model_path = args.model_path
 
     if not os.path.isfile(model_path):

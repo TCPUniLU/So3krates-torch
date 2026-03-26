@@ -5,4 +5,12 @@ repos:
       - id: black
         entry: black -l 79
 
-
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: pytest
+        language: system
+        stages: [pre-push]
+        always_run: true
+        pass_filenames: false

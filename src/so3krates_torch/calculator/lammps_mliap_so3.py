@@ -276,9 +276,7 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
 
         with timer("total_step", enabled=self.config.debug_time):
             with timer("prepare_batch", enabled=self.config.debug_time):
-                batch = self._prepare_batch(
-                    data, natoms, nghosts, species
-                )
+                batch = self._prepare_batch(data, natoms, nghosts, species)
 
             with timer("model_forward", enabled=self.config.debug_time):
                 _, atom_energies, pair_forces, pair_forces_lr = self.model(batch)                                                                                               # CHANGED: unpack 4-tuple
@@ -377,9 +375,7 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
             "total_charge": torch.zeros(
                 1, dtype=self.dtype, device=self.device
             ),
-            "total_spin": torch.zeros(
-                1, dtype=self.dtype, device=self.device
-            ),
+            "total_spin": torch.zeros(1, dtype=self.dtype, device=self.device),
             "lammps_class": data,
             "natoms": (natoms, ntotal),
         }

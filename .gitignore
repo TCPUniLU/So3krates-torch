@@ -45,3 +45,4 @@ dist/
 CLAUDE.md
 /docs
 /.claude
+.worktrees/

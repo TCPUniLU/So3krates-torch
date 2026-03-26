@@ -8,11 +8,15 @@ from torch_geometric.data import Batch
 import torch.distributed as dist
 
 TensorDict = Dict[str, torch.Tensor]
+
+
 def is_ddp_enabled():
     return dist.is_initialized() and dist.get_world_size() > 1
 
 
-def reduce_loss(raw_loss: torch.Tensor, ddp: Optional[bool] = None) -> torch.Tensor:
+def reduce_loss(
+    raw_loss: torch.Tensor, ddp: Optional[bool] = None
+) -> torch.Tensor:
     """
     Reduces an element-wise loss tensor.
 
@@ -34,6 +38,7 @@ def reduce_loss(raw_loss: torch.Tensor, ddp: Optional[bool] = None) -> torch.Ten
         return loss_sum * world_size / total_samples
     return raw_loss.mean()
 
+
 def weighted_mean_squared_error_energy(
     ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
 ) -> torch.Tensor:
@@ -45,6 +50,7 @@ def weighted_mean_squared_error_energy(
         * torch.square((ref["energy"] - pred["energy"]) / num_atoms)
     )
     return reduce_loss(raw_loss, ddp)
+
 
 def mean_squared_error_forces(
     ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
@@ -62,6 +68,7 @@ def mean_squared_error_forces(
         * torch.square(ref["forces"] - pred["forces"])
     )
     return reduce_loss(raw_loss, ddp)
+
 
 def weighted_mean_squared_error_dipole(
     ref: Batch, pred: TensorDict, ddp: Optional[bool] = None

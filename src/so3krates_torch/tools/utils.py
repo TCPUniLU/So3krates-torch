@@ -22,6 +22,7 @@ from typing import (
 import h5py
 import numpy as np
 import torch
+from ase.io import read, write
 
 from so3krates_torch.tools.torch_geometric import DataLoader
 
@@ -106,9 +107,9 @@ def compute_hessians_vmap(
     I_N = torch.eye(num_elements).to(forces.device)
     try:
         chunk_size = 1 if num_elements < 64 else 16
-        gradient = torch.vmap(get_vjp, in_dims=0, out_dims=0, chunk_size=chunk_size)(
-            I_N
-        )[0]
+        gradient = torch.vmap(
+            get_vjp, in_dims=0, out_dims=0, chunk_size=chunk_size
+        )(I_N)[0]
     except RuntimeError:
         gradient = compute_hessians_loop(forces, positions)
     if gradient is None:
@@ -131,7 +132,9 @@ def compute_hessians_loop(
             create_graph=False,
             allow_unused=False,
         )[0]
-        hess_row = hess_row.detach()  # this makes it very slow? but needs less memory
+        hess_row = (
+            hess_row.detach()
+        )  # this makes it very slow? but needs less memory
         if hess_row is None:
             hessian.append(torch.zeros_like(positions))
         else:
@@ -413,9 +416,9 @@ def load_results_hdf5(filename, is_ensemble: bool = False):
                                     key_grp = item_grp[key_type]
                                     att_dict[key_type] = {}
                                     for layer_idx in key_grp.keys():
-                                        att_dict[key_type][int(layer_idx)] = (
-                                            key_grp[layer_idx][()]
-                                        )
+                                        att_dict[key_type][
+                                            int(layer_idx)
+                                        ] = key_grp[layer_idx][()]
 
                             # Load 'senders' and 'receivers' tensors
                             for key_type in ["senders", "receivers"]:
@@ -449,9 +452,9 @@ def load_results_hdf5(filename, is_ensemble: bool = False):
                                 key_grp = item_grp[key_type]
                                 att_dict[key_type] = {}
                                 for layer_idx in key_grp.keys():
-                                    att_dict[key_type][int(layer_idx)] = (
-                                        key_grp[layer_idx][()]
-                                    )
+                                    att_dict[key_type][
+                                        int(layer_idx)
+                                    ] = key_grp[layer_idx][()]
 
                         # Load 'senders' and 'receivers' tensors
                         for key_type in ["senders", "receivers"]:
@@ -658,10 +661,8 @@ def save_results_hdf5(results, filename, is_ensemble: bool = False):
 
 # TODO: Add support for multi-head outputs
 # TODO: Add support from more output types
-def save_results_xyz(input_data, results, filename):
+def save_results_xyz(input_data, results, filename, prefix: str = "SO3"):
     """Save results to an XYZ file."""
-    from ase.io import read, write
-
     scalar_keys = [
         "energies",
     ]
@@ -675,15 +676,17 @@ def save_results_xyz(input_data, results, filename):
         for key, value in results.items():
             if key in scalar_keys:
                 if key == "energies":
-                    atoms.info[f"SO3_energy"] = value[i].item()
+                    atoms.info[f"{prefix}_energy"] = value[i].item()
                 else:
-                    atoms.info[f"SO3_{key}"] = value[i].item()
+                    atoms.info[f"{prefix}_{key}"] = value[i].item()
             elif key in tensor_keys:
-                atoms.arrays[f"SO3_{key}"] = value[i]
+                atoms.arrays[f"{prefix}_{key}"] = value[i]
         output_configs.append(atoms)
     write(filename, output_configs)
 
+
 # when evaluating, predicted "REF_{key}" will replace the "real {key}". So I modifed this refering to MACE_{key}.
+
 
 def ensemble_from_folder(path_to_models: str, device: str, dtype: str) -> dict:
     """
@@ -746,9 +749,7 @@ def create_data_from_configs(
     from so3krates_torch.data.atomic_data import AtomicData
 
     if z_table is None:
-        z_table = AtomicNumberTable(
-            [int(z) for z in range(1, 119)]
-        )
+        z_table = AtomicNumberTable([int(z) for z in range(1, 119)])
     return [
         AtomicData.from_config(
             config,
@@ -848,9 +849,7 @@ def compute_avg_num_neighbors(
         num_neighbors.append(counts)
 
     avg_num_neighbors = torch.mean(
-        torch.cat(num_neighbors, dim=0).type(
-            torch.get_default_dtype()
-        )
+        torch.cat(num_neighbors, dim=0).type(torch.get_default_dtype())
     )
     return to_numpy(avg_num_neighbors).item()
 
@@ -870,7 +869,9 @@ def compute_rmse(delta: np.ndarray) -> float:
 
 def compute_rel_rmse(delta: np.ndarray, target_val: np.ndarray) -> float:
     target_norm = np.sqrt(np.mean(np.square(target_val))).item()
-    return np.sqrt(np.mean(np.square(delta))).item() / (target_norm + 1e-9) * 100
+    return (
+        np.sqrt(np.mean(np.square(delta))).item() / (target_norm + 1e-9) * 100
+    )
 
 
 def compute_q95(delta: np.ndarray) -> float:
@@ -1007,7 +1008,10 @@ class LAMMPS_MP(torch.autograd.Function):
 
 def get_cache_dir() -> Path:
     # get cache dir from XDG_CACHE_HOME if set, otherwise appropriate default
-    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "torchkrates"
+    return (
+        Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+        / "torchkrates"
+    )
 
 
 def filter_nonzero_weight(
@@ -1043,3 +1047,20 @@ def filter_nonzero_weight(
 
     quantity_l[-1] = filtered_q
     return 1.0
+
+
+def create_dataloader_from_dataset(
+    dataset,
+    batch_size: int,
+    shuffle: bool = False,
+    drop_last: bool = False,
+    num_workers: int = 0,
+):
+    """Create a PyG DataLoader from a map-style BaseAtomicDataset."""
+    return DataLoader(
+        dataset=dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        drop_last=drop_last,
+        num_workers=num_workers,
+    )
