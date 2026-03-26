@@ -578,6 +578,7 @@ class GraphContext(NamedTuple):
     cell: torch.Tensor
     node_heads: torch.Tensor
     interaction_kwargs: InteractionKwargs
+    vectors_all: Optional[torch.Tensor] = None
 
 
 def prepare_graph(
@@ -614,9 +615,22 @@ def prepare_graph(
             dtype=data["vectors"].dtype,
             device=data["vectors"].device,
         )
-        vectors = data["vectors"].requires_grad_(True)
+        if lr and "vectors_all" in data:
+            # LR LAMMPS mode: vectors_all is the leaf tensor,
+            # vectors and vectors_lr are derived via masking in
+            # _prepare_batch(). Autograd flows through to vectors_all.
+            vectors_all = data["vectors_all"]
+            vectors = data["vectors"]
+            vectors_lr = data["vectors_lr"]
+            lengths_lr = torch.linalg.vector_norm(
+                vectors_lr, dim=1, keepdim=True
+            )
+        else:
+            vectors_all = None
+            vectors = data["vectors"].requires_grad_(True)
+            vectors_lr = None
+            lengths_lr = None
         lengths = torch.linalg.vector_norm(vectors, dim=1, keepdim=True)
-        vectors_lr, lengths_lr = None, None  # No long-range in MLIAP mode
         ikw = InteractionKwargs(data["lammps_class"], (n_real, n_total))
     else:
         data["positions"].requires_grad_(True)
@@ -681,4 +695,5 @@ def prepare_graph(
         cell=cell,
         node_heads=node_heads,
         interaction_kwargs=ikw,
+        vectors_all=(vectors_all if lammps_mliap else None),
     )

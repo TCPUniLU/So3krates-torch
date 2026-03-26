@@ -62,25 +62,13 @@ def validate_elements(elements):
 
 
 def validate_model(model):
-    """Validate model is compatible with short-range-only LAMMPS."""
+    """Validate model is compatible with LAMMPS MLIAP."""
     if not isinstance(model, (SO3LR, MultiHeadSO3LR)):
         raise ValueError(
-            f"Model must be SO3LR or MultiHeadSO3LR, got {type(model).__name__}. "
-            "Only SO3LR-family models are supported for LAMMPS MLIAP."
-        )
-
-    if getattr(model, "electrostatic_energy_bool", False):
-        raise ValueError(
-            "Model has electrostatic_energy_bool=True. "
-            "LAMMPS MLIAP only supports short-range interactions (ML + ZBL). "
-            "Retrain with electrostatic_energy_bool=False."
-        )
-
-    if getattr(model, "dispersion_energy_bool", False):
-        raise ValueError(
-            "Model has dispersion_energy_bool=True. "
-            "LAMMPS MLIAP only supports short-range interactions (ML + ZBL). "
-            "Retrain with dispersion_energy_bool=False."
+            f"Model must be SO3LR or MultiHeadSO3LR, "
+            f"got {type(model).__name__}. "
+            "Only SO3LR-family models are supported for "
+            "LAMMPS MLIAP."
         )
 
     zbl_status = (
@@ -88,7 +76,20 @@ def validate_model(model):
         if getattr(model, "zbl_repulsion_bool", False)
         else "disabled"
     )
+    lr_features = []
+    if getattr(model, "electrostatic_energy_bool", False):
+        lr_features.append("electrostatics")
+    if getattr(model, "dispersion_energy_bool", False):
+        lr_features.append("dispersion")
+
     print(f"Model validation passed. ZBL repulsion: {zbl_status}")
+    if lr_features:
+        print(
+            f"Long-range features: {', '.join(lr_features)} "
+            f"(r_max_lr={model.r_max_lr})"
+        )
+    else:
+        print("Short-range only model.")
 
 
 def select_head(model):
