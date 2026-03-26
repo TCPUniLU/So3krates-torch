@@ -45,6 +45,32 @@ def parse_args():
         help="Data type for the converted model (float32 or float64)",
         default="float64",
     )
+    parser.add_argument(
+        "--r-max-lr",
+        type=float,
+        default=None,
+        help="Override the long-range cutoff (default: from model)",
+    )
+    parser.add_argument(
+        "--electrostatic-energy-scale",
+        type=float,
+        default=None,
+        help="Override the electrostatic energy scale "
+        "(default: from model)",
+    )
+    parser.add_argument(
+        "--dispersion-energy-scale",
+        type=float,
+        default=None,
+        help="Override the dispersion energy scale " "(default: from model)",
+    )
+    parser.add_argument(
+        "--dispersion-energy-cutoff-lr-damping",
+        type=float,
+        default=None,
+        help="Override the dispersion cutoff damping distance "
+        "(default: from model)",
+    )
     return parser.parse_args()
 
 
@@ -154,6 +180,31 @@ def main():
 
     # Validate model configuration
     validate_model(model)
+
+    # Apply CLI overrides to model LR parameters
+    if args.r_max_lr is not None:
+        model.r_max_lr = args.r_max_lr
+        print(f"Override r_max_lr = {args.r_max_lr}")
+    if args.electrostatic_energy_scale is not None:
+        model.electrostatic_energy_scale = args.electrostatic_energy_scale
+        print(
+            f"Override electrostatic_energy_scale = "
+            f"{args.electrostatic_energy_scale}"
+        )
+    if args.dispersion_energy_scale is not None:
+        model.dispersion_energy_scale = args.dispersion_energy_scale
+        print(
+            f"Override dispersion_energy_scale = "
+            f"{args.dispersion_energy_scale}"
+        )
+    if args.dispersion_energy_cutoff_lr_damping is not None:
+        model.dispersion_energy_cutoff_lr_damping = (
+            args.dispersion_energy_cutoff_lr_damping
+        )
+        print(
+            f"Override dispersion_energy_cutoff_lr_damping = "
+            f"{args.dispersion_energy_cutoff_lr_damping}"
+        )
 
     # Select head for multi-head models
     if args.head is None:
