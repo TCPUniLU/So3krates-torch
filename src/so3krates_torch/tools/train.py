@@ -359,6 +359,10 @@ def train(
                         keep_last = False or save_all_checkpoints
                 else:
                     patience_counter += 1
+                    logging.info(
+                        f"No improvement. Patience:"
+                        f" {patience_counter}/{patience}"
+                    )
                     if (
                         patience_counter >= patience
                         and epoch >= early_stopping_warmup
