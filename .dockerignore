@@ -1,0 +1,12 @@
+.git/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+development_junk/
+docs/
+examples/md/
+examples/benchmarks/
+.pre-commit-config.yaml
+*.md
+!README.md

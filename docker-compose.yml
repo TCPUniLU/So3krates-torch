@@ -1,0 +1,59 @@
+services:
+  train:
+    build: .
+    entrypoint: ["torchkrates-train"]
+    command: ["--config", "/workspace/config.yaml"]
+    volumes:
+      - ./data:/workspace/data
+      - ./checkpoints:/workspace/checkpoints
+      - ./logs:/workspace/logs
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, capabilities: [gpu]}]
+
+  eval:
+    build: .
+    entrypoint: ["torchkrates-eval"]
+    volumes:
+      - ./data:/workspace/data
+      - ./output:/workspace/output
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, capabilities: [gpu]}]
+
+  metric:
+    build: .
+    entrypoint: ["torchkrates-metric"]
+    volumes:
+      - ./data:/workspace/data
+      - ./models:/workspace/models
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, capabilities: [gpu]}]
+
+  preprocess:
+    build: .
+    entrypoint: ["torchkrates-preprocess"]
+    volumes:
+      - ./data:/workspace/data
+
+  merge:
+    build: .
+    entrypoint: ["torchkrates-merge"]
+    volumes:
+      - ./data:/workspace/data
+
+  dev:
+    build: .
+    entrypoint: ["/bin/bash"]
+    stdin_open: true
+    tty: true
+    volumes:
+      - .:/workspace
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, capabilities: [gpu]}]
