@@ -127,9 +127,6 @@ torchkrates-create-lammps-model model.pt --elements Si O
 | `--head` | Head name for multi-head models (interactive selection if omitted) |
 | `--dtype` | `float32` or `float64` (default: `float64`) |
 
-> [!NOTE]
-> LAMMPS export only supports **short-range** models. Models with `electrostatic_energy_bool=True` or `dispersion_energy_bool=True` are rejected — retrain without long-range potentials for LAMMPS use.
-
 ---
 
 ### `torchkrates-eval` — Inference
