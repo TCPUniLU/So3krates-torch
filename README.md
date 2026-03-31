@@ -126,6 +126,10 @@ torchkrates-create-lammps-model model.pt --elements Si O
 | `--elements` | Element symbols present in the simulation (must match LAMMPS `pair_coeff` type order) |
 | `--head` | Head name for multi-head models (interactive selection if omitted) |
 | `--dtype` | `float32` or `float64` (default: `float64`) |
+| `--r-max-lr` | Override the long-range cutoff radius (Å). Only applicable to LR models. |
+| `--electrostatic-energy-scale` | Override the electrostatic energy scaling factor. |
+| `--dispersion-energy-scale` | Override the dispersion energy scaling factor. |
+| `--dispersion-energy-cutoff-lr-damping` | Override the dispersion long-range damping cutoff. |
 
 ---
 
