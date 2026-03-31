@@ -27,12 +27,14 @@ WORKDIR /build
 COPY requirements.txt pyproject.toml README.md ./
 COPY src/ src/
 
-# CPU builds: install torch from the CPU-only index first so that
-# pyproject.toml's `torch>=2.8.0` constraint is satisfied without
-# pulling in the large CUDA wheel.
+# Install torch ecosystem together so pip resolves compatible versions
+# in one pass. For CPU builds use the CPU-only index to avoid the large
+# CUDA wheels; for GPU builds the default PyPI index provides CUDA wheels.
 RUN if [ "$CUDA" = "false" ]; then \
-      pip install --no-cache-dir torch \
+      pip install --no-cache-dir torch torchvision torchaudio \
         --index-url https://download.pytorch.org/whl/cpu ; \
+    else \
+      pip install --no-cache-dir torch torchvision torchaudio ; \
     fi && \
     pip install --no-cache-dir .
 

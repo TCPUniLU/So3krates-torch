@@ -334,7 +334,11 @@ def run_training(config: dict) -> None:
 
     # Only rank 0 saves the final model
     if rank == 0:
-        final_model_path = f'{config["GENERAL"]["name_exp"]}.pth'
+        model_dir = config["GENERAL"].get("model_dir", ".")
+        os.makedirs(model_dir, exist_ok=True)
+        final_model_path = os.path.join(
+            model_dir, f'{config["GENERAL"]["name_exp"]}.pth'
+        )
         torch.save(model.state_dict(), final_model_path)
         torch.save(model, final_model_path.replace(".pth", ".model"))
 

@@ -58,7 +58,6 @@ dependencies = [
 dev = ["pre-commit", "pytest"]
 slurm = ["python-hostlist"]
 jax = ["jax", "flax", "ml-collections"]
-vis = ["matplotlib>=3.5.0", "pandas>=1.5.0"]
 
 [project.urls]
 homepage = "https://github.com/tohenkes/So3krates-torch"
@@ -73,7 +72,7 @@ issues = "https://github.com/tohenkes/So3krates-torch/issues"
 where = ["src"]
 
 [tool.setuptools.package-data]
-so3krates_torch = ["pretrained/so3lr/so3lr.model"]
+so3krates_torch = ["pretrained/so3lr/so3lr.model", "blocks/cgmatrix.npz"]
 
 [tool.pytest.ini_options]
 testpaths = ["src/so3krates_torch/tests"]

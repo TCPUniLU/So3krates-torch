@@ -23,8 +23,6 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch_ema import ExponentialMovingAverage
 
-from so3krates_torch.cli.visualise_train import TrainingPlotter
-
 from so3krates_torch.tools import torch_geometric
 from so3krates_torch.tools.checkpoint import CheckpointHandler, CheckpointState
 from so3krates_torch.tools.torch_tools import to_numpy
@@ -170,7 +168,7 @@ def train(
     log_wandb: bool = False,
     distributed: bool = False,
     save_all_checkpoints: bool = False,
-    plotter: TrainingPlotter = None,
+    plotter=None,
     distributed_model: Optional[DistributedDataParallel] = None,
     train_sampler: Optional[DistributedSampler] = None,
     rank: Optional[int] = 0,
@@ -318,11 +316,6 @@ def train(
                                 ],
                                 "valid_rmse_f": eval_metrics["rmse_f"],
                             }
-                if plotter and epoch % plotter.plot_frequency == 0:
-                    try:
-                        plotter.plot(epoch, model_to_evaluate, rank)
-                    except Exception as e:  # pylint: disable=broad-except
-                        logging.debug(f"Plotting failed: {e}")
                 valid_loss = valid_loss_head  # consider only the last head for the checkpoint
                 if rank == 0:
                     avg_epoch_time = sum(epoch_times) / len(epoch_times)

@@ -1,6 +1,11 @@
+x-build: &build
+  context: .
+  args:
+    CUDA: ${CUDA:-true}
+
 services:
   train:
-    build: .
+    build: *build
     entrypoint: ["torchkrates-train"]
     command: ["--config", "/workspace/config.yaml"]
     volumes:
@@ -13,7 +18,7 @@ services:
           devices: [{driver: nvidia, capabilities: [gpu]}]
 
   eval:
-    build: .
+    build: *build
     entrypoint: ["torchkrates-eval"]
     volumes:
       - ./data:/workspace/data
@@ -24,7 +29,7 @@ services:
           devices: [{driver: nvidia, capabilities: [gpu]}]
 
   metric:
-    build: .
+    build: *build
     entrypoint: ["torchkrates-metric"]
     volumes:
       - ./data:/workspace/data
@@ -35,19 +40,19 @@ services:
           devices: [{driver: nvidia, capabilities: [gpu]}]
 
   preprocess:
-    build: .
+    build: *build
     entrypoint: ["torchkrates-preprocess"]
     volumes:
       - ./data:/workspace/data
 
   merge:
-    build: .
+    build: *build
     entrypoint: ["torchkrates-merge"]
     volumes:
       - ./data:/workspace/data
 
   dev:
-    build: .
+    build: *build
     entrypoint: ["/bin/bash"]
     stdin_open: true
     tty: true
