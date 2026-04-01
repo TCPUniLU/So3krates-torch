@@ -37,6 +37,8 @@ def evaluate_model(
     return_att: bool = False,
     return_inv_descriptors: bool = False,
     return_eqv_descriptors: bool = False,
+    return_mean_inv_descriptors: bool = False,
+    return_mean_eqv_descriptors: bool = False,
     dtype: str = "float64",
     key_spec: Optional[KeySpecification] = None,
 ) -> dict[str, Union[np.ndarray, List[np.ndarray]]]:
@@ -120,6 +122,8 @@ def evaluate_model(
         att_scores_list = []
     inv_descriptors_list = []
     eqv_descriptors_list = []
+    mean_inv_list: list = []
+    mean_eqv_list: list = []
 
     if model_type == "so3lr":
         model.r_max_lr = r_max_lr
@@ -134,8 +138,12 @@ def evaluate_model(
             batch.to_dict(),
             compute_stress=compute_stress,
             return_att=return_att,
-            return_descriptors=return_inv_descriptors,
-            return_eqv_descriptors=return_eqv_descriptors,
+            return_descriptors=(
+                return_inv_descriptors or return_mean_inv_descriptors
+            ),
+            return_eqv_descriptors=(
+                return_eqv_descriptors or return_mean_eqv_descriptors
+            ),
         )
         energies = torch_tools.to_numpy(output["energy"])
 
@@ -208,6 +216,18 @@ def evaluate_model(
             )[:-1]
             eqv_descriptors_list += [d for d in eqv_desc]
 
+        if return_mean_inv_descriptors:
+            inv_arr = torch_tools.to_numpy(output["inv_features"])
+            ptr = batch.ptr.cpu().numpy()
+            for i in range(len(ptr) - 1):
+                mean_inv_list.append(inv_arr[ptr[i] : ptr[i + 1]].mean(axis=0))
+
+        if return_mean_eqv_descriptors:
+            eqv_arr = torch_tools.to_numpy(output["ev_features"])
+            ptr = batch.ptr.cpu().numpy()
+            for i in range(len(ptr) - 1):
+                mean_eqv_list.append(eqv_arr[ptr[i] : ptr[i + 1]].mean(axis=0))
+
         forces = np.split(
             torch_tools.to_numpy(output["forces"]),
             indices_or_sections=batch.ptr[1:],
@@ -258,6 +278,12 @@ def evaluate_model(
         ),
         "eqv_descriptors": (
             eqv_descriptors_list if return_eqv_descriptors else None
+        ),
+        "mean_inv_descriptors": (
+            np.stack(mean_inv_list) if return_mean_inv_descriptors else None
+        ),
+        "mean_eqv_descriptors": (
+            np.stack(mean_eqv_list) if return_mean_eqv_descriptors else None
         ),
     }
 

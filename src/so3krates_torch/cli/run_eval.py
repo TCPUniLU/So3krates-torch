@@ -39,6 +39,8 @@ def run_evaluation(
     return_att: bool = False,
     return_inv_descriptors: bool = False,
     return_eqv_descriptors: bool = False,
+    return_mean_inv_descriptors: bool = False,
+    return_mean_eqv_descriptors: bool = False,
 ):
     """Load models from `model_path` (single .model or directory of .model),
     read data from `data_path`, run evaluation or ensemble prediction and
@@ -108,6 +110,8 @@ def run_evaluation(
             return_att=return_att,
             return_inv_descriptors=return_inv_descriptors,
             return_eqv_descriptors=return_eqv_descriptors,
+            return_mean_inv_descriptors=return_mean_inv_descriptors,
+            return_mean_eqv_descriptors=return_mean_eqv_descriptors,
             key_spec=keyspec,
         )
     else:
@@ -221,6 +225,16 @@ def main():
         ),
     )
     argparser.add_argument(
+        "--return_mean_inv_descriptors",
+        action="store_true",
+        help=("Compute and save per-structure mean invariant descriptors."),
+    )
+    argparser.add_argument(
+        "--return_mean_eqv_descriptors",
+        action="store_true",
+        help=("Compute and save per-structure mean equivariant descriptors."),
+    )
+    argparser.add_argument(
         "--output_prefix",
         type=str,
         default="SO3",
@@ -261,6 +275,8 @@ def main():
     return_att = args.return_att
     return_inv_descriptors = args.return_inv_descriptors
     return_eqv_descriptors = args.return_eqv_descriptors
+    return_mean_inv_descriptors = args.return_mean_inv_descriptors
+    return_mean_eqv_descriptors = args.return_mean_eqv_descriptors
     output_prefix = validated.output_prefix
 
     result, is_ensemble = run_evaluation(
@@ -291,6 +307,8 @@ def main():
         return_att=return_att,
         return_inv_descriptors=return_inv_descriptors,
         return_eqv_descriptors=return_eqv_descriptors,
+        return_mean_inv_descriptors=return_mean_inv_descriptors,
+        return_mean_eqv_descriptors=return_mean_eqv_descriptors,
     )
     extension = os.path.splitext(output_file)[1].lower()
     if extension == ".h5" or extension == ".hdf5" or extension == "":

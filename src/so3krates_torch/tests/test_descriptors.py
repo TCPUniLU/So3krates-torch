@@ -288,3 +288,117 @@ class TestLoadDescriptors:
             # ptr should be [0, 3, 7]
             ptr = f["inv_descriptors"]["ptr"][:]
             np.testing.assert_array_equal(ptr, [0, 3, 7])
+
+
+class TestMeanDescriptors:
+    """Test per-structure mean descriptor computation and round-trip."""
+
+    def test_mean_inv_shape(self, default_model_config, device):
+        """mean_inv_descriptors should have shape (num_structures,
+        num_features)."""
+        from ase.build import molecule
+        from so3krates_torch.modules.models import So3krates
+        from so3krates_torch.tools.eval import evaluate_model
+
+        model = So3krates(**default_model_config)
+        model.eval()
+        atoms_list = [molecule("H2O"), molecule("NH3"), molecule("CH4")]
+
+        result = evaluate_model(
+            atoms_list=atoms_list,
+            model=model,
+            batch_size=3,
+            device=str(device),
+            model_type="so3krates",
+            multi_species=True,
+            return_mean_inv_descriptors=True,
+        )
+        mean_inv = result["mean_inv_descriptors"]
+        assert mean_inv is not None
+        assert mean_inv.ndim == 2
+        assert mean_inv.shape == (3, default_model_config["num_features"])
+
+    def test_mean_eqv_shape(self, default_model_config, device):
+        """mean_eqv_descriptors should have shape (num_structures, sh_dim)."""
+        from ase.build import molecule
+        from so3krates_torch.modules.models import So3krates
+        from so3krates_torch.tools.eval import evaluate_model
+
+        model = So3krates(**default_model_config)
+        model.eval()
+        atoms_list = [molecule("H2O"), molecule("NH3")]
+
+        result = evaluate_model(
+            atoms_list=atoms_list,
+            model=model,
+            batch_size=2,
+            device=str(device),
+            model_type="so3krates",
+            multi_species=True,
+            return_mean_eqv_descriptors=True,
+        )
+        mean_eqv = result["mean_eqv_descriptors"]
+        assert mean_eqv is not None
+        assert mean_eqv.ndim == 2
+        assert mean_eqv.shape[0] == 2
+
+    def test_mean_independent_of_full(self, default_model_config, device):
+        """Mean descriptors can be requested without full per-atom ones."""
+        from ase.build import molecule
+        from so3krates_torch.modules.models import So3krates
+        from so3krates_torch.tools.eval import evaluate_model
+
+        model = So3krates(**default_model_config)
+        model.eval()
+        result = evaluate_model(
+            atoms_list=[molecule("H2O")],
+            model=model,
+            batch_size=1,
+            device=str(device),
+            model_type="so3krates",
+            return_mean_inv_descriptors=True,
+        )
+        assert result["inv_descriptors"] is None
+        assert result["mean_inv_descriptors"] is not None
+
+    def test_mean_roundtrip(self, default_model_config, device, tmp_path):
+        """Mean descriptors round-trip through save_descriptors_hdf5."""
+        from ase.build import molecule
+        from so3krates_torch.modules.models import So3krates
+        from so3krates_torch.tools.eval import evaluate_model
+        from so3krates_torch.tools.load_descriptors import (
+            load_descriptors,
+            save_descriptors_hdf5,
+        )
+
+        model = So3krates(**default_model_config)
+        model.eval()
+        atoms_list = [molecule("H2O"), molecule("NH3")]
+
+        result = evaluate_model(
+            atoms_list=atoms_list,
+            model=model,
+            batch_size=2,
+            device=str(device),
+            model_type="so3krates",
+            multi_species=True,
+            return_mean_inv_descriptors=True,
+            return_mean_eqv_descriptors=True,
+        )
+
+        out_path = str(tmp_path / "mean_desc.h5")
+        save_descriptors_hdf5(
+            out_path,
+            mean_inv=result["mean_inv_descriptors"],
+            mean_eqv=result["mean_eqv_descriptors"],
+        )
+
+        loaded = load_descriptors(out_path)
+        np.testing.assert_array_equal(
+            loaded["mean_inv_descriptors"],
+            result["mean_inv_descriptors"],
+        )
+        np.testing.assert_array_equal(
+            loaded["mean_eqv_descriptors"],
+            result["mean_eqv_descriptors"],
+        )
