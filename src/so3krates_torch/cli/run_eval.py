@@ -247,7 +247,6 @@ def main():
     model_path = validated.model_path
     data_path = validated.data_path
     output_file = validated.output_file
-    ensemble_size = validated.ensemble_size
     device = validated.device
     batch_size = validated.batch_size
     model_type = validated.model_type
@@ -271,12 +270,12 @@ def main():
     total_spin_key = validated.total_spin_key
     hirshfeld_key = validated.hirshfeld_key
     head_key = validated.head_key
-    dtype = args.dtype
-    return_att = args.return_att
-    return_inv_descriptors = args.return_inv_descriptors
-    return_eqv_descriptors = args.return_eqv_descriptors
-    return_mean_inv_descriptors = args.return_mean_inv_descriptors
-    return_mean_eqv_descriptors = args.return_mean_eqv_descriptors
+    dtype = validated.dtype
+    return_att = validated.return_att
+    return_inv_descriptors = validated.return_inv_descriptors
+    return_eqv_descriptors = validated.return_eqv_descriptors
+    return_mean_inv_descriptors = validated.return_mean_inv_descriptors
+    return_mean_eqv_descriptors = validated.return_mean_eqv_descriptors
     output_prefix = validated.output_prefix
 
     result, is_ensemble = run_evaluation(

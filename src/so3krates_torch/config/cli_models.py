@@ -33,6 +33,10 @@ class EvalArgs(BaseModel):
     head: str = "head"
     dtype: Literal["float32", "float64"] = "float32"
     return_att: bool = False
+    return_inv_descriptors: bool = False
+    return_eqv_descriptors: bool = False
+    return_mean_inv_descriptors: bool = False
+    return_mean_eqv_descriptors: bool = False
     output_prefix: str = "SO3"
 
 
