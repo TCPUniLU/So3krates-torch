@@ -36,6 +36,8 @@ def run_evaluation(
     head_key: str = "head",
     dtype: str = "float32",
     return_att: bool = False,
+    return_inv_descriptors: bool = False,
+    return_eqv_descriptors: bool = False,
 ):
     """Load models from `model_path` (single .model or directory of .model),
     read data from `data_path`, run evaluation or ensemble prediction and
@@ -103,6 +105,8 @@ def run_evaluation(
             compute_hirshfeld=compute_hirshfeld,
             compute_partial_charges=compute_partial_charges,
             return_att=return_att,
+            return_inv_descriptors=return_inv_descriptors,
+            return_eqv_descriptors=return_eqv_descriptors,
             key_spec=keyspec,
         )
     else:
@@ -200,6 +204,22 @@ def main():
     argparser.add_argument("--dtype", type=str, default="float32")
     argparser.add_argument("--return_att", action="store_true")
     argparser.add_argument(
+        "--return_inv_descriptors",
+        action="store_true",
+        help=(
+            "If set, compute and save invariant (scalar) per-atom "
+            "descriptors to the output file."
+        ),
+    )
+    argparser.add_argument(
+        "--return_eqv_descriptors",
+        action="store_true",
+        help=(
+            "If set, compute and save equivariant (spherical-harmonic) "
+            "per-atom descriptors to the output file."
+        ),
+    )
+    argparser.add_argument(
         "--output_prefix",
         type=str,
         default="SO3",
@@ -238,6 +258,8 @@ def main():
     head_key = validated.head_key
     dtype = args.dtype
     return_att = args.return_att
+    return_inv_descriptors = args.return_inv_descriptors
+    return_eqv_descriptors = args.return_eqv_descriptors
     output_prefix = validated.output_prefix
 
     result, is_ensemble = run_evaluation(
@@ -266,6 +288,8 @@ def main():
         head_key=head_key,
         dtype=dtype,
         return_att=return_att,
+        return_inv_descriptors=return_inv_descriptors,
+        return_eqv_descriptors=return_eqv_descriptors,
     )
     extension = os.path.splitext(output_file)[1].lower()
     if extension == ".h5" or extension == ".hdf5" or extension == "":
