@@ -170,8 +170,9 @@ class TestLoadDescriptors:
         loaded = load_descriptors(out_path)
         assert "inv_descriptors" in loaded
         assert len(loaded["inv_descriptors"]) == 3
-        for orig, back in zip(result["inv_descriptors"],
-                               loaded["inv_descriptors"]):
+        for orig, back in zip(
+            result["inv_descriptors"], loaded["inv_descriptors"]
+        ):
             np.testing.assert_array_equal(orig, back)
 
     def test_eqv_descriptors_roundtrip(
@@ -204,8 +205,9 @@ class TestLoadDescriptors:
         loaded = load_descriptors(out_path)
         assert "eqv_descriptors" in loaded
         assert len(loaded["eqv_descriptors"]) == 2
-        for orig, back in zip(result["eqv_descriptors"],
-                               loaded["eqv_descriptors"]):
+        for orig, back in zip(
+            result["eqv_descriptors"], loaded["eqv_descriptors"]
+        ):
             np.testing.assert_array_equal(orig, back)
 
     def test_both_descriptors_roundtrip(

@@ -525,9 +525,7 @@ class So3krates(torch.nn.Module):
             edge_forces=edge_forces,
             att_scores=att_scores if return_att else None,
             inv_features=inv_features if return_descriptors else None,
-            ev_features=(
-                ev_features if return_eqv_descriptors else None
-            ),
+            ev_features=(ev_features if return_eqv_descriptors else None),
             training=training,
         )
 
@@ -886,9 +884,7 @@ class SO3LR(So3krates):
                 hirshfeld_ratios if self.dispersion_energy_bool else None
             ),
             inv_features=inv_features if return_descriptors else None,
-            ev_features=(
-                ev_features if return_eqv_descriptors else None
-            ),
+            ev_features=(ev_features if return_eqv_descriptors else None),
             att_scores=att_scores if return_att else None,
             node_energy=atomic_energies,
             training=training,
