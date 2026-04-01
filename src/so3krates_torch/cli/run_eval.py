@@ -3,6 +3,7 @@ import argparse
 from so3krates_torch.config import EvalArgs
 from so3krates_torch.tools.eval import evaluate_model, ensemble_prediction
 from so3krates_torch.tools.utils import save_results_hdf5, save_results_xyz
+from so3krates_torch.tools.load_descriptors import save_descriptors_hdf5
 from ase.io import read
 import torch
 from so3krates_torch.data.utils import KeySpecification
@@ -293,7 +294,22 @@ def main():
     )
     extension = os.path.splitext(output_file)[1].lower()
     if extension == ".h5" or extension == ".hdf5" or extension == "":
+        inv_desc = result.pop("inv_descriptors", None)
+        eqv_desc = result.pop("eqv_descriptors", None)
+        mean_inv_desc = result.pop("mean_inv_descriptors", None)
+        mean_eqv_desc = result.pop("mean_eqv_descriptors", None)
         save_results_hdf5(result, output_file, is_ensemble=is_ensemble)
+        if any(
+            x is not None
+            for x in [inv_desc, eqv_desc, mean_inv_desc, mean_eqv_desc]
+        ):
+            save_descriptors_hdf5(
+                output_file,
+                inv=inv_desc,
+                eqv=eqv_desc,
+                mean_inv=mean_inv_desc,
+                mean_eqv=mean_eqv_desc,
+            )
     elif is_ensemble == False and extension == ".xyz":
         save_results_xyz(data_path, result, output_file, prefix=output_prefix)
     else:

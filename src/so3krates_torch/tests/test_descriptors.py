@@ -143,12 +143,13 @@ class TestLoadDescriptors:
         self, default_model_config, device, tmp_path
     ):
         """Save inv_descriptors to HDF5, load back, check equality."""
-        import h5py
         from ase.build import molecule
         from so3krates_torch.modules.models import So3krates
         from so3krates_torch.tools.eval import evaluate_model
-        from so3krates_torch.tools.utils import save_results_hdf5
-        from so3krates_torch.tools.load_descriptors import load_descriptors
+        from so3krates_torch.tools.load_descriptors import (
+            load_descriptors,
+            save_descriptors_hdf5,
+        )
 
         model = So3krates(**default_model_config)
         model.eval()
@@ -165,10 +166,10 @@ class TestLoadDescriptors:
         )
 
         out_path = str(tmp_path / "descriptors.h5")
-        save_results_hdf5(result, out_path, is_ensemble=False)
+        save_descriptors_hdf5(out_path, inv=result["inv_descriptors"])
 
         loaded = load_descriptors(out_path)
-        assert "inv_descriptors" in loaded
+        assert loaded["inv_descriptors"] is not None
         assert len(loaded["inv_descriptors"]) == 3
         for orig, back in zip(
             result["inv_descriptors"], loaded["inv_descriptors"]
@@ -182,8 +183,10 @@ class TestLoadDescriptors:
         from ase.build import molecule
         from so3krates_torch.modules.models import So3krates
         from so3krates_torch.tools.eval import evaluate_model
-        from so3krates_torch.tools.utils import save_results_hdf5
-        from so3krates_torch.tools.load_descriptors import load_descriptors
+        from so3krates_torch.tools.load_descriptors import (
+            load_descriptors,
+            save_descriptors_hdf5,
+        )
 
         model = So3krates(**default_model_config)
         model.eval()
@@ -200,10 +203,10 @@ class TestLoadDescriptors:
         )
 
         out_path = str(tmp_path / "descriptors_eqv.h5")
-        save_results_hdf5(result, out_path, is_ensemble=False)
+        save_descriptors_hdf5(out_path, eqv=result["eqv_descriptors"])
 
         loaded = load_descriptors(out_path)
-        assert "eqv_descriptors" in loaded
+        assert loaded["eqv_descriptors"] is not None
         assert len(loaded["eqv_descriptors"]) == 2
         for orig, back in zip(
             result["eqv_descriptors"], loaded["eqv_descriptors"]
@@ -217,8 +220,10 @@ class TestLoadDescriptors:
         from ase.build import molecule
         from so3krates_torch.modules.models import So3krates
         from so3krates_torch.tools.eval import evaluate_model
-        from so3krates_torch.tools.utils import save_results_hdf5
-        from so3krates_torch.tools.load_descriptors import load_descriptors
+        from so3krates_torch.tools.load_descriptors import (
+            load_descriptors,
+            save_descriptors_hdf5,
+        )
 
         model = So3krates(**default_model_config)
         model.eval()
@@ -235,11 +240,15 @@ class TestLoadDescriptors:
         )
 
         out_path = str(tmp_path / "both.h5")
-        save_results_hdf5(result, out_path, is_ensemble=False)
+        save_descriptors_hdf5(
+            out_path,
+            inv=result["inv_descriptors"],
+            eqv=result["eqv_descriptors"],
+        )
 
         loaded = load_descriptors(out_path)
-        assert "inv_descriptors" in loaded
-        assert "eqv_descriptors" in loaded
+        assert loaded["inv_descriptors"] is not None
+        assert loaded["eqv_descriptors"] is not None
 
     def test_missing_descriptor_key_returns_none(self, tmp_path):
         """load_descriptors does not fail when keys are absent."""
@@ -254,3 +263,28 @@ class TestLoadDescriptors:
         loaded = load_descriptors(out_path)
         assert loaded.get("inv_descriptors") is None
         assert loaded.get("eqv_descriptors") is None
+        assert loaded.get("mean_inv_descriptors") is None
+        assert loaded.get("mean_eqv_descriptors") is None
+
+    def test_concatenated_hdf5_structure(self, tmp_path):
+        """save_descriptors_hdf5 writes data+ptr groups, not item_* datasets."""
+        import h5py
+        from so3krates_torch.tools.load_descriptors import (
+            save_descriptors_hdf5,
+        )
+
+        inv = [
+            np.random.randn(3, 8).astype(np.float64),
+            np.random.randn(4, 8).astype(np.float64),
+        ]
+        out_path = str(tmp_path / "concat.h5")
+        save_descriptors_hdf5(out_path, inv=inv)
+
+        with h5py.File(out_path, "r") as f:
+            assert isinstance(f["inv_descriptors"], h5py.Group)
+            assert "data" in f["inv_descriptors"]
+            assert "ptr" in f["inv_descriptors"]
+            assert "item_000000" not in f["inv_descriptors"]
+            # ptr should be [0, 3, 7]
+            ptr = f["inv_descriptors"]["ptr"][:]
+            np.testing.assert_array_equal(ptr, [0, 3, 7])
