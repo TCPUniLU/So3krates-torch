@@ -1,8 +1,10 @@
 import argparse
 
 from so3krates_torch.config import EvalArgs
+from so3krates_torch.data.hdf5_utils import load_atoms_from_hdf5
 from so3krates_torch.tools.eval import evaluate_model, ensemble_prediction
 from so3krates_torch.tools.utils import save_results_hdf5, save_results_xyz
+from so3krates_torch.tools.load_descriptors import save_descriptors_hdf5
 from ase.io import read
 import torch
 from so3krates_torch.data.utils import KeySpecification
@@ -36,6 +38,10 @@ def run_evaluation(
     head_key: str = "head",
     dtype: str = "float32",
     return_att: bool = False,
+    return_inv_descriptors: bool = False,
+    return_eqv_descriptors: bool = False,
+    return_mean_inv_descriptors: bool = False,
+    return_mean_eqv_descriptors: bool = False,
 ):
     """Load models from `model_path` (single .model or directory of .model),
     read data from `data_path`, run evaluation or ensemble prediction and
@@ -67,7 +73,17 @@ def run_evaluation(
         model.return_mean = False
         models.append(model)
 
-    data = read(data_path, index=":")
+    data_suffix = Path(data_path).suffix.lower()
+    if data_suffix in {".h5", ".hdf5"}:
+        # Required eval behavior: load full raw HDF5 dataset at once.
+        data = load_atoms_from_hdf5(data_path, index=None)
+    elif data_suffix in {".xyz", ".extxyz"}:
+        data = read(data_path, index=":")
+    else:
+        raise ValueError(
+            "Unsupported data format. Use .xyz/.extxyz or raw .h5/.hdf5 "
+            f"input files, got: {data_path}"
+        )
     keyspec = KeySpecification(
         info_keys={
             "energy": energy_key,
@@ -103,6 +119,10 @@ def run_evaluation(
             compute_hirshfeld=compute_hirshfeld,
             compute_partial_charges=compute_partial_charges,
             return_att=return_att,
+            return_inv_descriptors=return_inv_descriptors,
+            return_eqv_descriptors=return_eqv_descriptors,
+            return_mean_inv_descriptors=return_mean_inv_descriptors,
+            return_mean_eqv_descriptors=return_mean_eqv_descriptors,
             key_spec=keyspec,
         )
     else:
@@ -200,6 +220,32 @@ def main():
     argparser.add_argument("--dtype", type=str, default="float32")
     argparser.add_argument("--return_att", action="store_true")
     argparser.add_argument(
+        "--return_inv_descriptors",
+        action="store_true",
+        help=(
+            "If set, compute and save invariant (scalar) per-atom "
+            "descriptors to the output file."
+        ),
+    )
+    argparser.add_argument(
+        "--return_eqv_descriptors",
+        action="store_true",
+        help=(
+            "If set, compute and save equivariant (spherical-harmonic) "
+            "per-atom descriptors to the output file."
+        ),
+    )
+    argparser.add_argument(
+        "--return_mean_inv_descriptors",
+        action="store_true",
+        help=("Compute and save per-structure mean invariant descriptors."),
+    )
+    argparser.add_argument(
+        "--return_mean_eqv_descriptors",
+        action="store_true",
+        help=("Compute and save per-structure mean equivariant descriptors."),
+    )
+    argparser.add_argument(
         "--output_prefix",
         type=str,
         default="SO3",
@@ -212,7 +258,6 @@ def main():
     model_path = validated.model_path
     data_path = validated.data_path
     output_file = validated.output_file
-    ensemble_size = validated.ensemble_size
     device = validated.device
     batch_size = validated.batch_size
     model_type = validated.model_type
@@ -236,8 +281,12 @@ def main():
     total_spin_key = validated.total_spin_key
     hirshfeld_key = validated.hirshfeld_key
     head_key = validated.head_key
-    dtype = args.dtype
-    return_att = args.return_att
+    dtype = validated.dtype
+    return_att = validated.return_att
+    return_inv_descriptors = validated.return_inv_descriptors
+    return_eqv_descriptors = validated.return_eqv_descriptors
+    return_mean_inv_descriptors = validated.return_mean_inv_descriptors
+    return_mean_eqv_descriptors = validated.return_mean_eqv_descriptors
     output_prefix = validated.output_prefix
 
     result, is_ensemble = run_evaluation(
@@ -266,10 +315,29 @@ def main():
         head_key=head_key,
         dtype=dtype,
         return_att=return_att,
+        return_inv_descriptors=return_inv_descriptors,
+        return_eqv_descriptors=return_eqv_descriptors,
+        return_mean_inv_descriptors=return_mean_inv_descriptors,
+        return_mean_eqv_descriptors=return_mean_eqv_descriptors,
     )
     extension = os.path.splitext(output_file)[1].lower()
     if extension == ".h5" or extension == ".hdf5" or extension == "":
+        inv_desc = result.pop("inv_descriptors", None)
+        eqv_desc = result.pop("eqv_descriptors", None)
+        mean_inv_desc = result.pop("mean_inv_descriptors", None)
+        mean_eqv_desc = result.pop("mean_eqv_descriptors", None)
         save_results_hdf5(result, output_file, is_ensemble=is_ensemble)
+        if any(
+            x is not None
+            for x in [inv_desc, eqv_desc, mean_inv_desc, mean_eqv_desc]
+        ):
+            save_descriptors_hdf5(
+                output_file,
+                inv=inv_desc,
+                eqv=eqv_desc,
+                mean_inv=mean_inv_desc,
+                mean_eqv=mean_eqv_desc,
+            )
     elif is_ensemble == False and extension == ".xyz":
         save_results_xyz(data_path, result, output_file, prefix=output_prefix)
     else:

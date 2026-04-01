@@ -329,8 +329,8 @@ class TorchkratesCalculator(Calculator):
         descriptors = [
             model.get_representation(batch.to_dict()) for model in self.models
         ]
-        invariants = [inv.detach().cpu().numpy() for (ev, inv) in descriptors]
-        equivariants = [ev.detach().cpu().numpy() for (ev, inv) in descriptors]
+        invariants = [inv.detach().cpu().numpy() for (inv, ev) in descriptors]
+        equivariants = [ev.detach().cpu().numpy() for (inv, ev) in descriptors]
 
         if invariants_only:
             return {
