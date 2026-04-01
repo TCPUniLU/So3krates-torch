@@ -57,5 +57,5 @@ class TestGetDescriptorsUnpacking:
         )
         inv = out["inv_features"].detach().cpu().numpy()
         ev = out["ev_features"].detach().cpu().numpy()
-        # They should not be numerically identical
-        assert not np.allclose(inv, ev)
+        # They should not be numerically identical (may differ in shape too)
+        assert inv.shape != ev.shape or not np.allclose(inv, ev)

@@ -430,6 +430,7 @@ class So3krates(torch.nn.Module):
         hessian: torch.Tensor,
         edge_forces: torch.Tensor,
         inv_features: Optional[torch.Tensor],
+        ev_features: Optional[torch.Tensor],
         att_scores: Optional[torch.Tensor],
         training: bool = False,
     ) -> Dict[str, Optional[torch.Tensor]]:
@@ -441,6 +442,7 @@ class So3krates(torch.nn.Module):
             "hessian": hessian,
             "edge_forces": edge_forces,
             "inv_features": inv_features,
+            "ev_features": ev_features,
             "att_scores": att_scores,
         }
 
@@ -457,6 +459,7 @@ class So3krates(torch.nn.Module):
         compute_atomic_stresses: bool = False,
         lammps_mliap: bool = False,
         return_descriptors: bool = False,
+        return_eqv_descriptors: bool = False,
         return_att: bool = False,
     ) -> Dict[str, Optional[torch.Tensor]]:
         self.batch_segments = data["batch"]
@@ -522,6 +525,9 @@ class So3krates(torch.nn.Module):
             edge_forces=edge_forces,
             att_scores=att_scores if return_att else None,
             inv_features=inv_features if return_descriptors else None,
+            ev_features=(
+                ev_features if return_eqv_descriptors else None
+            ),
             training=training,
         )
 
@@ -700,6 +706,7 @@ class SO3LR(So3krates):
         dipole: torch.Tensor,
         hirshfeld_ratios: torch.Tensor,
         inv_features: torch.Tensor,
+        ev_features: torch.Tensor,
         att_scores: torch.Tensor,
         node_energy: Optional[torch.Tensor] = None,
         training: bool = False,
@@ -717,6 +724,7 @@ class SO3LR(So3krates):
             "dipole": dipole,
             "hirshfeld_ratios": hirshfeld_ratios,
             "inv_features": inv_features,
+            "ev_features": ev_features,
             "att_scores": att_scores,
         }
 
@@ -731,6 +739,7 @@ class SO3LR(So3krates):
         compute_hessian: bool = False,
         compute_edge_forces: bool = False,
         return_descriptors: bool = False,
+        return_eqv_descriptors: bool = False,
         compute_atomic_stresses: bool = False,
         lammps_mliap: bool = False,
         return_att: bool = False,
@@ -877,6 +886,9 @@ class SO3LR(So3krates):
                 hirshfeld_ratios if self.dispersion_energy_bool else None
             ),
             inv_features=inv_features if return_descriptors else None,
+            ev_features=(
+                ev_features if return_eqv_descriptors else None
+            ),
             att_scores=att_scores if return_att else None,
             node_energy=atomic_energies,
             training=training,
@@ -1008,6 +1020,7 @@ class MultiHeadSO3LR(SO3LR):
         dipole: torch.Tensor,
         hirshfeld_ratios: torch.Tensor,
         inv_features: torch.Tensor,
+        ev_features: torch.Tensor,
         att_scores: torch.Tensor,
         node_energy: Optional[torch.Tensor] = None,
         training: bool = False,
@@ -1028,6 +1041,7 @@ class MultiHeadSO3LR(SO3LR):
             "dipole": dipole,
             "hirshfeld_ratios": hirshfeld_ratios,
             "inv_features": inv_features,
+            "ev_features": ev_features,
             "att_scores": att_scores,
         }
         if self.select_heads:
