@@ -134,3 +134,121 @@ class TestEvaluateModelDescriptors:
         )
         assert result["inv_descriptors"] is None
         assert result["eqv_descriptors"] is None
+
+
+class TestLoadDescriptors:
+    """Test HDF5 round-trip for descriptors."""
+
+    def test_inv_descriptors_roundtrip(
+        self, default_model_config, device, tmp_path
+    ):
+        """Save inv_descriptors to HDF5, load back, check equality."""
+        import h5py
+        from ase.build import molecule
+        from so3krates_torch.modules.models import So3krates
+        from so3krates_torch.tools.eval import evaluate_model
+        from so3krates_torch.tools.utils import save_results_hdf5
+        from so3krates_torch.tools.load_descriptors import load_descriptors
+
+        model = So3krates(**default_model_config)
+        model.eval()
+        atoms_list = [molecule("H2O"), molecule("NH3"), molecule("CH4")]
+
+        result = evaluate_model(
+            atoms_list=atoms_list,
+            model=model,
+            batch_size=3,
+            device=str(device),
+            model_type="so3krates",
+            multi_species=True,
+            return_inv_descriptors=True,
+        )
+
+        out_path = str(tmp_path / "descriptors.h5")
+        save_results_hdf5(result, out_path, is_ensemble=False)
+
+        loaded = load_descriptors(out_path)
+        assert "inv_descriptors" in loaded
+        assert len(loaded["inv_descriptors"]) == 3
+        for orig, back in zip(result["inv_descriptors"],
+                               loaded["inv_descriptors"]):
+            np.testing.assert_array_equal(orig, back)
+
+    def test_eqv_descriptors_roundtrip(
+        self, default_model_config, device, tmp_path
+    ):
+        """Save eqv_descriptors to HDF5, load back, check equality."""
+        from ase.build import molecule
+        from so3krates_torch.modules.models import So3krates
+        from so3krates_torch.tools.eval import evaluate_model
+        from so3krates_torch.tools.utils import save_results_hdf5
+        from so3krates_torch.tools.load_descriptors import load_descriptors
+
+        model = So3krates(**default_model_config)
+        model.eval()
+        atoms_list = [molecule("H2O"), molecule("NH3")]
+
+        result = evaluate_model(
+            atoms_list=atoms_list,
+            model=model,
+            batch_size=2,
+            device=str(device),
+            model_type="so3krates",
+            multi_species=True,
+            return_eqv_descriptors=True,
+        )
+
+        out_path = str(tmp_path / "descriptors_eqv.h5")
+        save_results_hdf5(result, out_path, is_ensemble=False)
+
+        loaded = load_descriptors(out_path)
+        assert "eqv_descriptors" in loaded
+        assert len(loaded["eqv_descriptors"]) == 2
+        for orig, back in zip(result["eqv_descriptors"],
+                               loaded["eqv_descriptors"]):
+            np.testing.assert_array_equal(orig, back)
+
+    def test_both_descriptors_roundtrip(
+        self, default_model_config, device, tmp_path
+    ):
+        """Both descriptor types round-trip correctly together."""
+        from ase.build import molecule
+        from so3krates_torch.modules.models import So3krates
+        from so3krates_torch.tools.eval import evaluate_model
+        from so3krates_torch.tools.utils import save_results_hdf5
+        from so3krates_torch.tools.load_descriptors import load_descriptors
+
+        model = So3krates(**default_model_config)
+        model.eval()
+        atoms_list = [molecule("H2O")]
+
+        result = evaluate_model(
+            atoms_list=atoms_list,
+            model=model,
+            batch_size=1,
+            device=str(device),
+            model_type="so3krates",
+            return_inv_descriptors=True,
+            return_eqv_descriptors=True,
+        )
+
+        out_path = str(tmp_path / "both.h5")
+        save_results_hdf5(result, out_path, is_ensemble=False)
+
+        loaded = load_descriptors(out_path)
+        assert "inv_descriptors" in loaded
+        assert "eqv_descriptors" in loaded
+
+    def test_missing_descriptor_key_returns_none(self, tmp_path):
+        """load_descriptors does not fail when keys are absent."""
+        import h5py
+        from so3krates_torch.tools.load_descriptors import load_descriptors
+
+        out_path = str(tmp_path / "no_desc.h5")
+        with h5py.File(out_path, "w") as f:
+            grp = f.create_group("energies")
+            grp.create_dataset("item_000000", data=np.array([-10.0]))
+
+        loaded = load_descriptors(out_path)
+        assert loaded.get("inv_descriptors") is None
+        assert loaded.get("eqv_descriptors") is None
