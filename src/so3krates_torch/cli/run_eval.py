@@ -1,6 +1,7 @@
 import argparse
 
 from so3krates_torch.config import EvalArgs
+from so3krates_torch.data.hdf5_utils import load_atoms_from_hdf5
 from so3krates_torch.tools.eval import evaluate_model, ensemble_prediction
 from so3krates_torch.tools.utils import save_results_hdf5, save_results_xyz
 from so3krates_torch.tools.load_descriptors import save_descriptors_hdf5
@@ -72,7 +73,17 @@ def run_evaluation(
         model.return_mean = False
         models.append(model)
 
-    data = read(data_path, index=":")
+    data_suffix = Path(data_path).suffix.lower()
+    if data_suffix in {".h5", ".hdf5"}:
+        # Required eval behavior: load full raw HDF5 dataset at once.
+        data = load_atoms_from_hdf5(data_path, index=None)
+    elif data_suffix in {".xyz", ".extxyz"}:
+        data = read(data_path, index=":")
+    else:
+        raise ValueError(
+            "Unsupported data format. Use .xyz/.extxyz or raw .h5/.hdf5 "
+            f"input files, got: {data_path}"
+        )
     keyspec = KeySpecification(
         info_keys={
             "energy": energy_key,
