@@ -60,7 +60,13 @@ def save_descriptors_hdf5(
             ("mean_eqv_descriptors", mean_eqv),
         ):
             if arr is not None:
-                f.create_dataset(key, data=arr)
+                f.create_dataset(
+                    key,
+                    data=arr,
+                    chunks=(min(len(arr), 65536), arr.shape[1]),
+                    compression="gzip",
+                    compression_opts=1,
+                )
 
 
 def load_descriptors(
