@@ -636,7 +636,7 @@ class ElectrostaticInteraction(nn.Module):
         """
         if cutoff_lr is not None:
             cuton = 0.45 * float(cutoff_lr)
-            self.coulomb = CoulombErfShiftedForceSmooth(
+            coulomb = CoulombErfShiftedForceSmooth(
                 ke=self.ke,
                 sigma=electrostatic_energy_scale,
                 cutoff=float(cutoff_lr),
@@ -644,7 +644,7 @@ class ElectrostaticInteraction(nn.Module):
                 neighborlist_format_lr=self.neighborlist_format_lr,
             )
         else:
-            self.coulomb = CoulombErf(
+            coulomb = CoulombErf(
                 ke=self.ke,
                 sigma=electrostatic_energy_scale,
                 neighborlist_format_lr=self.neighborlist_format_lr,
@@ -652,7 +652,7 @@ class ElectrostaticInteraction(nn.Module):
         if lengths_lr.dim() == 2 and lengths_lr.size(-1) == 1:
             lengths_lr = lengths_lr.squeeze(-1)
 
-        edge_e = self.coulomb(
+        edge_e = coulomb(
             partial_charges, lengths_lr, senders_lr, receivers_lr
         )
 
