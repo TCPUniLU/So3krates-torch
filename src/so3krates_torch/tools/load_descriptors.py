@@ -68,13 +68,16 @@ def save_descriptors_hdf5(
 def load_descriptors(
     filename: str,
 ) -> dict[str, Optional[Union[list[np.ndarray], np.ndarray]]]:
-    """Load per-atom descriptors from an HDF5 file produced by
-    ``torchkrates-eval``.
+    """Load descriptors produced by ``torchkrates-eval``.
+
+    Supports both HDF5 (``.h5``/``.hdf5``) and numpy archive
+    (``.npz``) formats. The format is detected from the file extension.
 
     Parameters
     ----------
     filename:
-        Path to the HDF5 file written by :func:`save_descriptors_hdf5`.
+        Path to an HDF5 file written by :func:`save_descriptors_hdf5`
+        or a ``.npz`` file written by :func:`save_mean_descriptors_npz`.
 
     Returns
     -------
@@ -98,6 +101,10 @@ def load_descriptors(
         "mean_inv_descriptors": None,
         "mean_eqv_descriptors": None,
     }
+
+    if filename.endswith(".npz"):
+        result.update(load_mean_descriptors_npz(filename))
+        return result
 
     with h5py.File(filename, "r") as f:
         for key in ("inv_descriptors", "eqv_descriptors"):
