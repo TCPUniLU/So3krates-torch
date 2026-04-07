@@ -37,6 +37,7 @@ class EvalArgs(BaseModel):
     return_eqv_descriptors: bool = False
     return_mean_inv_descriptors: bool = False
     return_mean_eqv_descriptors: bool = False
+    mean_descriptors_only: bool = False
     output_prefix: str = "SO3"
 
 

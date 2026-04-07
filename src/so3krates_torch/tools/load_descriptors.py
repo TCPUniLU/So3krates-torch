@@ -51,8 +51,6 @@ def save_descriptors_hdf5(
                     "data",
                     data=data,
                     chunks=(min(len(data), 65536), data.shape[1]),
-                    compression="gzip",
-                    compression_opts=1,
                 )
                 grp.create_dataset("ptr", data=ptr)
         for key, arr in (
@@ -64,8 +62,6 @@ def save_descriptors_hdf5(
                     key,
                     data=arr,
                     chunks=(min(len(arr), 65536), arr.shape[1]),
-                    compression="gzip",
-                    compression_opts=1,
                 )
 
 
@@ -120,4 +116,63 @@ def load_descriptors(
             if key in f:
                 result[key] = f[key][:]
 
+    return result
+
+
+def save_mean_descriptors_npz(
+    filename: str,
+    mean_inv: Optional[np.ndarray] = None,
+    mean_eqv: Optional[np.ndarray] = None,
+) -> None:
+    """Save mean descriptors as an uncompressed numpy archive (.npz).
+
+    Uses :func:`numpy.savez` (not compressed) for maximum write speed.
+    The resulting file can be loaded with
+    :func:`load_mean_descriptors_npz`.
+
+    Parameters
+    ----------
+    filename:
+        Output path. A ``.npz`` extension is appended by numpy if not
+        already present.
+    mean_inv:
+        Mean invariant descriptors, shape
+        ``(num_structures, num_features)``.
+    mean_eqv:
+        Mean equivariant descriptors, shape
+        ``(num_structures, sh_dim)``.
+    """
+    arrays: dict[str, np.ndarray] = {}
+    if mean_inv is not None:
+        arrays["mean_inv_descriptors"] = mean_inv
+    if mean_eqv is not None:
+        arrays["mean_eqv_descriptors"] = mean_eqv
+    if arrays:
+        np.savez(filename, **arrays)
+
+
+def load_mean_descriptors_npz(
+    filename: str,
+) -> dict[str, Optional[np.ndarray]]:
+    """Load mean descriptors from a .npz file written by
+    :func:`save_mean_descriptors_npz`.
+
+    Parameters
+    ----------
+    filename:
+        Path to the ``.npz`` file.
+
+    Returns
+    -------
+    dict with keys ``"mean_inv_descriptors"`` and
+    ``"mean_eqv_descriptors"``, each an ``np.ndarray`` or ``None``.
+    """
+    result: dict[str, Optional[np.ndarray]] = {
+        "mean_inv_descriptors": None,
+        "mean_eqv_descriptors": None,
+    }
+    data = np.load(filename)
+    for key in result:
+        if key in data:
+            result[key] = data[key]
     return result

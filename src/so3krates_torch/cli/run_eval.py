@@ -4,7 +4,10 @@ from so3krates_torch.config import EvalArgs
 from so3krates_torch.data.hdf5_utils import load_atoms_from_hdf5
 from so3krates_torch.tools.eval import evaluate_model, ensemble_prediction
 from so3krates_torch.tools.utils import save_results_hdf5, save_results_xyz
-from so3krates_torch.tools.load_descriptors import save_descriptors_hdf5
+from so3krates_torch.tools.load_descriptors import (
+    save_descriptors_hdf5,
+    save_mean_descriptors_npz,
+)
 from ase.io import read
 import torch
 from so3krates_torch.data.utils import KeySpecification
@@ -246,6 +249,17 @@ def main():
         help=("Compute and save per-structure mean equivariant descriptors."),
     )
     argparser.add_argument(
+        "--mean_descriptors_only",
+        action="store_true",
+        default=False,
+        help=(
+            "Save only mean descriptors as an uncompressed .npz file "
+            "and skip writing forces/energies. Requires "
+            "--return_mean_inv_descriptors or "
+            "--return_mean_eqv_descriptors."
+        ),
+    )
+    argparser.add_argument(
         "--output_prefix",
         type=str,
         default="SO3",
@@ -287,6 +301,7 @@ def main():
     return_eqv_descriptors = validated.return_eqv_descriptors
     return_mean_inv_descriptors = validated.return_mean_inv_descriptors
     return_mean_eqv_descriptors = validated.return_mean_eqv_descriptors
+    mean_descriptors_only = validated.mean_descriptors_only
     output_prefix = validated.output_prefix
 
     result, is_ensemble = run_evaluation(
@@ -321,7 +336,16 @@ def main():
         return_mean_eqv_descriptors=return_mean_eqv_descriptors,
     )
     extension = os.path.splitext(output_file)[1].lower()
-    if extension == ".h5" or extension == ".hdf5" or extension == "":
+    if mean_descriptors_only:
+        mean_inv_desc = result.get("mean_inv_descriptors")
+        mean_eqv_desc = result.get("mean_eqv_descriptors")
+        npz_path = str(Path(output_file).with_suffix(".npz"))
+        save_mean_descriptors_npz(
+            npz_path,
+            mean_inv=mean_inv_desc,
+            mean_eqv=mean_eqv_desc,
+        )
+    elif extension == ".h5" or extension == ".hdf5" or extension == "":
         inv_desc = result.pop("inv_descriptors", None)
         eqv_desc = result.pop("eqv_descriptors", None)
         mean_inv_desc = result.pop("mean_inv_descriptors", None)
