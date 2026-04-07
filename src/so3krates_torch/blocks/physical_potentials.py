@@ -652,9 +652,7 @@ class ElectrostaticInteraction(nn.Module):
         if lengths_lr.dim() == 2 and lengths_lr.size(-1) == 1:
             lengths_lr = lengths_lr.squeeze(-1)
 
-        edge_e = coulomb(
-            partial_charges, lengths_lr, senders_lr, receivers_lr
-        )
+        edge_e = coulomb(partial_charges, lengths_lr, senders_lr, receivers_lr)
 
         atomic_e = scatter_sum(
             src=edge_e,
