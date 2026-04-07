@@ -47,7 +47,13 @@ def save_descriptors_hdf5(
                 ptr = np.concatenate(
                     [[0], np.cumsum([a.shape[0] for a in arrays])]
                 )
-                grp.create_dataset("data", data=data)
+                grp.create_dataset(
+                    "data",
+                    data=data,
+                    chunks=(min(len(data), 65536), data.shape[1]),
+                    compression="gzip",
+                    compression_opts=1,
+                )
                 grp.create_dataset("ptr", data=ptr)
         for key, arr in (
             ("mean_inv_descriptors", mean_inv),
