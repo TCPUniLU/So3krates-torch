@@ -19,6 +19,8 @@ from so3krates_torch.tools.utils import (
 from so3krates_torch.tools.utils import create_dataloader_from_list
 from torchmetrics import Metric
 
+logger = logging.getLogger(__name__)
+
 
 def evaluate_model(
     atoms_list: list,
@@ -132,7 +134,16 @@ def evaluate_model(
         )
     model = model.eval()
 
-    for batch in data_loader:
+    n_batches = len(data_loader)
+    n_structures = len(atoms_list)
+    log_every = max(1, n_batches // 10)
+    logger.info(
+        "evaluate_model: %d structures / %d batches",
+        n_structures,
+        n_batches,
+    )
+    t0 = time.perf_counter()
+    for batch_idx, batch in enumerate(data_loader):
         batch = batch.to(device)
         output = model(
             batch.to_dict(),
@@ -235,6 +246,16 @@ def evaluate_model(
         )[:-1]
         forces = [force for force in forces]
         forces_list += forces
+
+        if (batch_idx + 1) % log_every == 0 or batch_idx == n_batches - 1:
+            elapsed = time.perf_counter() - t0
+            rate = (batch_idx + 1) / elapsed
+            logger.info(
+                "  batch %d/%d  (%.1f batches/s)",
+                batch_idx + 1,
+                n_batches,
+                rate,
+            )
 
     if multi_species or multihead_model:
         energies = energies_list
@@ -370,8 +391,9 @@ def ensemble_prediction(
     if compute_partial_charges:
         all_partial_charges = []
     key_spec = KeySpecification() if key_spec is None else key_spec
-    i = 0
-    for model in models:
+    n_models = len(models)
+    for i, model in enumerate(models):
+        logger.info("ensemble_prediction: model %d/%d", i + 1, n_models)
         results = evaluate_model(
             atoms_list=atoms_list,
             model=model,
@@ -398,7 +420,6 @@ def ensemble_prediction(
             all_dipoles.append(results["dipoles"])
         if compute_partial_charges:
             all_partial_charges.append(results["partial_charges"])
-        i += 1
 
     if not multi_species and not multihead_model:
         # Stack for fixed-size molecules

@@ -1,4 +1,5 @@
 import argparse
+import logging
 
 from so3krates_torch.config import EvalArgs
 from so3krates_torch.data.hdf5_utils import load_atoms_from_hdf5
@@ -75,6 +76,7 @@ def run_evaluation(
         )
         model.return_mean = False
         models.append(model)
+    logging.info("Loaded %d model(s) from %s", len(models), model_path)
 
     data_suffix = Path(data_path).suffix.lower()
     if data_suffix in {".h5", ".hdf5"}:
@@ -87,6 +89,7 @@ def run_evaluation(
             "Unsupported data format. Use .xyz/.extxyz or raw .h5/.hdf5 "
             f"input files, got: {data_path}"
         )
+    logging.info("Loaded %d structures from %s", len(data), data_path)
     keyspec = KeySpecification(
         info_keys={
             "energy": energy_key,
@@ -104,6 +107,7 @@ def run_evaluation(
         },
     )
 
+    logging.info("Running evaluation ...")
     if len(models) == 1:
         model = models[0]
         result = evaluate_model(
@@ -146,10 +150,16 @@ def run_evaluation(
             key_spec=keyspec,
         )
 
+    logging.info("Evaluation complete.")
     return result, len(models) > 1
 
 
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
     argparser = argparse.ArgumentParser()
     argparser.add_argument("--model_path", type=str, required=True)
     argparser.add_argument("--data_path", type=str, required=True)
