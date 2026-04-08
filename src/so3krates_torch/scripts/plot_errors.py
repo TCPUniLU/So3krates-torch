@@ -232,25 +232,34 @@ def load_predictions(eval_path, prop, n_atoms_list):
 
         item = f[hdf5_key]
         if isinstance(item, h5py.Group):
-            # Ensemble: sub-groups named model_0, model_1, …
             arrays = []
-            for model_name in sorted(item.keys()):
-                model_grp = item[model_name]
-                if isinstance(model_grp, h5py.Dataset):
-                    # Direct array storage
-                    arrays.append(model_grp[()])
-                elif "result" in model_grp.keys():
-                    arrays.append(model_grp["result"][()])
+            for key in sorted(item.keys()):
+                grp = item[key]
+                if isinstance(grp, h5py.Dataset):
+                    arrays.append(grp[()])
+                elif "result" in grp.keys():
+                    arrays.append(grp["result"][()])
                 else:
                     # Stored as item_000000, item_000001, …
                     parts = [
-                        model_grp[k][()] for k in sorted(model_grp.keys())
+                        grp[k][()] for k in sorted(grp.keys())
                     ]
                     arrays.append(np.concatenate(parts, axis=0))
-            pred = np.mean(np.stack(arrays, axis=0), axis=0)
-            logging.info(
-                f"Loaded ensemble ({len(arrays)} models) from {eval_path}"
-            )
+            # If all arrays share the same shape it's a multi-head ensemble
+            # → stack and average. Otherwise arrays are per-molecule (ragged
+            # per-atom data for molecules with different sizes) → concatenate.
+            shapes = {a.shape for a in arrays}
+            if len(shapes) == 1:
+                pred = np.mean(np.stack(arrays, axis=0), axis=0)
+                logging.info(
+                    f"Loaded ensemble ({len(arrays)} models) "
+                    f"from {eval_path}"
+                )
+            else:
+                pred = np.concatenate(arrays, axis=0)
+                logging.info(
+                    f"Loaded single-model predictions from {eval_path}"
+                )
         else:
             pred = item[()]
             logging.info(f"Loaded single-model predictions from {eval_path}")
