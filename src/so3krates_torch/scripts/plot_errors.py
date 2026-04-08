@@ -144,14 +144,23 @@ def load_reference(data_path, prop, keys):
     for atoms in atoms_list:
         if meta["ref_type"] == "info":
             val = atoms.info.get(ref_key, None)
+            # Fallback: check arrays if not in info
+            if val is None:
+                val = atoms.arrays.get(ref_key, None)
         else:
             val = atoms.arrays.get(ref_key, None)
+            # Fallback: check info if not in arrays
+            if val is None:
+                val = atoms.info.get(ref_key, None)
 
         if val is None:
+            available_info = list(atoms.info.keys())
+            available_arrays = list(atoms.arrays.keys())
             raise ValueError(
-                f"Reference property '{ref_key}' not found in structure "
-                f"(config_type={atoms.info.get('config_type', 'unknown')}). "
-                f"Check --{meta['ref_key_arg']}."
+                f"Reference property '{ref_key}' not found in structure. "
+                f"Available info keys: {available_info}. "
+                f"Available array keys: {available_arrays}. "
+                f"Check --{meta['ref_key_arg']} to specify the correct key."
             )
         values.append(np.asarray(val, dtype=np.float64))
 
