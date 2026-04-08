@@ -236,7 +236,10 @@ def load_predictions(eval_path, prop, n_atoms_list):
             arrays = []
             for model_name in sorted(item.keys()):
                 model_grp = item[model_name]
-                if "result" in model_grp.keys():
+                if isinstance(model_grp, h5py.Dataset):
+                    # Direct array storage
+                    arrays.append(model_grp[()])
+                elif "result" in model_grp.keys():
                     arrays.append(model_grp["result"][()])
                 else:
                     # Stored as item_000000, item_000001, …
