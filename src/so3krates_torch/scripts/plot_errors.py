@@ -138,18 +138,44 @@ def load_reference(data_path, prop, keys):
 
     meta = PROPERTY_META[prop]
     ref_key = keys[meta["ref_key_arg"]]
+
+    # Since ASE >= 3.23.0b1, bare keys like "forces", "energy", "stress"
+    # are absorbed into atoms.calc rather than atoms.info / atoms.arrays.
+    # Re-materialise them the same way the training pipeline does.
+    _ASE_CALC_GETTERS = {
+        "energy": lambda a: a.get_potential_energy(),
+        "forces": lambda a: a.get_forces(),
+        "stress": lambda a: a.get_stress(),
+    }
+    if ref_key in _ASE_CALC_GETTERS:
+        logging.info(
+            f"Key '{ref_key}' may be absorbed by the ASE calculator; "
+            f"extracting via atoms.get_{ref_key}()."
+        )
+        remap_key = f"_plot_ref_{ref_key}"
+        getter = _ASE_CALC_GETTERS[ref_key]
+        for atoms in atoms_list:
+            try:
+                val = getter(atoms)
+            except Exception:
+                val = None
+            if val is not None:
+                if np.ndim(val) == 0 or len(np.shape(val)) <= 1:
+                    atoms.info[remap_key] = val
+                else:
+                    atoms.arrays[remap_key] = np.asarray(val)
+        ref_key = remap_key
+
     n_atoms_list = [len(a) for a in atoms_list]
     values = []
 
     for atoms in atoms_list:
         if meta["ref_type"] == "info":
             val = atoms.info.get(ref_key, None)
-            # Fallback: check arrays if not in info
             if val is None:
                 val = atoms.arrays.get(ref_key, None)
         else:
             val = atoms.arrays.get(ref_key, None)
-            # Fallback: check info if not in arrays
             if val is None:
                 val = atoms.info.get(ref_key, None)
 
