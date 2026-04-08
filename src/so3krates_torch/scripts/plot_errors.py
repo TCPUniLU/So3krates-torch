@@ -241,9 +241,7 @@ def load_predictions(eval_path, prop, n_atoms_list):
                     arrays.append(grp["result"][()])
                 else:
                     # Stored as item_000000, item_000001, …
-                    parts = [
-                        grp[k][()] for k in sorted(grp.keys())
-                    ]
+                    parts = [grp[k][()] for k in sorted(grp.keys())]
                     arrays.append(np.concatenate(parts, axis=0))
             # If all arrays share the same shape it's a multi-head ensemble
             # → stack and average. Otherwise arrays are per-molecule (ragged
@@ -265,6 +263,12 @@ def load_predictions(eval_path, prop, n_atoms_list):
             logging.info(f"Loaded single-model predictions from {eval_path}")
 
     pred = pred.astype(np.float64)
+
+    # Forces/hirshfeld/charges may be stored as (N_structures, N_atoms, C)
+    # when all structures have the same atom count (single-species dataset).
+    # Flatten to (N_total_atoms, C) to match the vstack'd reference shape.
+    if pred.ndim == 3 and not meta["per_atom"] and prop != "stress":
+        pred = pred.reshape(-1, pred.shape[-1])
 
     if meta["per_atom"]:
         n_atoms = np.array(n_atoms_list, dtype=np.float64)
@@ -372,9 +376,7 @@ def _plot_ccdf_row(
         min_abs = None
         max_abs = None
         for m_idx, errors in enumerate(errors_list_scaled):
-            col = (
-                errors[:, c_idx] if errors.ndim > 1 else errors
-            ).flatten()
+            col = (errors[:, c_idx] if errors.ndim > 1 else errors).flatten()
             abs_errs = np.abs(col)
             abs_errs = abs_errs[abs_errs > 0]
             if len(abs_errs) == 0:
@@ -392,12 +394,8 @@ def _plot_ccdf_row(
             )
             this_min = float(x[0])
             this_max = float(x[-1])
-            min_abs = (
-                this_min if min_abs is None else min(min_abs, this_min)
-            )
-            max_abs = (
-                this_max if max_abs is None else max(max_abs, this_max)
-            )
+            min_abs = this_min if min_abs is None else min(min_abs, this_min)
+            max_abs = this_max if max_abs is None else max(max_abs, this_max)
         if min_abs is not None and max_abs is not None:
             ax.set_xscale("log")
             ax.set_yscale("logit")
@@ -498,9 +496,7 @@ def build_plot(errors_list, stats_list, labels, prop, layout, bins):
                 ax.set_xlabel(f"Δ{comp} ({unit})")
                 ax.set_ylabel("Density")
                 ax.set_title(comp)
-                ax.xaxis.set_major_formatter(
-                    ticker.FormatStrFormatter("%.3g")
-                )
+                ax.xaxis.set_major_formatter(ticker.FormatStrFormatter("%.3g"))
 
         for ax in axes:
             ax.legend(
@@ -567,9 +563,7 @@ def build_plot(errors_list, stats_list, labels, prop, layout, bins):
                     ax.set_xlabel(f"Δ{comp} ({unit})")
                 ax.set_ylabel(f"{label}\nDensity", fontsize=7)
                 ax.set_xlim(x_min[c_idx], x_max[c_idx])
-                ax.xaxis.set_major_formatter(
-                    ticker.FormatStrFormatter("%.3g")
-                )
+                ax.xaxis.set_major_formatter(ticker.FormatStrFormatter("%.3g"))
 
         _plot_ccdf_row(
             axes[n_models],
