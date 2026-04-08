@@ -9,9 +9,9 @@ class GeneralConfig(BaseModel):
     checkpoints_dir: str = "./checkpoints"
     model_dir: str = "./model"
     log_dir: str = "./logs"
-    default_dtype: Literal[
-        "float32", "float64", "float16", "bfloat16"
-    ] = "float64"
+    default_dtype: Literal["float32", "float64", "float16", "bfloat16"] = (
+        "float64"
+    )
     seed: int = 100
     compute_stress: bool = False
 
@@ -124,6 +124,8 @@ class TrainingConfig(BaseModel):
     replay_total: Optional[int] = None
     replay_oversample_finetune: bool = True
     replay_resample_per_epoch: bool = False
+    # Per-config-type loss weight multipliers
+    config_type_weights: Optional[Dict[str, float]] = None
 
     @model_validator(mode="after")
     def validate_pretrained(self):

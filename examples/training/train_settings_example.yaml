@@ -61,6 +61,12 @@ TRAINING:
   # num_workers: 4            # DataLoader worker processes (only with lazy_loading)
   # prefetch_factor: 2        # batches prefetched per worker (only with lazy_loading)
   # num_neighbor_samples: 1000  # structures sampled for avg_num_neighbors estimate
+  # --- Per-config-type loss weight multipliers ---
+  # Structures are tagged with atoms.info["config_type"] in the data file.
+  # Each type's loss contribution is scaled by its weight (default: 1.0).
+  # config_type_weights:
+  #   Default: 1.0
+  #   dissociation: 2.0    # upweight dissociation structures 2x in the loss
   # --- Data replay (for fine-tuning) ---
   # replay_datasets:            # paths to replay datasets (XYZ, raw/preprocessed HDF5)
   #   - /path/to/pretrain_A.xyz

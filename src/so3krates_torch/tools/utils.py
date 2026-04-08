@@ -416,9 +416,9 @@ def load_results_hdf5(filename, is_ensemble: bool = False):
                                     key_grp = item_grp[key_type]
                                     att_dict[key_type] = {}
                                     for layer_idx in key_grp.keys():
-                                        att_dict[key_type][
-                                            int(layer_idx)
-                                        ] = key_grp[layer_idx][()]
+                                        att_dict[key_type][int(layer_idx)] = (
+                                            key_grp[layer_idx][()]
+                                        )
 
                             # Load 'senders' and 'receivers' tensors
                             for key_type in ["senders", "receivers"]:
@@ -452,9 +452,9 @@ def load_results_hdf5(filename, is_ensemble: bool = False):
                                 key_grp = item_grp[key_type]
                                 att_dict[key_type] = {}
                                 for layer_idx in key_grp.keys():
-                                    att_dict[key_type][
-                                        int(layer_idx)
-                                    ] = key_grp[layer_idx][()]
+                                    att_dict[key_type][int(layer_idx)] = (
+                                        key_grp[layer_idx][()]
+                                    )
 
                         # Load 'senders' and 'receivers' tensors
                         for key_type in ["senders", "receivers"]:
@@ -720,6 +720,7 @@ def create_configs_from_list(
     atoms_list: list,
     key_specification=None,
     head_name: str = None,
+    config_type_weights: dict = None,
 ):
     from so3krates_torch.data.utils import (
         KeySpecification,
@@ -733,6 +734,7 @@ def create_configs_from_list(
             atoms,
             key_specification=key_specification,
             head_name=head_name,
+            config_type_weights=config_type_weights,
         )
         for atoms in atoms_list
     ]
@@ -770,11 +772,13 @@ def create_data_from_list(
     all_heads: list = None,
     key_specification=None,
     z_table: AtomicNumberTable = None,
+    config_type_weights: dict = None,
 ):
     configs = create_configs_from_list(
         atoms_list,
         key_specification=key_specification,
         head_name=head_name,
+        config_type_weights=config_type_weights,
     )
     return create_data_from_configs(
         configs,
@@ -796,6 +800,7 @@ def create_dataloader_from_list(
     z_table: AtomicNumberTable = None,
     head_name: str = None,
     sampler=None,
+    config_type_weights: dict = None,
 ):
     data_loader = DataLoader(
         dataset=create_data_from_list(
@@ -805,6 +810,7 @@ def create_dataloader_from_list(
             key_specification=key_specification,
             z_table=z_table,
             head_name=head_name,
+            config_type_weights=config_type_weights,
         ),
         batch_size=batch_size,
         shuffle=(shuffle if sampler is None else False),

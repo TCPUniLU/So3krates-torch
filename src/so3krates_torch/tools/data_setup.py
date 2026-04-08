@@ -167,8 +167,11 @@ def _load_training_dataset(
             f"Splitting training data with validation ratio " f"{valid_ratio}"
         )
 
+    config_type_weights = config["TRAINING"].get("config_type_weights", None)
     train_configs = create_configs_from_list(
-        atoms_list=train_data, key_specification=keyspec
+        atoms_list=train_data,
+        key_specification=keyspec,
+        config_type_weights=config_type_weights,
     )
     logging.info("Preprocessing training data (computing neighbor lists)")
     train_atomic_data = create_data_from_configs(
@@ -284,6 +287,9 @@ def _load_replay_data(
                 r_max=r_max,
                 r_max_lr=r_max_lr,
                 key_specification=keyspec,
+                config_type_weights=config["TRAINING"].get(
+                    "config_type_weights", None
+                ),
             )
 
         all_replay.extend(replay_data)
@@ -387,6 +393,9 @@ def _load_validation_loader(
                 f"Unsupported validation file format: {val_data_path}"
             )
 
+        config_type_weights = config["TRAINING"].get(
+            "config_type_weights", None
+        )
         return create_dataloader_from_list(
             val_data,
             batch_size=valid_batch_size,
@@ -394,6 +403,7 @@ def _load_validation_loader(
             r_max_lr=r_max_lr,
             key_specification=keyspec,
             shuffle=False,
+            config_type_weights=config_type_weights,
         )
 
     # No separate val file — use split from training data
@@ -412,6 +422,7 @@ def _load_validation_loader(
         raise ValueError(
             "val_split_from_train required when splitting raw data"
         )
+    config_type_weights = config["TRAINING"].get("config_type_weights", None)
     return create_dataloader_from_list(
         val_split_from_train,
         batch_size=valid_batch_size,
@@ -419,6 +430,7 @@ def _load_validation_loader(
         r_max_lr=r_max_lr,
         key_specification=keyspec,
         shuffle=False,
+        config_type_weights=config_type_weights,
     )
 
 
@@ -466,10 +478,15 @@ def _setup_multihead_data_loaders(
             f"Head {head_name} - Validation set size: " f"{len(head_val_data)}"
         )
 
+        head_ctw = head_config.get(
+            "config_type_weights",
+            config["TRAINING"].get("config_type_weights", None),
+        )
         head_config_list_train = create_configs_from_list(
             atoms_list=head_train_data,
             key_specification=keyspec,
             head_name=head_name,
+            config_type_weights=head_ctw,
         )
         train_configs.extend(head_config_list_train)
 
@@ -480,6 +497,7 @@ def _setup_multihead_data_loaders(
             key_specification=keyspec,
             head_name=head_name,
             all_heads=list(heads.keys()),
+            config_type_weights=head_ctw,
         )
         val_data[head_name] = create_dataloader_from_data(
             head_config_list_val,
