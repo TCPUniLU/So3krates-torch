@@ -70,7 +70,7 @@ PROPERTY_META = {
         "ref_type": "arrays",
         "ref_key_arg": "forces_key",
         "pred_hdf5_key": "forces",
-        "components": ["Fx", "Fy", "Fz"],
+        "components": ["F"],
         "unit": "meV/Å",
         "scale": 1000.0,
         "per_atom": False,
@@ -651,6 +651,8 @@ def main():
             )
 
         errors = pred - ref
+        if errors.ndim > 1 and len(meta["components"]) == 1:
+            errors = errors.flatten()
         per_comp_stats = compute_per_component_stats(
             errors, meta["components"]
         )
