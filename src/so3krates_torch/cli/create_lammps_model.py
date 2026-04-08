@@ -45,6 +45,13 @@ def parse_args():
         help="Data type for the converted model (float32 or float64)",
         default="float64",
     )
+    parser.add_argument(
+        "--long_range",
+        type=float,
+        nargs="?",
+        help="Include long-range interactions in the model (Bool)",
+        default=None,
+    )
     return parser.parse_args()
 
 
@@ -69,19 +76,21 @@ def validate_model(model):
             "Only SO3LR-family models are supported for LAMMPS MLIAP."
         )
 
-    if getattr(model, "electrostatic_energy_bool", False):
-        raise ValueError(
-            "Model has electrostatic_energy_bool=True. "
-            "LAMMPS MLIAP only supports short-range interactions (ML + ZBL). "
-            "Retrain with electrostatic_energy_bool=False."
-        )
+#    if getattr(model, "electrostatic_energy_bool", False):
+#        raise ValueError(
+#            "Model has electrostatic_energy_bool=True. "
+#            "LAMMPS MLIAP only supports short-range interactions (ML + ZBL). "
+#            "Retrain with electrostatic_energy_bool=False."
+#        )
 
-    if getattr(model, "dispersion_energy_bool", False):
-        raise ValueError(
-            "Model has dispersion_energy_bool=True. "
-            "LAMMPS MLIAP only supports short-range interactions (ML + ZBL). "
-            "Retrain with dispersion_energy_bool=False."
-        )
+
+#    if getattr(model, "dispersion_energy_bool", False):
+#        raise ValueError(
+#            "Model has dispersion_energy_bool=True. "
+#            "LAMMPS MLIAP only supports short-range interactions (ML + ZBL). "
+#            "Retrain with dispersion_energy_bool=False."
+#        )
+
 
     zbl_status = (
         "enabled"
@@ -167,7 +176,7 @@ def main():
             print(f"Selected head: {head}")
 
     # Create LAMMPS model
-    kwargs = {"head": head} if head is not None else {}
+    kwargs = {"head": head, "long_range": args.long_range} if head is not None else {"long_range": args.long_range}
     lammps_model = LAMMPS_MLIAP_SO3(
         model, atomic_numbers=atomic_numbers, **kwargs
     )

@@ -768,6 +768,13 @@ class SO3LR(So3krates):
         )
 
         if self.use_lr:
+            if "edge_index_lr" not in data:
+                raise KeyError(
+                    "Model has use_lr=True but 'edge_index_lr' is missing from the batch. "
+                    "Regenerate the LAMMPS model file with --long_range 12.0: "
+                    "python -m so3krates_torch.cli.create_lammps_model my_model.pt "
+                    "--elements <ELEMS> --long_range 12.0"
+                )
             self.receivers_lr, self.senders_lr = (
                 data["edge_index_lr"][0],
                 data["edge_index_lr"][1],
@@ -794,10 +801,21 @@ class SO3LR(So3krates):
                 num_graphs=self.num_graphs,
             )
 
+            # In LAMMPS mode, positions covers only local atoms (n_local) while
+            # partial_charges covers all atoms (local + ghosts). Slice to local
+            # atoms for dipole; electrostatic_potential keeps the full tensor
+            # because LR pair indices address ghost atoms too.
+            if lammps_mliap and "natoms" in data:
+                n_local = int(data["natoms"][0])
+                pc_dipole = partial_charges[:n_local]
+                bs_dipole = self.batch_segments[:n_local]
+            else:
+                pc_dipole = partial_charges
+                bs_dipole = self.batch_segments
             dipole = self.dipole_output_head(
-                partial_charges=partial_charges,
+                partial_charges=pc_dipole,
                 positions=self.positions,
-                batch_segments=self.batch_segments,
+                batch_segments=bs_dipole,
                 num_graphs=self.num_graphs,
             )
             electrostatic_energies = self.electrostatic_potential(

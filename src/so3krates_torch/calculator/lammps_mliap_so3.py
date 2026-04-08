@@ -83,19 +83,42 @@ class So3EdgeForcesWrapper(torch.nn.Module):
 
         # Validate model config: only short-range interactions allowed
         if getattr(model, "electrostatic_energy_bool", False):
-            raise ValueError(
-                "Model has electrostatic_energy_bool=True. "
-                "LAMMPS MLIAP only supports short-range interactions. "
-                "Retrain with electrostatic_energy_bool=False or use a "
-                "different model."
-            )
+            #raise ValueError(
+            #    "Model has electrostatic_energy_bool=True. "
+            #    "LAMMPS MLIAP only supports short-range interactions. "
+            #    "Retrain with electrostatic_energy_bool=False or use a "
+            #    "different model."
+            #)
+            if kwargs["long_range"] == None:
+                raise ValueError(
+                    "Model has electrostatic_energy_bool=True. "
+                    "Nevertheless, no long range cuttoff is specified. "
+                    "use --long-range to specify it"
+                )
+            else:
+                self.long_range = kwargs["long_range"]
         if getattr(model, "dispersion_energy_bool", False):
-            raise ValueError(
-                "Model has dispersion_energy_bool=True. "
-                "LAMMPS MLIAP only supports short-range interactions. "
-                "Retrain with dispersion_energy_bool=False or use a "
-                "different model."
-            )
+            #raise ValueError(
+            #    "Model has dispersion_energy_bool=True. "
+            #    "LAMMPS MLIAP only supports short-range interactions. "
+            #    "Retrain with dispersion_energy_bool=False or use a "
+            #    "different model."
+            #)
+            if kwargs["long_range"] == None:
+                raise ValueError(
+                    "Model has dispersion_energy_bool=True. "
+                    "Nevertheless, no long range cuttoff is specified. "
+                    "use --long-range to specify it"
+                )
+            else:
+                self.long_range = kwargs["long_range"]
+
+        # Set LR attributes on the model (same as SO3LRCalculator does in so3.py)
+        long_range = kwargs.get("long_range")
+        if long_range is not None and getattr(model, "use_lr", False):
+            model.r_max_lr = long_range
+            if getattr(model, "dispersion_energy_cutoff_lr_damping", None) is None:
+                model.dispersion_energy_cutoff_lr_damping = 2.0
 
         self.model = model
         self.register_buffer(
@@ -122,17 +145,23 @@ class So3EdgeForcesWrapper(torch.nn.Module):
 
     def forward(
         self, data: Dict[str, torch.Tensor]
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Compute energies and per-pair forces.
 
         Returns:
-            Tuple of (total_energy, node_energy, pair_forces):
+            Tuple of (total_energy, node_energy, pair_forces, pair_forces_lr):
                 - total_energy: scalar
                 - node_energy: (n_atoms,) per-atom energies
-                - pair_forces: (n_edges, 3) per-pair force vectors
+                - pair_forces: (n_sr_edges, 3) SR per-pair force vectors
+                - pair_forces_lr: (n_lr_edges, 3) LR per-pair force vectors, or None
         """
         data["head"] = self.head
+        has_lr = "vectors_lr" in data and data["vectors_lr"] is not None                                                                                                        # CHANGED: detect LR vectors
 
+        # CHANGED: disable model's internal edge force computation; we compute
+        # them manually below so we can differentiate w.r.t. both SR and LR
+        # vectors in a single autograd pass (the model's get_outputs only
+        # differentiates w.r.t. SR vectors and destroys the graph).
         out = self.model(
             data,
             training=False,
@@ -141,18 +170,34 @@ class So3EdgeForcesWrapper(torch.nn.Module):
             compute_stress=False,
             compute_displacement=False,
             compute_hessian=False,
-            compute_edge_forces=True,
+            compute_edge_forces=False,                                                                                                                                          # CHANGED: was True
             lammps_mliap=True,
         )
 
         node_energy = out["node_energy"]
-        pair_forces = out["edge_forces"]
         total_energy = out["energy"][0]
 
-        if pair_forces is None:
-            pair_forces = torch.zeros_like(data["vectors"])
+        # CHANGED: compute edge forces manually for all pair types (SR + LR)
+        # in one backward pass, so both contributions are captured.
+        grad_inputs = [data["vectors"]]
+        if has_lr:
+            grad_inputs.append(data["vectors_lr"])
 
-        return total_energy, node_energy, pair_forces
+        grads = torch.autograd.grad(
+            outputs=[total_energy],
+            inputs=grad_inputs,
+            grad_outputs=[torch.ones_like(total_energy)],
+            retain_graph=False,
+            create_graph=False,
+            allow_unused=True,
+        )
+
+        pair_forces = grads[0] if grads[0] is not None else torch.zeros_like(data["vectors"])
+        pair_forces_lr = None                                                                                                                                                   # CHANGED: LR pair forces
+        if has_lr:
+            pair_forces_lr = grads[1] if grads[1] is not None else torch.zeros_like(data["vectors_lr"])
+
+        return total_energy, node_energy, pair_forces, pair_forces_lr                                                                                                           # CHANGED: return 4-tuple
 
 
 class LAMMPS_MLIAP_SO3(MLIAPUnified):
@@ -184,19 +229,20 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
         self.element_types = [chemical_symbols[z] for z in atomic_numbers]
         self.num_species = len(self.element_types)
         self.num_elements = model.num_elements
-        self.rcutfac = 0.5 * float(model.r_max)
+        self.rcutfac = 0.5 * (float(model.r_max) if kwargs["long_range"] is None else float(kwargs["long_range"]))  # CHANGED: use kwargs value, not model.r_max_lr (may be None)
         self.ndescriptors = 1
         self.nparams = 1
         self.dtype = next(model.parameters()).dtype
         self.device = "cpu"
         self.initialized = False
+        self.using_kokkos = False
         self.step = 0
 
     def _initialize_device(self, data):
         """Auto-detect device from LAMMPS data tensors (Kokkos GPU or CPU)."""
-        using_kokkos = "kokkos" in data.__class__.__module__.lower()
+        self.using_kokkos = "kokkos" in data.__class__.__module__.lower()
 
-        if using_kokkos and not self.config.force_cpu:
+        if self.using_kokkos and not self.config.force_cpu:
             device = torch.as_tensor(data.elems).device
             if device.type == "cpu" and not self.config.allow_cpu:
                 raise ValueError(
@@ -233,7 +279,7 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
                 batch = self._prepare_batch(data, natoms, nghosts, species)
 
             with timer("model_forward", enabled=self.config.debug_time):
-                _, atom_energies, pair_forces = self.model(batch)
+                _, atom_energies, pair_forces, pair_forces_lr = self.model(batch)                                                                                               # CHANGED: unpack 4-tuple
 
                 if (
                     isinstance(self.device, torch.device)
@@ -241,16 +287,30 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
                 ):
                     torch.cuda.synchronize()
 
+            # Reassemble SR + LR pair forces into full LAMMPS ordering.
+            # pair_forces_lr covers ALL pairs; pair_forces covers the SR
+            # subset.  Sum both contributions for pairs in the SR range.
+            if pair_forces_lr is not None:
+                full_forces = pair_forces_lr.clone()
+                full_forces[self._sr_mask] += pair_forces
+                pair_forces = full_forces
+
+
             with timer("update_lammps", enabled=self.config.debug_time):
                 self._update_lammps_data(
                     data, atom_energies, pair_forces, natoms
                 )
 
-    def _prepare_batch(self, data, natoms, nghosts, species):
+    def _prepare_batch(self, data, natoms, nghosts, species):                                                                                                                   # Class that handles this
         """Build input dictionary from LAMMPS data structures.
 
         Maps LAMMPS element type indices to actual atomic numbers and
         creates the 118-class one-hot encoding expected by So3krates.
+
+        When the model has long-range interactions, LAMMPS provides a single
+        neighbor list built up to r_max_lr. This method splits it into:
+            - Short-range (SR): distance <= r_max  → "edge_index" / "vectors"
+            - Long-range  (LR): distance >  r_max  → "edge_index_lr" / "vectors_lr"
         """
         # Map LAMMPS type indices to actual atomic numbers
         atomic_numbers_map = self.model.atomic_numbers_map.to(self.device)
@@ -266,26 +326,45 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
         )
         node_attrs.scatter_(1, (actual_z - 1).unsqueeze(1), 1.0)
 
-        return {
-            "vectors": torch.as_tensor(data.rij)
-            .to(self.dtype)
-            .to(self.device),
+        vectors_all = (
+            torch.as_tensor(data.rij).to(self.dtype).to(self.device)
+        )
+        # So3krates convention: edge_index[0] = receivers (scatter target),
+        # edge_index[1] = senders (message source).
+        # pair_i = central (always real), pair_j = neighbor (may be ghost).
+        # Place pair_i at [0] so messages aggregate at real atoms.
+        pair_i = torch.as_tensor(data.pair_i, dtype=torch.int64).to(self.device)
+        pair_j = torch.as_tensor(data.pair_j, dtype=torch.int64).to(self.device)
+
+        has_long_range = hasattr(self.model, "long_range")
+
+        if has_long_range:
+            # Split SR edges (d <= r_max) from the full neighbor list.
+            # LR edges must include ALL pairs (matching the standalone
+            # neighborhood builder which returns all pairs within r_max_lr,
+            # including those within r_max).  Electrostatic and dispersion
+            # potentials sum over the full LR list.
+            r_max_sr = self.model.r_max.to(self.device)
+            distances = torch.linalg.norm(vectors_all, dim=-1)
+            sr_mask = distances <= r_max_sr
+
+            vectors_sr = vectors_all[sr_mask]
+            edge_index_sr = torch.stack([pair_i[sr_mask], pair_j[sr_mask]], dim=0)
+
+            # LR: ALL pairs (not just those beyond r_max)
+            vectors_lr = vectors_all
+            edge_index_lr = torch.stack([pair_i, pair_j], dim=0)
+
+            # Store mask for reassembling full pair forces in compute_forces
+            self._sr_mask = sr_mask
+        else:
+            vectors_sr = vectors_all
+            edge_index_sr = torch.stack([pair_i, pair_j], dim=0)
+
+        batch = {
+            "vectors": vectors_sr,
             "node_attrs": node_attrs,
-            # So3krates convention: edge_index[0] = receivers (scatter target),
-            # edge_index[1] = senders (message source).
-            # pair_i = central (always real), pair_j = neighbor (may be ghost).
-            # Place pair_i at [0] so messages aggregate at real atoms.
-            "edge_index": torch.stack(
-                [
-                    torch.as_tensor(data.pair_i, dtype=torch.int64).to(
-                        self.device
-                    ),
-                    torch.as_tensor(data.pair_j, dtype=torch.int64).to(
-                        self.device
-                    ),
-                ],
-                dim=0,
-            ),
+            "edge_index": edge_index_sr,
             "atomic_numbers": actual_z,
             "batch": torch.zeros(
                 ntotal, dtype=torch.int64, device=self.device
@@ -301,6 +380,12 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
             "natoms": (natoms, ntotal),
         }
 
+        if has_long_range:
+            batch["edge_index_lr"] = edge_index_lr
+            batch["vectors_lr"] = vectors_lr
+
+        return batch
+
     def _update_lammps_data(self, data, atom_energies, pair_forces, natoms):
         """Write computed energies and forces back to LAMMPS data structures.
 
@@ -313,10 +398,16 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
         if atom_energies.dim() > 1:
             atom_energies = atom_energies.squeeze(-1)
 
-        eatoms = torch.as_tensor(data.eatoms)
-        eatoms.copy_(atom_energies[:natoms])
-        data.energy = torch.sum(atom_energies[:natoms])
-        data.update_pair_forces_gpu(pair_forces)
+        if self.using_kokkos:
+            eatoms = torch.as_tensor(data.eatoms)
+            eatoms.copy_(atom_energies[:natoms])
+        else:
+            data.eatoms = atom_energies[:natoms].detach().cpu().double().numpy()
+        data.energy = torch.sum(atom_energies[:natoms]).detach()
+        if self.using_kokkos:
+            data.update_pair_forces_gpu(pair_forces)
+        else:
+            data.update_pair_forces(pair_forces.detach().cpu().double().numpy())
 
     def _manage_profiling(self):
         """Start/stop CUDA profiler at specified steps."""
