@@ -357,6 +357,85 @@ def _annotate_stats(ax, stats, unit, color, y_frac=0.97, x_frac=0.97):
     )
 
 
+def _plot_ccdf_row(
+    axes_row, errors_list_scaled, labels, components, unit, colors
+):
+    """Plot CCDF of |error| per component column on log-logit axes."""
+    _PERCENTILES = [
+        (0.50, "50th"),
+        (0.90, "90th"),
+        (0.99, "99th"),
+        (0.999, "99.9th"),
+    ]
+    for c_idx, comp in enumerate(components):
+        ax = axes_row[c_idx]
+        min_abs = None
+        max_abs = None
+        for m_idx, errors in enumerate(errors_list_scaled):
+            col = (
+                errors[:, c_idx] if errors.ndim > 1 else errors
+            ).flatten()
+            abs_errs = np.abs(col)
+            abs_errs = abs_errs[abs_errs > 0]
+            if len(abs_errs) == 0:
+                continue
+            x = np.sort(abs_errs)
+            n = len(x)
+            y = (n - np.arange(n, dtype=float)) / n
+            ax.step(
+                x,
+                y,
+                where="post",
+                linewidth=1.8,
+                color=colors[m_idx],
+                label=labels[m_idx],
+            )
+            this_min = float(x[0])
+            this_max = float(x[-1])
+            min_abs = (
+                this_min if min_abs is None else min(min_abs, this_min)
+            )
+            max_abs = (
+                this_max if max_abs is None else max(max_abs, this_max)
+            )
+        if min_abs is not None and max_abs is not None:
+            ax.set_xscale("log")
+            ax.set_yscale("logit")
+            ax.set_xlim(min_abs, max_abs)
+            ax.grid(
+                True,
+                which="major",
+                axis="x",
+                color="grey",
+                linestyle="-",
+                linewidth=0.5,
+                alpha=0.3,
+            )
+            for pct_val, pct_label in _PERCENTILES:
+                y_val = 1.0 - pct_val
+                ax.axhline(
+                    y_val,
+                    color="black",
+                    linestyle="-",
+                    linewidth=0.8,
+                    alpha=0.5,
+                )
+                ax.text(
+                    max_abs * 0.98,
+                    y_val,
+                    pct_label,
+                    fontsize=6,
+                    va="bottom",
+                    ha="right",
+                    color="black",
+                )
+        ax.set_xlabel(f"|Δ{comp}| ({unit})", fontsize=8)
+        ax.set_ylabel("P(|Δ| > x)", fontsize=8)
+        if c_idx == 0:
+            ax.legend(fontsize=7, frameon=True, framealpha=0.85)
+        ax.xaxis.set_major_formatter(ticker.FormatStrFormatter("%.3g"))
+
+
 def build_plot(errors_list, stats_list, labels, prop, layout, bins):
     """Build and return a matplotlib Figure.
 
@@ -376,59 +455,79 @@ def build_plot(errors_list, stats_list, labels, prop, layout, bins):
 
     # Apply unit scale
     errors_list_scaled = [e * scale for e in errors_list]
+    model_colors = [COLORS[i % len(COLORS)] for i in range(n_models)]
 
     if layout == "overlay":
-        fig, axes = plt.subplots(
-            1, n_comp, figsize=(3.5 * n_comp, 3.5), squeeze=False
+        fig, all_axes = plt.subplots(
+            2,
+            n_comp,
+            figsize=(3.5 * n_comp, 7.0),
+            squeeze=False,
         )
-        axes = axes[0]  # shape [n_comp]
+        axes = all_axes[0]  # histogram row
 
         for m_idx, (errors, stats_per_comp) in enumerate(
             zip(errors_list_scaled, stats_list)
         ):
-            color = COLORS[m_idx % len(COLORS)]
+            color = model_colors[m_idx]
             label = labels[m_idx]
 
             for c_idx, (comp, ax) in enumerate(zip(components, axes)):
                 col = errors[:, c_idx] if errors.ndim > 1 else errors
+                comp_st = {
+                    k: v * scale if k not in ("n",) else v
+                    for k, v in stats_per_comp[c_idx].items()
+                }
+                unit_str = f" {unit}" if unit else ""
+                rich_label = (
+                    f"{label}\n"
+                    f"MAE  = {comp_st['mae']:.4g}{unit_str}\n"
+                    f"RMSE = {comp_st['rmse']:.4g}{unit_str}\n"
+                    f"Mean = {comp_st['mean']:.4g}{unit_str}\n"
+                    f"MAD  = {comp_st['mad']:.4g}{unit_str}"
+                )
                 ax.hist(
                     col,
                     bins=bins,
                     alpha=0.55,
                     color=color,
-                    label=label,
+                    label=rich_label,
                     density=True,
                     linewidth=0,
-                )
-                # Stats box offset per model so they don't overlap
-                y_frac = 0.97 - m_idx * 0.30
-                _annotate_stats(
-                    ax,
-                    {
-                        k: v * scale if k not in ("n",) else v
-                        for k, v in stats_per_comp[c_idx].items()
-                    },
-                    unit,
-                    color,
-                    y_frac=y_frac,
                 )
                 ax.set_xlabel(f"Δ{comp} ({unit})")
                 ax.set_ylabel("Density")
                 ax.set_title(comp)
-                ax.xaxis.set_major_formatter(ticker.FormatStrFormatter("%.3g"))
+                ax.xaxis.set_major_formatter(
+                    ticker.FormatStrFormatter("%.3g")
+                )
 
-        if n_models > 1:
-            axes[0].legend(fontsize=7)
+        for ax in axes:
+            ax.legend(
+                fontsize=7,
+                loc="upper left",
+                framealpha=0.85,
+                handlelength=1.0,
+                borderpad=0.5,
+            )
 
-    else:  # subplots: one row per model
-        fig, axes = plt.subplots(
-            n_models,
-            n_comp,
-            figsize=(3.5 * n_comp, 2.8 * n_models),
-            squeeze=False,
-            sharex="col",
+        _plot_ccdf_row(
+            all_axes[1],
+            errors_list_scaled,
+            labels,
+            components,
+            unit,
+            model_colors,
         )
-        # Compute shared x-range per component
+
+    else:  # subplots: one row per model, plus CCDF overlay row
+        fig, axes = plt.subplots(
+            n_models + 1,
+            n_comp,
+            figsize=(3.5 * n_comp, 2.8 * (n_models + 1)),
+            squeeze=False,
+        )
+        # Compute shared x-range per component for histogram rows
         x_min = np.full(n_comp, np.inf)
         x_max = np.full(n_comp, -np.inf)
         for errors in errors_list_scaled:
@@ -440,7 +539,7 @@ def build_plot(errors_list, stats_list, labels, prop, layout, bins):
         for m_idx, (errors, stats_per_comp) in enumerate(
             zip(errors_list_scaled, stats_list)
         ):
-            color = COLORS[m_idx % len(COLORS)]
+            color = model_colors[m_idx]
             label = labels[m_idx]
 
             for c_idx, comp in enumerate(components):
@@ -467,7 +566,23 @@ def build_plot(errors_list, stats_list, labels, prop, layout, bins):
                 if m_idx == n_models - 1:
                     ax.set_xlabel(f"Δ{comp} ({unit})")
                 ax.set_ylabel(f"{label}\nDensity", fontsize=7)
-                ax.xaxis.set_major_formatter(ticker.FormatStrFormatter("%.3g"))
+                ax.set_xlim(x_min[c_idx], x_max[c_idx])
+                ax.xaxis.set_major_formatter(
+                    ticker.FormatStrFormatter("%.3g")
+                )
+
+        _plot_ccdf_row(
+            axes[n_models],
+            errors_list_scaled,
+            labels,
+            components,
+            unit,
+            model_colors,
+        )
+        axes[n_models, 0].set_ylabel(
+            "CCDF — all models\nP(|Δ| > x)",
+            fontsize=7,
+        )
 
     fig.suptitle(
         f"Error distribution — {prop.replace('_', ' ')}",

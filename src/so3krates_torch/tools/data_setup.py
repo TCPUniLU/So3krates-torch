@@ -173,6 +173,12 @@ def _load_training_dataset(
         key_specification=keyspec,
         config_type_weights=config_type_weights,
     )
+    n_weighted = sum(1 for c in train_configs if c.weight != 1.0)
+    if n_weighted > 0:
+        logging.info(
+            f"Config weights found: {n_weighted}/{len(train_configs)} "
+            f"training structures have non-default weights."
+        )
     logging.info("Preprocessing training data (computing neighbor lists)")
     train_atomic_data = create_data_from_configs(
         train_configs, r_max=r_max, r_max_lr=r_max_lr
