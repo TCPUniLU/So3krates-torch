@@ -485,7 +485,7 @@ This samples 3500 structures from `pretrain_A.xyz` and 1500 from `pretrain_B.h5`
 
 EWC is a regularisation technique that prevents catastrophic forgetting during fine-tuning. It adds a penalty to the loss that keeps model parameters close to their pretrained values, weighted by their importance on the pretraining task. Importance is estimated via the diagonal of the Fisher Information Matrix (FIM), computed once on a subset of the pretraining data before training begins.
 
-**reEWC** — the variant proposed in [An efficient forgetting-aware fine-tuning framework for pretrained universal MLIPs](https://doi.org/10.1038/s41467-024-50620-6) — combines EWC with data replay. To use reEWC, enable both EWC (below) and the replay settings above simultaneously.
+**reEWC** — the variant proposed in [An efficient forgetting-aware fine-tuning framework for pretrained universal MLIPs](https://www.nature.com/articles/s41524-025-01895-w) — combines EWC with data replay. To use reEWC, enable both EWC (below) and the replay settings above simultaneously.
 
 The EWC penalty added to each gradient step is:
 
