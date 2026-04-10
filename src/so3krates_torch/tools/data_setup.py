@@ -838,6 +838,86 @@ def _setup_singlehead_data_loaders(
     )
 
 
+def build_ewc_fisher_loader(config: dict) -> DataLoader:
+    """Build a DataLoader for EWC Fisher information estimation.
+
+    Loads the dataset at ``config["TRAINING"]["ewc_fisher_data"]``
+    (XYZ, raw HDF5, or preprocessed HDF5), shuffles it, and returns a
+    DataLoader with the training ``batch_size``.  The caller is
+    responsible for stopping after ``ewc_num_fisher_samples`` structures
+    have been processed.
+
+    Parameters
+    ----------
+    config:
+        Full training configuration dict.
+
+    Returns
+    -------
+    DataLoader
+        Iterates over structures from the pretraining dataset subset.
+    """
+    path = config["TRAINING"]["ewc_fisher_data"]
+    r_max = config["ARCHITECTURE"].get("r_max", None)
+    r_max_lr = config["ARCHITECTURE"].get("r_max_lr", None)
+    batch_size = config["TRAINING"]["batch_size"]
+
+    keydict = DefaultKeys.keydict()
+    keydict.update(config["TRAINING"].get("keys") or {})
+    keyspec = update_keyspec_from_kwargs(KeySpecification(), keydict)
+
+    file_format = detect_file_format(path)
+    logging.info(
+        f"EWC: loading Fisher dataset from {path} "
+        f"(format={file_format})"
+    )
+
+    if file_format == "hdf5_preprocessed":
+        dataset = PreprocessedHDF5Dataset(
+            hdf5_path=path,
+            validate_cutoffs=True,
+            expected_r_max=r_max,
+            expected_r_max_lr=r_max_lr,
+        )
+        indices = list(range(len(dataset)))
+        random.shuffle(indices)
+        data = [dataset[i] for i in indices]
+    elif path.endswith((".h5", ".hdf5")):
+        atoms_list = load_atoms_from_hdf5(path, index=None)
+        random.shuffle(atoms_list)
+        data = create_data_from_list(
+            atoms_list,
+            r_max=r_max,
+            r_max_lr=r_max_lr,
+            key_specification=keyspec,
+            config_type_weights=config["TRAINING"].get(
+                "config_type_weights", None
+            ),
+        )
+    elif path.endswith((".xyz", ".extxyz")):
+        atoms_list = list(read(path, index=":"))
+        random.shuffle(atoms_list)
+        data = create_data_from_list(
+            atoms_list,
+            r_max=r_max,
+            r_max_lr=r_max_lr,
+            key_specification=keyspec,
+            config_type_weights=config["TRAINING"].get(
+                "config_type_weights", None
+            ),
+        )
+    else:
+        raise ValueError(
+            f"Unsupported ewc_fisher_data file format: {path}"
+        )
+
+    return create_dataloader_from_data(
+        config_list=data,
+        batch_size=batch_size,
+        shuffle=False,  # already shuffled above
+    )
+
+
 def setup_data_loaders(
     config: dict,
     distributed: bool = False,

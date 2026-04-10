@@ -508,8 +508,14 @@ def test_select_valid_subset_num_train_with_val_path(tmp_path, monkeypatch):
     data = list(range(100))
     monkeypatch.setattr(rt, "detect_file_format", lambda p: "xyz")
     monkeypatch.setattr(rt, "read", lambda path, index: data)
+    import types
+
     monkeypatch.setattr(
-        rt, "create_configs_from_list", lambda **kw: kw["atoms_list"]
+        rt,
+        "create_configs_from_list",
+        lambda **kw: [
+            types.SimpleNamespace(weight=1.0) for _ in kw["atoms_list"]
+        ],
     )
     monkeypatch.setattr(
         rt, "create_data_from_configs", lambda cfgs, **kw: cfgs
