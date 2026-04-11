@@ -150,9 +150,7 @@ def test_pme_gradcheck():
     batch_segments = torch.zeros(4, dtype=torch.long)
 
     # positions must require grad for gradcheck
-    positions = torch.tensor(
-        positions_np, dtype=dtype, requires_grad=True
-    )
+    positions = torch.tensor(positions_np, dtype=dtype, requires_grad=True)
 
     def energy_fn(pos):
         # Recompute lengths from current positions for gradcheck.
@@ -264,12 +262,8 @@ def test_pme_batch_isolation():
             num_nodes=n,
         )
 
-    e_A = _call_single(
-        pos_A_np, cell_A_np, charges_A_np, ei_A_np, d_A_np, n=2
-    )
-    e_B = _call_single(
-        pos_B_np, cell_B_np, charges_B_np, ei_B_np, d_B_np, n=3
-    )
+    e_A = _call_single(pos_A_np, cell_A_np, charges_A_np, ei_A_np, d_A_np, n=2)
+    e_B = _call_single(pos_B_np, cell_B_np, charges_B_np, ei_B_np, d_B_np, n=3)
 
     # --- Batched call ---
     n_A, n_B = 2, 3
@@ -310,16 +304,12 @@ def test_pme_batch_isolation():
     )
 
     # Compare per-atom energies
-    assert torch.allclose(
-        e_batch[:n_A], e_A, atol=1e-10
-    ), (
+    assert torch.allclose(e_batch[:n_A], e_A, atol=1e-10), (
         f"Batch isolation failed for system A:\n"
         f"  batched: {e_batch[:n_A].squeeze().tolist()}\n"
         f"  single:  {e_A.squeeze().tolist()}"
     )
-    assert torch.allclose(
-        e_batch[n_A:], e_B, atol=1e-10
-    ), (
+    assert torch.allclose(e_batch[n_A:], e_B, atol=1e-10), (
         f"Batch isolation failed for system B:\n"
         f"  batched: {e_batch[n_A:].squeeze().tolist()}\n"
         f"  single:  {e_B.squeeze().tolist()}"

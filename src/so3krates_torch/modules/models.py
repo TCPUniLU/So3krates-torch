@@ -592,11 +592,9 @@ class SO3LR(So3krates):
         if use_pme:
             _smearing = pme_smearing or self.r_max / 5.0
             _mesh_spacing = pme_mesh_spacing or _smearing / 2.0
-            self.pme_electrostatic_potential = (
-                PMEElectrostaticInteraction(
-                    smearing=_smearing,
-                    mesh_spacing=_mesh_spacing,
-                )
+            self.pme_electrostatic_potential = PMEElectrostaticInteraction(
+                smearing=_smearing,
+                mesh_spacing=_mesh_spacing,
             )
 
         # Dispersion
@@ -819,17 +817,15 @@ class SO3LR(So3krates):
                 num_graphs=self.num_graphs,
             )
             if getattr(self, "use_pme", False):
-                electrostatic_energies = (
-                    self.pme_electrostatic_potential(
-                        partial_charges=partial_charges,
-                        positions=self.positions,
-                        cell=self.cell,
-                        edge_index=data["edge_index"],
-                        lengths=self.lengths,
-                        batch_segments=self.batch_segments,
-                        num_graphs=self.num_graphs,
-                        num_nodes=inv_features.shape[0],
-                    )
+                electrostatic_energies = self.pme_electrostatic_potential(
+                    partial_charges=partial_charges,
+                    positions=self.positions,
+                    cell=self.cell,
+                    edge_index=data["edge_index"],
+                    lengths=self.lengths,
+                    batch_segments=self.batch_segments,
+                    num_graphs=self.num_graphs,
+                    num_nodes=inv_features.shape[0],
                 )
             else:
                 electrostatic_energies = self.electrostatic_potential(

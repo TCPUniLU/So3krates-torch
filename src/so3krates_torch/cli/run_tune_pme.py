@@ -19,18 +19,26 @@ def _build_sr_neighbor_list(positions, cell, cutoff, device, dtype):
 
     pos_np = positions.cpu().numpy()
     cell_np = cell.cpu().numpy()
-    i, j, d = neighbour_list("ijd", a=None, cutoff=cutoff,
-                              positions=pos_np, cell=cell_np,
-                              pbc=[True, True, True])
+    i, j, d = neighbour_list(
+        "ijd",
+        a=None,
+        cutoff=cutoff,
+        positions=pos_np,
+        cell=cell_np,
+        pbc=[True, True, True],
+    )
     if len(i) == 0:
         return (
             torch.zeros((0, 2), dtype=torch.long, device=device),
             torch.zeros(0, dtype=dtype, device=device),
         )
-    ni = torch.stack([
-        torch.tensor(i, dtype=torch.long, device=device),
-        torch.tensor(j, dtype=torch.long, device=device),
-    ], dim=1)  # (E, 2)
+    ni = torch.stack(
+        [
+            torch.tensor(i, dtype=torch.long, device=device),
+            torch.tensor(j, dtype=torch.long, device=device),
+        ],
+        dim=1,
+    )  # (E, 2)
     nd = torch.tensor(d, dtype=dtype, device=device)
     return ni, nd
 
@@ -58,9 +66,11 @@ def tune_pme_params(
     data_path = Path(data_path)
     if data_path.suffix in (".h5", ".hdf5"):
         from so3krates_torch.data.hdf5_utils import load_atoms_from_hdf5
+
         all_atoms = load_atoms_from_hdf5(str(data_path))
     else:
         from ase.io import read
+
         all_atoms = read(str(data_path), index=":")
 
     # Filter to periodic structures and subsample
@@ -87,7 +97,9 @@ def tune_pme_params(
         if charges_key and charges_key in atoms.arrays:
             q = torch.tensor(
                 atoms.arrays[charges_key], dtype=dtype, device=dev
-            ).unsqueeze(1)  # (N, 1)
+            ).unsqueeze(
+                1
+            )  # (N, 1)
         else:
             q = torch.ones(N, 1, dtype=dtype, device=dev)
 
@@ -127,24 +139,51 @@ def main():
             "torchkrates PME electrostatics."
         )
     )
-    parser.add_argument("--data_path", required=True,
-                        help="Path to training data (.xyz, .extxyz, .h5)")
-    parser.add_argument("--r_max", type=float, required=True,
-                        help="SR cutoff radius in Angstrom")
-    parser.add_argument("--n_samples", type=int, default=50,
-                        help="Max structures to use for tuning")
-    parser.add_argument("--accuracy", type=float, default=1e-3,
-                        help="Target accuracy for PME error bound")
-    parser.add_argument("--charges_key", default=None,
-                        help="Key in atoms.arrays for partial charges "
-                             "(default: unit charges)")
-    parser.add_argument("--device", default="cpu",
-                        help="Device for torch tensors (default: cpu)")
-    parser.add_argument("--dtype", default="float64",
-                        choices=["float32", "float64"],
-                        help="Tensor dtype (default: float64)")
-    parser.add_argument("--update_config", default=None,
-                        help="If given, write PME params to this YAML config")
+    parser.add_argument(
+        "--data_path",
+        required=True,
+        help="Path to training data (.xyz, .extxyz, .h5)",
+    )
+    parser.add_argument(
+        "--r_max",
+        type=float,
+        required=True,
+        help="SR cutoff radius in Angstrom",
+    )
+    parser.add_argument(
+        "--n_samples",
+        type=int,
+        default=50,
+        help="Max structures to use for tuning",
+    )
+    parser.add_argument(
+        "--accuracy",
+        type=float,
+        default=1e-3,
+        help="Target accuracy for PME error bound",
+    )
+    parser.add_argument(
+        "--charges_key",
+        default=None,
+        help="Key in atoms.arrays for partial charges "
+        "(default: unit charges)",
+    )
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        help="Device for torch tensors (default: cpu)",
+    )
+    parser.add_argument(
+        "--dtype",
+        default="float64",
+        choices=["float32", "float64"],
+        help="Tensor dtype (default: float64)",
+    )
+    parser.add_argument(
+        "--update_config",
+        default=None,
+        help="If given, write PME params to this YAML config",
+    )
     args = parser.parse_args()
 
     smearing, mesh_spacing = tune_pme_params(
@@ -166,6 +205,7 @@ def main():
 
     if args.update_config:
         import yaml
+
         config_path = Path(args.update_config)
         with open(config_path) as f:
             config = yaml.safe_load(f)
