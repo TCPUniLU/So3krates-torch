@@ -63,16 +63,17 @@ def timer(name: str, enabled: bool = True):
 
 
 class So3EdgeForcesWrapper(torch.nn.Module):
-    """Wrapper that validates config and computes per-pair forces for LAMMPS.
+    """Wrapper that computes per-pair forces for LAMMPS.
 
-    Validates that the model only uses short-range interactions (no electrostatics
-    or dispersion), freezes parameters, and provides a forward method that returns
-    (total_energy, node_energy, pair_forces).
+    Supports both short-range-only and long-range (electrostatics,
+    dispersion) models. Freezes parameters and provides a forward
+    method returning (total_energy, node_energy, pair_forces).
 
     Args:
         model: SO3LR or MultiHeadSO3LR model instance.
-        atomic_numbers: List of atomic numbers for the elements in the simulation
-            (e.g. [14, 8] for Si and O). Order must match LAMMPS pair_coeff types.
+        atomic_numbers: List of atomic numbers for the elements in
+            the simulation (e.g. [14, 8] for Si and O). Order must
+            match LAMMPS pair_coeff types.
         head: Head name for multi-head models (default: last head).
     """
 
@@ -81,28 +82,15 @@ class So3EdgeForcesWrapper(torch.nn.Module):
     ):
         super().__init__()
 
-        # Validate model config: only short-range interactions allowed
-        if getattr(model, "electrostatic_energy_bool", False):
-            raise ValueError(
-                "Model has electrostatic_energy_bool=True. "
-                "LAMMPS MLIAP only supports short-range interactions. "
-                "Retrain with electrostatic_energy_bool=False or use a "
-                "different model."
-            )
-        if getattr(model, "dispersion_energy_bool", False):
-            raise ValueError(
-                "Model has dispersion_energy_bool=True. "
-                "LAMMPS MLIAP only supports short-range interactions. "
-                "Retrain with dispersion_energy_bool=False or use a "
-                "different model."
-            )
-
         self.model = model
+        self.use_lr = getattr(model, "use_lr", False)
         self.register_buffer(
             "atomic_numbers_map",
             torch.tensor(atomic_numbers, dtype=torch.long),
         )
         self.register_buffer("r_max", torch.tensor(model.r_max))
+        if self.use_lr:
+            self.register_buffer("r_max_lr", torch.tensor(model.r_max_lr))
         self.register_buffer(
             "num_interactions", torch.tensor(model.num_layers)
         )
@@ -124,6 +112,9 @@ class So3EdgeForcesWrapper(torch.nn.Module):
         self, data: Dict[str, torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Compute energies and per-pair forces.
+
+        For LR models, edge_forces covers all pairs (SR + LR
+        combined) since autograd is computed w.r.t. vectors_all.
 
         Returns:
             Tuple of (total_energy, node_energy, pair_forces):
@@ -150,7 +141,9 @@ class So3EdgeForcesWrapper(torch.nn.Module):
         total_energy = out["energy"][0]
 
         if pair_forces is None:
-            pair_forces = torch.zeros_like(data["vectors"])
+            # Fallback: use vectors_all if available (LR mode)
+            v = data.get("vectors_all", data["vectors"])
+            pair_forces = torch.zeros_like(v)
 
         return total_energy, node_energy, pair_forces
 
@@ -184,7 +177,14 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
         self.element_types = [chemical_symbols[z] for z in atomic_numbers]
         self.num_species = len(self.element_types)
         self.num_elements = model.num_elements
-        self.rcutfac = 0.5 * float(model.r_max)
+        self.use_lr = self.model.use_lr
+        if self.use_lr:
+            # Request neighbor list at r_max_lr so we get all
+            # pairs needed for long-range interactions.
+            self.rcutfac = 0.5 * float(model.r_max_lr)
+            self.r_max_sr = float(model.r_max)
+        else:
+            self.rcutfac = 0.5 * float(model.r_max)
         self.ndescriptors = 1
         self.nparams = 1
         self.dtype = next(model.parameters()).dtype
@@ -250,7 +250,9 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
         """Build input dictionary from LAMMPS data structures.
 
         Maps LAMMPS element type indices to actual atomic numbers and
-        creates the 118-class one-hot encoding expected by So3krates.
+        creates the one-hot encoding expected by So3krates. When
+        long-range is enabled, splits the neighbor list into SR and
+        LR edge sets using a distance mask on a single leaf tensor.
         """
         # Map LAMMPS type indices to actual atomic numbers
         atomic_numbers_map = self.model.atomic_numbers_map.to(self.device)
@@ -266,26 +268,26 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
         )
         node_attrs.scatter_(1, (actual_z - 1).unsqueeze(1), 1.0)
 
-        return {
-            "vectors": torch.as_tensor(data.rij)
-            .to(self.dtype)
-            .to(self.device),
+        vectors_all = torch.as_tensor(data.rij).to(self.dtype).to(self.device)
+        # So3krates convention: edge_index[0] = receivers (scatter
+        # target), edge_index[1] = senders (message source).
+        # pair_i = central (always real), pair_j = neighbor (may be
+        # ghost). Place pair_i at [0] so messages aggregate at real
+        # atoms.
+        edge_index_all = torch.stack(
+            [
+                torch.as_tensor(data.pair_i, dtype=torch.int64).to(
+                    self.device
+                ),
+                torch.as_tensor(data.pair_j, dtype=torch.int64).to(
+                    self.device
+                ),
+            ],
+            dim=0,
+        )
+
+        batch_dict = {
             "node_attrs": node_attrs,
-            # So3krates convention: edge_index[0] = receivers (scatter target),
-            # edge_index[1] = senders (message source).
-            # pair_i = central (always real), pair_j = neighbor (may be ghost).
-            # Place pair_i at [0] so messages aggregate at real atoms.
-            "edge_index": torch.stack(
-                [
-                    torch.as_tensor(data.pair_i, dtype=torch.int64).to(
-                        self.device
-                    ),
-                    torch.as_tensor(data.pair_j, dtype=torch.int64).to(
-                        self.device
-                    ),
-                ],
-                dim=0,
-            ),
             "atomic_numbers": actual_z,
             "batch": torch.zeros(
                 ntotal, dtype=torch.int64, device=self.device
@@ -300,6 +302,26 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
             "lammps_class": data,
             "natoms": (natoms, ntotal),
         }
+
+        if self.use_lr:
+            # Single leaf tensor for autograd: edge forces computed
+            # w.r.t. vectors_all give combined SR+LR pair forces.
+            vectors_all.requires_grad_(True)
+            lengths_all = torch.linalg.vector_norm(vectors_all, dim=1)
+            sr_mask = lengths_all <= self.r_max_sr
+            batch_dict["vectors_all"] = vectors_all
+            batch_dict["vectors"] = vectors_all[sr_mask]
+            # edge_index_lr / vectors_lr must contain ALL edges
+            # within r_max_lr (superset of SR), matching the ASE
+            # path where get_neighborhood returns the full list.
+            batch_dict["vectors_lr"] = vectors_all
+            batch_dict["edge_index"] = edge_index_all[:, sr_mask]
+            batch_dict["edge_index_lr"] = edge_index_all
+        else:
+            batch_dict["vectors"] = vectors_all
+            batch_dict["edge_index"] = edge_index_all
+
+        return batch_dict
 
     def _update_lammps_data(self, data, atom_energies, pair_forces, natoms):
         """Write computed energies and forces back to LAMMPS data structures.

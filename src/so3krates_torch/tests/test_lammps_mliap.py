@@ -65,8 +65,29 @@ def so3lr_short_range_no_zbl_model(so3lr_short_range_no_zbl_config):
 
 
 @pytest.fixture
+def so3lr_lr_config(default_model_config):
+    """SO3LR config with both electrostatics and dispersion."""
+    return {
+        **default_model_config,
+        "r_max_lr": 10.0,
+        "zbl_repulsion_bool": True,
+        "electrostatic_energy_bool": True,
+        "dispersion_energy_bool": True,
+        "dispersion_energy_cutoff_lr_damping": 2.0,
+    }
+
+
+@pytest.fixture
+def so3lr_lr_model(so3lr_lr_config):
+    """SO3LR model with full long-range interactions."""
+    model = SO3LR(**so3lr_lr_config)
+    model.eval()
+    return model
+
+
+@pytest.fixture
 def so3lr_electrostatic_config(default_model_config):
-    """SO3LR config with electrostatics enabled (should fail validation)."""
+    """SO3LR config with electrostatics enabled."""
     return {
         **default_model_config,
         "r_max_lr": 10.0,
@@ -78,7 +99,7 @@ def so3lr_electrostatic_config(default_model_config):
 
 @pytest.fixture
 def so3lr_electrostatic_model(so3lr_electrostatic_config):
-    """SO3LR model with electrostatics (for validation rejection tests)."""
+    """SO3LR model with electrostatics enabled."""
     model = SO3LR(**so3lr_electrostatic_config)
     model.eval()
     return model
@@ -86,7 +107,7 @@ def so3lr_electrostatic_model(so3lr_electrostatic_config):
 
 @pytest.fixture
 def so3lr_dispersion_config(default_model_config):
-    """SO3LR config with dispersion enabled (should fail validation)."""
+    """SO3LR config with dispersion enabled."""
     return {
         **default_model_config,
         "r_max_lr": 10.0,
@@ -99,7 +120,7 @@ def so3lr_dispersion_config(default_model_config):
 
 @pytest.fixture
 def so3lr_dispersion_model(so3lr_dispersion_config):
-    """SO3LR model with dispersion (for validation rejection tests)."""
+    """SO3LR model with dispersion enabled."""
     model = SO3LR(**so3lr_dispersion_config)
     model.eval()
     return model
@@ -218,23 +239,24 @@ class TestSo3LammpsConfig:
 class TestSo3EdgeForcesWrapper:
     """Test model wrapper validation and construction."""
 
-    def test_validation_rejects_electrostatics(
+    def test_accepts_electrostatic_model(
         self, so3lr_electrostatic_model, water_atomic_numbers
     ):
-        with pytest.raises(ValueError, match="electrostatic"):
-            So3EdgeForcesWrapper(
-                so3lr_electrostatic_model,
-                atomic_numbers=water_atomic_numbers,
-            )
+        wrapper = So3EdgeForcesWrapper(
+            so3lr_electrostatic_model,
+            atomic_numbers=water_atomic_numbers,
+        )
+        assert wrapper.use_lr is True
+        assert hasattr(wrapper, "r_max_lr")
 
-    def test_validation_rejects_dispersion(
+    def test_accepts_dispersion_model(
         self, so3lr_dispersion_model, water_atomic_numbers
     ):
-        with pytest.raises(ValueError, match="dispersion"):
-            So3EdgeForcesWrapper(
-                so3lr_dispersion_model,
-                atomic_numbers=water_atomic_numbers,
-            )
+        wrapper = So3EdgeForcesWrapper(
+            so3lr_dispersion_model,
+            atomic_numbers=water_atomic_numbers,
+        )
+        assert wrapper.use_lr is True
 
     def test_accepts_short_range_with_zbl(
         self, so3lr_short_range_model, water_atomic_numbers
@@ -612,19 +634,18 @@ class TestCLIValidation:
         with pytest.raises(ValueError, match="Unknown element symbol"):
             validate_elements(["Si", "Xx"])
 
-    def test_validate_model_rejects_electrostatics(
+    def test_validate_model_accepts_electrostatics(
         self, so3lr_electrostatic_model
     ):
         from so3krates_torch.cli.create_lammps_model import validate_model
 
-        with pytest.raises(ValueError, match="electrostatic"):
-            validate_model(so3lr_electrostatic_model)
+        # Should not raise — LR models are now accepted
+        validate_model(so3lr_electrostatic_model)
 
-    def test_validate_model_rejects_dispersion(self, so3lr_dispersion_model):
+    def test_validate_model_accepts_dispersion(self, so3lr_dispersion_model):
         from so3krates_torch.cli.create_lammps_model import validate_model
 
-        with pytest.raises(ValueError, match="dispersion"):
-            validate_model(so3lr_dispersion_model)
+        validate_model(so3lr_dispersion_model)
 
     def test_validate_model_accepts_short_range(self, so3lr_short_range_model):
         from so3krates_torch.cli.create_lammps_model import validate_model
@@ -1073,4 +1094,194 @@ class TestEndToEndForward:
             atol=1e-10,
             rtol=1e-10,
             msg=f"Force mismatch (periodic)!\nASE: {ase_forces}\nLAMMPS: {lammps_atomic_forces}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestLongRangeLAMMPS
+# ---------------------------------------------------------------------------
+
+
+class TestLongRangeLAMMPS:
+    """Tests for long-range (electrostatics + dispersion) LAMMPS support."""
+
+    def _atoms_to_mock_lammps_data_lr(
+        self, atoms, model, atomic_numbers_list, dtype=torch.float64
+    ):
+        """Create mock LAMMPS data with neighbor list at r_max_lr."""
+        from ase.neighborlist import neighbor_list
+
+        r_max_lr = model.r_max_lr
+        i_indices, j_indices, d_vectors = neighbor_list(
+            "ijD", atoms, cutoff=r_max_lr, self_interaction=False
+        )
+
+        natoms = len(atoms)
+        npairs = len(i_indices)
+        z_to_type = {z: idx for idx, z in enumerate(atomic_numbers_list)}
+
+        mock = Mock()
+        mock.nlocal = natoms
+        mock.ntotal = natoms
+        mock.npairs = npairs
+        mock.elems = torch.tensor(
+            [z_to_type[z] for z in atoms.get_atomic_numbers()],
+            dtype=torch.int64,
+        )
+        mock.rij = torch.tensor(d_vectors, dtype=dtype)
+        mock.pair_i = torch.tensor(i_indices, dtype=torch.int64)
+        mock.pair_j = torch.tensor(j_indices, dtype=torch.int64)
+        mock.eatoms = torch.zeros(natoms, dtype=dtype)
+        mock.energy = torch.tensor(0.0, dtype=dtype)
+        mock.update_pair_forces_gpu = Mock()
+        mock.__class__ = type(
+            "RegularModule", (), {"__module__": "regular_module"}
+        )
+        return mock
+
+    def test_lr_model_rcutfac(self, so3lr_lr_model, water_atomic_numbers):
+        """LR model should use r_max_lr for rcutfac."""
+        calc = LAMMPS_MLIAP_SO3(
+            so3lr_lr_model,
+            atomic_numbers=water_atomic_numbers,
+        )
+        assert calc.use_lr is True
+        assert calc.rcutfac == 0.5 * float(so3lr_lr_model.r_max_lr)
+
+    def test_lr_prepare_batch_splits_edges(
+        self, so3lr_lr_model, water_atomic_numbers
+    ):
+        """_prepare_batch should split edges into SR and LR."""
+        atoms = molecule("H2O")
+        model = so3lr_lr_model
+        model.double()
+
+        calc = LAMMPS_MLIAP_SO3(model, atomic_numbers=water_atomic_numbers)
+        calc.device = torch.device("cpu")
+
+        mock_data = self._atoms_to_mock_lammps_data_lr(
+            atoms, model, water_atomic_numbers
+        )
+        species = torch.as_tensor(mock_data.elems, dtype=torch.int64)
+
+        batch = calc._prepare_batch(
+            mock_data,
+            mock_data.nlocal,
+            mock_data.ntotal - mock_data.nlocal,
+            species,
+        )
+
+        # Should have vectors_all, vectors, vectors_lr
+        assert "vectors_all" in batch
+        assert "vectors" in batch
+        assert "vectors_lr" in batch
+        assert "edge_index" in batch
+        assert "edge_index_lr" in batch
+
+        # vectors_lr is the full set (superset of SR), matching
+        # the ASE convention where edge_index_lr covers all edges
+        # within r_max_lr.
+        n_sr = batch["vectors"].shape[0]
+        n_lr = batch["vectors_lr"].shape[0]
+        n_all = batch["vectors_all"].shape[0]
+        assert n_lr == n_all
+        assert n_sr <= n_all
+
+        # vectors_all should be the leaf with requires_grad
+        assert batch["vectors_all"].requires_grad is True
+
+    def test_lr_energy_matches_ase(
+        self,
+        so3lr_lr_model,
+        make_batch,
+        water_atomic_numbers,
+    ):
+        """LAMMPS LR mock path energy should match ASE path."""
+        atoms = molecule("H2O")
+        model = so3lr_lr_model
+        model.double()
+
+        # --- ASE path ---
+        batch = make_batch(atoms, r_max=model.r_max, cutoff_lr=model.r_max_lr)
+        ase_output = model(
+            batch,
+            training=False,
+            compute_force=False,
+        )
+        ase_energy = ase_output["energy"].squeeze().item()
+
+        # --- LAMMPS mock path ---
+        calc = LAMMPS_MLIAP_SO3(model, atomic_numbers=water_atomic_numbers)
+        calc.device = torch.device("cpu")
+        calc.initialized = True
+        calc.model = calc.model.to("cpu")
+
+        mock_data = self._atoms_to_mock_lammps_data_lr(
+            atoms, model, water_atomic_numbers
+        )
+        calc.compute_forces(mock_data)
+        lammps_energy = mock_data.energy.item()
+
+        assert lammps_energy == pytest.approx(ase_energy, rel=1e-5), (
+            f"LR energy mismatch: " f"LAMMPS={lammps_energy}, ASE={ase_energy}"
+        )
+
+    def test_lr_forces_match_ase(
+        self,
+        so3lr_lr_model,
+        make_batch,
+        water_atomic_numbers,
+    ):
+        """LAMMPS LR pair forces should reconstruct to ASE forces."""
+        atoms = molecule("H2O")
+        model = so3lr_lr_model
+        model.double()
+
+        # --- ASE path ---
+        batch = make_batch(atoms, r_max=model.r_max, cutoff_lr=model.r_max_lr)
+        ase_output = model(
+            batch,
+            training=False,
+            compute_force=True,
+        )
+        ase_forces = ase_output["forces"].detach()
+
+        # --- LAMMPS mock path ---
+        calc = LAMMPS_MLIAP_SO3(model, atomic_numbers=water_atomic_numbers)
+        calc.device = torch.device("cpu")
+        calc.initialized = True
+        calc.model = calc.model.to("cpu")
+
+        mock_data = self._atoms_to_mock_lammps_data_lr(
+            atoms, model, water_atomic_numbers
+        )
+        calc.compute_forces(mock_data)
+
+        pair_forces = mock_data.update_pair_forces_gpu.call_args[0][0]
+        pair_i = mock_data.pair_i
+        pair_j = mock_data.pair_j
+        natoms = mock_data.nlocal
+
+        # Pair forces should cover all edges (SR + LR)
+        assert pair_forces.shape[0] == mock_data.npairs
+
+        # Convert pair forces to atomic forces
+        lammps_atomic_forces = torch.zeros(natoms, 3, dtype=torch.float64)
+        for n in range(len(pair_i)):
+            i = pair_i[n].item()
+            j = pair_j[n].item()
+            lammps_atomic_forces[i] += pair_forces[n]
+            if j < natoms:
+                lammps_atomic_forces[j] -= pair_forces[n]
+
+        torch.testing.assert_close(
+            lammps_atomic_forces,
+            ase_forces,
+            atol=1e-5,
+            rtol=1e-5,
+            msg=(
+                f"LR force mismatch!\n"
+                f"ASE: {ase_forces}\n"
+                f"LAMMPS: {lammps_atomic_forces}"
+            ),
         )

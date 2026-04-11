@@ -394,6 +394,30 @@ def _load_validation_loader(
         if val_data_path.endswith(".xyz"):
             val_data = read(val_data_path, index=":")
         elif val_data_path.endswith((".h5", ".hdf5")):
+            lazy_loading = config["TRAINING"].get("lazy_loading", False)
+            if lazy_loading:
+                num_workers = config["TRAINING"].get("num_workers", 4)
+                prefetch_factor = config["TRAINING"].get("prefetch_factor", 2)
+                valid_dataset = LazyAtomicDataset(
+                    hdf5_path=val_data_path,
+                    r_max=r_max,
+                    r_max_lr=r_max_lr,
+                    keyspec=keyspec,
+                )
+                logging.info(
+                    f"Lazy validation DataLoader: "
+                    f"num_workers={num_workers}"
+                )
+                return DataLoader(
+                    dataset=valid_dataset,
+                    batch_size=valid_batch_size,
+                    shuffle=False,
+                    num_workers=num_workers,
+                    prefetch_factor=prefetch_factor,
+                    persistent_workers=(num_workers > 0),
+                    collate_fn=Collater([None], [None]),
+                    worker_init_fn=_worker_init_fn,
+                )
             val_data = load_atoms_from_hdf5(val_data_path, index=None)
         else:
             raise ValueError(

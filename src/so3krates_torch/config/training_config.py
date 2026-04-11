@@ -72,6 +72,15 @@ class ArchitectureConfig(BaseModel):
                 f"dispersion_energy_bool="
                 f"{self.dispersion_energy_bool}"
             )
+        if self.dispersion_energy_bool and (
+            self.dispersion_energy_cutoff_lr_damping is None
+        ):
+            raise ValueError(
+                "dispersion_energy_cutoff_lr_damping must be "
+                "specified when dispersion_energy_bool is True. "
+                f"Got dispersion_energy_cutoff_lr_damping="
+                f"{self.dispersion_energy_cutoff_lr_damping}"
+            )
         if self.convert_to_multihead and (self.num_output_heads is None):
             raise ValueError(
                 "num_output_heads must be specified when using "

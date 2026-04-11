@@ -45,6 +45,32 @@ def parse_args():
         help="Data type for the converted model (float32 or float64)",
         default="float64",
     )
+    parser.add_argument(
+        "--r-max-lr",
+        type=float,
+        default=None,
+        help="Override the long-range cutoff (default: from model)",
+    )
+    parser.add_argument(
+        "--electrostatic-energy-scale",
+        type=float,
+        default=None,
+        help="Override the electrostatic energy scale "
+        "(default: from model)",
+    )
+    parser.add_argument(
+        "--dispersion-energy-scale",
+        type=float,
+        default=None,
+        help="Override the dispersion energy scale " "(default: from model)",
+    )
+    parser.add_argument(
+        "--dispersion-energy-cutoff-lr-damping",
+        type=float,
+        default=None,
+        help="Override the dispersion cutoff damping distance "
+        "(default: from model)",
+    )
     return parser.parse_args()
 
 
@@ -62,25 +88,13 @@ def validate_elements(elements):
 
 
 def validate_model(model):
-    """Validate model is compatible with short-range-only LAMMPS."""
+    """Validate model is compatible with LAMMPS MLIAP."""
     if not isinstance(model, (SO3LR, MultiHeadSO3LR)):
         raise ValueError(
-            f"Model must be SO3LR or MultiHeadSO3LR, got {type(model).__name__}. "
-            "Only SO3LR-family models are supported for LAMMPS MLIAP."
-        )
-
-    if getattr(model, "electrostatic_energy_bool", False):
-        raise ValueError(
-            "Model has electrostatic_energy_bool=True. "
-            "LAMMPS MLIAP only supports short-range interactions (ML + ZBL). "
-            "Retrain with electrostatic_energy_bool=False."
-        )
-
-    if getattr(model, "dispersion_energy_bool", False):
-        raise ValueError(
-            "Model has dispersion_energy_bool=True. "
-            "LAMMPS MLIAP only supports short-range interactions (ML + ZBL). "
-            "Retrain with dispersion_energy_bool=False."
+            f"Model must be SO3LR or MultiHeadSO3LR, "
+            f"got {type(model).__name__}. "
+            "Only SO3LR-family models are supported for "
+            "LAMMPS MLIAP."
         )
 
     zbl_status = (
@@ -88,7 +102,20 @@ def validate_model(model):
         if getattr(model, "zbl_repulsion_bool", False)
         else "disabled"
     )
+    lr_features = []
+    if getattr(model, "electrostatic_energy_bool", False):
+        lr_features.append("electrostatics")
+    if getattr(model, "dispersion_energy_bool", False):
+        lr_features.append("dispersion")
+
     print(f"Model validation passed. ZBL repulsion: {zbl_status}")
+    if lr_features:
+        print(
+            f"Long-range features: {', '.join(lr_features)} "
+            f"(r_max_lr={model.r_max_lr})"
+        )
+    else:
+        print("Short-range only model.")
 
 
 def select_head(model):
@@ -153,6 +180,31 @@ def main():
 
     # Validate model configuration
     validate_model(model)
+
+    # Apply CLI overrides to model LR parameters
+    if args.r_max_lr is not None:
+        model.r_max_lr = args.r_max_lr
+        print(f"Override r_max_lr = {args.r_max_lr}")
+    if args.electrostatic_energy_scale is not None:
+        model.electrostatic_energy_scale = args.electrostatic_energy_scale
+        print(
+            f"Override electrostatic_energy_scale = "
+            f"{args.electrostatic_energy_scale}"
+        )
+    if args.dispersion_energy_scale is not None:
+        model.dispersion_energy_scale = args.dispersion_energy_scale
+        print(
+            f"Override dispersion_energy_scale = "
+            f"{args.dispersion_energy_scale}"
+        )
+    if args.dispersion_energy_cutoff_lr_damping is not None:
+        model.dispersion_energy_cutoff_lr_damping = (
+            args.dispersion_energy_cutoff_lr_damping
+        )
+        print(
+            f"Override dispersion_energy_cutoff_lr_damping = "
+            f"{args.dispersion_energy_cutoff_lr_damping}"
+        )
 
     # Select head for multi-head models
     if args.head is None:

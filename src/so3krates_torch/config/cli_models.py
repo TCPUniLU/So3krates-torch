@@ -164,3 +164,7 @@ class CreateLammpsArgs(BaseModel):
     elements: List[str]
     head: Optional[str] = None
     dtype: Literal["float32", "float64"] = "float64"
+    r_max_lr: Optional[float] = None
+    electrostatic_energy_scale: Optional[float] = None
+    dispersion_energy_scale: Optional[float] = None
+    dispersion_energy_cutoff_lr_damping: Optional[float] = None

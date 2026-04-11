@@ -363,6 +363,7 @@ class CoulombErf(nn.Module):
         ke: float,
         sigma: float,
         neighborlist_format_lr: str = "sparse",
+        dtype: torch.dtype = None,
     ) -> None:
         super().__init__()
         if neighborlist_format_lr not in ("sparse", "ordered_sparse"):
@@ -370,10 +371,10 @@ class CoulombErf(nn.Module):
                 "neighborlist_format_lr must be 'sparse' or 'ordered_sparse'"
             )
         c_val = 0.5 if neighborlist_format_lr == "sparse" else 1.0
-        default_dtype = torch.get_default_dtype()
-        self.register_buffer("ke", torch.tensor(ke, dtype=default_dtype))
-        self.register_buffer("sigma", torch.tensor(sigma, dtype=default_dtype))
-        self.register_buffer("c", torch.tensor(c_val, dtype=default_dtype))
+        dt = dtype if dtype is not None else torch.get_default_dtype()
+        self.register_buffer("ke", torch.tensor(ke, dtype=dt))
+        self.register_buffer("sigma", torch.tensor(sigma, dtype=dt))
+        self.register_buffer("c", torch.tensor(c_val, dtype=dt))
         self.neighborlist_format_lr = neighborlist_format_lr
 
     def forward(
@@ -410,6 +411,7 @@ class CoulombErfShiftedForceSmooth(nn.Module):
         cutoff: float,
         cuton: float,
         neighborlist_format_lr: str = "sparse",
+        dtype: torch.dtype = None,
     ) -> None:
         super().__init__()
         if neighborlist_format_lr not in ("sparse", "ordered_sparse"):
@@ -417,14 +419,12 @@ class CoulombErfShiftedForceSmooth(nn.Module):
                 "neighborlist_format_lr must be 'sparse' or 'ordered_sparse'"
             )
         c_val = 0.5 if neighborlist_format_lr == "sparse" else 1.0
-        default_dtype = torch.get_default_dtype()
-        self.register_buffer("ke", torch.tensor(ke, dtype=default_dtype))
-        self.register_buffer("sigma", torch.tensor(sigma, dtype=default_dtype))
-        self.register_buffer(
-            "cutoff", torch.tensor(cutoff, dtype=default_dtype)
-        )
-        self.register_buffer("cuton", torch.tensor(cuton, dtype=default_dtype))
-        self.register_buffer("c", torch.tensor(c_val, dtype=default_dtype))
+        dt = dtype if dtype is not None else torch.get_default_dtype()
+        self.register_buffer("ke", torch.tensor(ke, dtype=dt))
+        self.register_buffer("sigma", torch.tensor(sigma, dtype=dt))
+        self.register_buffer("cutoff", torch.tensor(cutoff, dtype=dt))
+        self.register_buffer("cuton", torch.tensor(cuton, dtype=dt))
+        self.register_buffer("c", torch.tensor(c_val, dtype=dt))
         self.neighborlist_format_lr = neighborlist_format_lr
 
     @torch.no_grad()
@@ -634,6 +634,7 @@ class ElectrostaticInteraction(nn.Module):
         Returns:
             (N,1) atomic electrostatic energies.
         """
+        input_dtype = lengths_lr.dtype
         if cutoff_lr is not None:
             cuton = 0.45 * float(cutoff_lr)
             coulomb = CoulombErfShiftedForceSmooth(
@@ -642,12 +643,14 @@ class ElectrostaticInteraction(nn.Module):
                 cutoff=float(cutoff_lr),
                 cuton=cuton,
                 neighborlist_format_lr=self.neighborlist_format_lr,
+                dtype=input_dtype,
             )
         else:
             coulomb = CoulombErf(
                 ke=self.ke,
                 sigma=electrostatic_energy_scale,
                 neighborlist_format_lr=self.neighborlist_format_lr,
+                dtype=input_dtype,
             )
         if lengths_lr.dim() == 2 and lengths_lr.size(-1) == 1:
             lengths_lr = lengths_lr.squeeze(-1)

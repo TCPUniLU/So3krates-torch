@@ -676,12 +676,16 @@ class SO3LR(So3krates):
         compute_hessian: bool = False,
         compute_edge_forces: bool = False,
         batch: Optional[torch.tensor] = None,
+        vectors_all: Optional[torch.Tensor] = None,
     ):
         return utils.get_outputs(
             energy=energy,
             positions=positions,
             displacement=displacement,
-            vectors=vectors,
+            # In LAMMPS+LR mode, vectors_all is the single leaf
+            # tensor covering all pairs. Computing edge forces
+            # w.r.t. it yields combined SR+LR pair forces.
+            vectors=(vectors_all if vectors_all is not None else vectors),
             cell=cell,
             training=training,
             compute_force=compute_force,
@@ -866,6 +870,10 @@ class SO3LR(So3krates):
             compute_hessian=compute_hessian,
             compute_edge_forces=compute_edge_forces,
             batch=data["batch"],
+            # In LAMMPS+LR mode, vectors_all is the single leaf tensor
+            # for all pairs. Edge forces computed w.r.t. it give combined
+            # SR+LR pair forces in one autograd call.
+            vectors_all=self.ctx.vectors_all,
         )
 
         return self._create_output_dict(
@@ -933,12 +941,13 @@ class MultiHeadSO3LR(SO3LR):
         compute_hessian: bool = False,
         compute_edge_forces: bool = False,
         batch: Optional[torch.tensor] = None,
+        vectors_all: Optional[torch.Tensor] = None,
     ):
         forces, virials, stress, hessian, edge_forces = utils.get_outputs(
             energy=energy,
             positions=positions,
             displacement=displacement,
-            vectors=vectors,
+            vectors=(vectors_all if vectors_all is not None else vectors),
             cell=cell,
             training=training,
             compute_force=compute_force,
