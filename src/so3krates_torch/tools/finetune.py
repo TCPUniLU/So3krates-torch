@@ -349,7 +349,12 @@ def setup_finetuning(
     seed: int = 42,
     log: bool = False,
 ) -> torch.nn.Module:
-    # TODO: docstring etc
+    """Configure model parameters for fine-tuning.
+
+    Unfreezes all parameters, then optionally replaces or freezes layers
+    according to ``finetune_choice``. Supports full fine-tuning, last-layer
+    fine-tuning, and adapter-based methods (LoRA, DoRA, VeRA).
+    """
     assert (
         finetune_choice in POSSIBLE_FINETUNING_CHOICES
     ), f"Invalid finetuning choice '{finetune_choice}'. Must be one of {POSSIBLE_FINETUNING_CHOICES}."

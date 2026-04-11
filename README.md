@@ -243,6 +243,7 @@ These settings define the SO3LR neural network architecture.
 | `num_layers` | `int` | `3` | Number of stacked Euclidean transformer layers. |
 | `num_radial_basis_fn` | `int` | `32` | Number of radial basis functions used to expand interatomic distances. |
 | `energy_regression_dim` | `int` | `128` | Hidden dimension of the MLP in the atomic energy output head. |
+| `input_convention` | `str` | `"positions"` | Convention for atomic positions in the data. Options: `positions` (Cartesian coordinates). |
 
 #### Cutoffs and Basis Functions
 
@@ -370,6 +371,8 @@ TRAINING:
 | `lr` | `float` | *required* | Initial learning rate. |
 | `weight_decay` | `float` | `0.0` | L2 regularization weight. Applied to all parameters. |
 | `amsgrad` | `bool` | `False` | Use the AMSGrad variant of Adam, which keeps a running maximum of the second moment to prevent learning rate from increasing. |
+| `betas` | `list[float]` | `[0.9, 0.999]` | Adam/AdamW beta coefficients for the first and second moment estimates. |
+| `eps` | `float` | `1e-8` | Term added to the denominator for numerical stability in Adam/AdamW. |
 
 #### Learning Rate Scheduler
 
@@ -451,6 +454,8 @@ These apply when `finetune_choice` is one of `lora`, `dora`, `vera`, or their `+
 | `lora_alpha` | `float` | `8.0` | Scaling factor. The effective adaptation is scaled by `alpha / rank`. |
 | `lora_freeze_A` | `bool` | `False` | Freeze the A (down-projection) matrices and only train B. Reduces trainable parameters by half. |
 | `dora_scaling_to_one` | `bool` | `True` | Initialize DoRA magnitude vectors to normalize columns to unit norm. |
+| `use_lora_plus` | `bool` | `False` | Use LoRA+ optimizer: apply a separate (higher) learning rate to the B matrices. |
+| `lora_B_lr` | `float` | `None` | Learning rate for the B matrices when `use_lora_plus` is enabled. Typically set to a multiple of the base `lr`. |
 
 #### Data Replay
 

@@ -151,9 +151,6 @@ class Batch(Data):
             elif isinstance(item, (int, float)):
                 batch[key] = torch.tensor(items)
 
-        # if torch_geometric.is_debug_enabled():
-        #     batch.debug()
-
         return batch.contiguous()
 
     def get_example(self, idx: int) -> Data:

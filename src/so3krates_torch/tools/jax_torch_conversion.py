@@ -298,7 +298,6 @@ def get_flax_to_torch_mapping(cfg, trainable_rbf: bool):
         mapping[f"{params_obs}zbl_repulsion/p"] = "zbl_repulsion.p_raw"
         mapping[f"{params_obs}zbl_repulsion/d"] = "zbl_repulsion.d_raw"
 
-    # if use_electrostatic_energy:
     mapping[
         f"{params_obs}electrostatic_energy/partial_charges/Embed_0/embedding"
     ] = "partial_charges_output_block.atomic_embedding.weight"
@@ -315,7 +314,6 @@ def get_flax_to_torch_mapping(cfg, trainable_rbf: bool):
         f"{params_obs}electrostatic_energy/partial_charges/charge_dense_final_vec/bias"
     ] = "partial_charges_output_block.transform_inv_features.2.bias"
 
-    # if use_dispersion_energy:
     mapping["params/observables_2/Embed_0/embedding"] = (
         "hirshfeld_output_block.v_shift_embedding.weight"
     )
@@ -797,7 +795,6 @@ def get_torch_to_flax_mapping(cfg, trainable_rbf: bool):
     )
 
     params_obs = "params/observables_0/"
-    # if use_zbl:
     mapping["zbl_repulsion.a1_raw"] = f"{params_obs}zbl_repulsion/a1"
     mapping["zbl_repulsion.a2_raw"] = f"{params_obs}zbl_repulsion/a2"
     mapping["zbl_repulsion.a3_raw"] = f"{params_obs}zbl_repulsion/a3"
@@ -809,7 +806,6 @@ def get_torch_to_flax_mapping(cfg, trainable_rbf: bool):
     mapping["zbl_repulsion.p_raw"] = f"{params_obs}zbl_repulsion/p"
     mapping["zbl_repulsion.d_raw"] = f"{params_obs}zbl_repulsion/d"
 
-    # if use_electrostatic_energy:
     mapping["partial_charges_output_block.atomic_embedding.weight"] = (
         f"{params_obs}electrostatic_energy/partial_charges/Embed_0/embedding"
     )
@@ -826,7 +822,6 @@ def get_torch_to_flax_mapping(cfg, trainable_rbf: bool):
         f"{params_obs}electrostatic_energy/partial_charges/charge_dense_final_vec/bias"
     )
 
-    # if use_dispersion_energy:
     mapping["hirshfeld_output_block.v_shift_embedding.weight"] = (
         "params/observables_2/Embed_0/embedding"
     )

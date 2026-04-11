@@ -659,8 +659,6 @@ def save_results_hdf5(results, filename, is_ensemble: bool = False):
                 dset.attrs["is_none"] = True
 
 
-# TODO: Add support for multi-head outputs
-# TODO: Add support from more output types
 def save_results_xyz(input_data, results, filename, prefix: str = "SO3"):
     """Save results to an XYZ file."""
     scalar_keys = [

@@ -208,7 +208,7 @@ class So3krates(torch.nn.Module):
         self.atomic_energy_output_block = AtomicEnergyOutputHead(
             num_features=self.num_features,
             energy_regression_dim=self.energy_regression_dim,
-            final_output_features=1,  # TODO: remove hardcoded value
+            final_output_features=1,  # scalar energy per atom
             layers=self.final_mlp_layers,
             bias=True,
             non_linearity=self.energy_activation_fn,
@@ -911,7 +911,7 @@ class MultiHeadSO3LR(SO3LR):
         self.atomic_energy_output_block = MultiAtomicEnergyOutputHead(
             num_features=self.num_features,
             energy_regression_dim=self.energy_regression_dim,
-            final_output_features=1,  # TODO: remove hardcoded value
+            final_output_features=1,  # scalar energy per atom
             layers=self.final_mlp_layers,
             bias=True,
             non_linearity=self.energy_activation_fn,

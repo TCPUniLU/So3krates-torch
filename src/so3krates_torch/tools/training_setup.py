@@ -231,7 +231,7 @@ def setup_optimizer_and_scheduler(
             eta_min=eta_min,
         )
     elif scheduler_name == "warmup_cosine":
-        warmup_steps = train_config.get("warmup_steps", 100)
+        warmup_steps = train_config.get("warmup_steps", 0)
         T_max = scheduler_args.get(
             "T_max",
             train_config.get("num_epochs", 1000),

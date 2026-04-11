@@ -109,7 +109,6 @@ class TrainingConfig(BaseModel):
     eval_interval: int = 1
     valid_ratio: float = 0.1
     clip_grad: float = 10.0
-    neighbors_lr_cutoff: float = 100.0
     patience: int = 50
     early_stopping_min_delta: float = 0.0
     early_stopping_warmup: int = 0
