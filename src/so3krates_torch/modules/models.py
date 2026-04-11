@@ -20,6 +20,7 @@ from so3krates_torch.blocks.physical_potentials import (
     ZBLRepulsion,
     ElectrostaticInteraction,
     DispersionInteraction,
+    PMEElectrostaticInteraction,
 )
 from so3krates_torch.tools import scatter
 from so3krates_torch.tools import utils
@@ -541,6 +542,9 @@ class SO3LR(So3krates):
         dispersion_energy_cutoff_lr_damping: float = None,
         r_max_lr: float = 12.0,
         neighborlist_format_lr: str = "sparse",
+        use_pme: bool = False,
+        pme_smearing: float = None,
+        pme_mesh_spacing: float = None,
         *args,
         **kwargs,
     ):
@@ -573,7 +577,7 @@ class SO3LR(So3krates):
         # to jax back and forth ... its ugly and wasteful, i know.
 
         # Electrostatics
-        if self.electrostatic_energy_bool:
+        if self.electrostatic_energy_bool and not use_pme:
             self.use_lr = True
         self.partial_charges_output_block = PartialChargesOutputHead(
             num_features=self.num_features,
@@ -584,6 +588,16 @@ class SO3LR(So3krates):
         self.electrostatic_potential = ElectrostaticInteraction(
             neighborlist_format_lr=self.neighborlist_format_lr
         )
+        self.use_pme = use_pme
+        if use_pme:
+            _smearing = pme_smearing or self.r_max / 5.0
+            _mesh_spacing = pme_mesh_spacing or _smearing / 2.0
+            self.pme_electrostatic_potential = (
+                PMEElectrostaticInteraction(
+                    smearing=_smearing,
+                    mesh_spacing=_mesh_spacing,
+                )
+            )
 
         # Dispersion
         if self.dispersion_energy_bool:
@@ -804,15 +818,31 @@ class SO3LR(So3krates):
                 batch_segments=self.batch_segments,
                 num_graphs=self.num_graphs,
             )
-            electrostatic_energies = self.electrostatic_potential(
-                partial_charges=partial_charges,
-                senders_lr=self.senders_lr,
-                receivers_lr=self.receivers_lr,
-                lengths_lr=self.lengths_lr,
-                num_nodes=inv_features.shape[0],
-                cutoff_lr=self.r_max_lr,
-                electrostatic_energy_scale=self.electrostatic_energy_scale,
-            )
+            if getattr(self, "use_pme", False):
+                electrostatic_energies = (
+                    self.pme_electrostatic_potential(
+                        partial_charges=partial_charges,
+                        positions=self.positions,
+                        cell=self.cell,
+                        edge_index=data["edge_index"],
+                        lengths=self.lengths,
+                        batch_segments=self.batch_segments,
+                        num_graphs=self.num_graphs,
+                        num_nodes=inv_features.shape[0],
+                    )
+                )
+            else:
+                electrostatic_energies = self.electrostatic_potential(
+                    partial_charges=partial_charges,
+                    senders_lr=self.senders_lr,
+                    receivers_lr=self.receivers_lr,
+                    lengths_lr=self.lengths_lr,
+                    num_nodes=inv_features.shape[0],
+                    cutoff_lr=self.r_max_lr,
+                    electrostatic_energy_scale=(
+                        self.electrostatic_energy_scale
+                    ),
+                )
         dispersion_energies = None
         if self.dispersion_energy_bool:
             hirshfeld_ratios = self.hirshfeld_output_block(

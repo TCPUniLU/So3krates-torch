@@ -37,6 +37,11 @@ ARCHITECTURE:
   use_spin_embed: true
   zbl_repulsion_bool: true
   neighborlist_format_lr: sparse
+  use_pme: false  # true = PME electrostatics for periodic systems
+  # pme_smearing: 1.2       # Ewald splitting (Å); default = r_max / 5
+  # pme_mesh_spacing: 0.6   # FFT grid spacing (Å); default = smearing / 2
+  # Run torchkrates-tune-pme to get optimal values
+  # Note: r_max_lr can be omitted when use_pme: true (electrostatics only)
   compute_avg_num_neighbors: True
 
 TRAINING:
