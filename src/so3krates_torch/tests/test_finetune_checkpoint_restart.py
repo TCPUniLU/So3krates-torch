@@ -74,9 +74,9 @@ def test_load_checkpoint_restores_epoch(tmp_path):
         config=_config(tmp_path),
     )
 
-    assert start_epoch == 8, (
-        f"Expected start_epoch=8 (saved epoch 7 + 1), got {start_epoch}"
-    )
+    assert (
+        start_epoch == 8
+    ), f"Expected start_epoch=8 (saved epoch 7 + 1), got {start_epoch}"
 
 
 def test_load_checkpoint_restores_model_weights(tmp_path):
@@ -103,9 +103,9 @@ def test_load_checkpoint_restores_model_weights(tmp_path):
     )
 
     for p_saved, p_loaded in zip(model.parameters(), new_model.parameters()):
-        assert torch.allclose(p_saved, p_loaded), (
-            "Model weights not restored from checkpoint"
-        )
+        assert torch.allclose(
+            p_saved, p_loaded
+        ), "Model weights not restored from checkpoint"
 
 
 def test_load_checkpoint_returns_zero_when_missing(tmp_path):
@@ -144,9 +144,7 @@ def test_load_checkpoint_respects_restart_latest_false(tmp_path):
         config=config,
     )
 
-    assert start_epoch == 0, (
-        "Expected start_epoch=0 when restart_latest=False"
-    )
+    assert start_epoch == 0, "Expected start_epoch=0 when restart_latest=False"
 
 
 # ---------------------------------------------------------------------------

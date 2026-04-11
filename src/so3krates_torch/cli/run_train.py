@@ -228,9 +228,7 @@ def run_training(config: dict) -> None:
     if config["TRAINING"].get("use_ewc", False):
         from so3krates_torch.tools.ewc import EWC
 
-        ewc = EWC(
-            ewc_lambda=config["TRAINING"].get("ewc_lambda", 1e6)
-        )
+        ewc = EWC(ewc_lambda=config["TRAINING"].get("ewc_lambda", 1e6))
         fisher_loader = build_ewc_fisher_loader(config)
         ewc.compute_fisher(
             model=model,
@@ -238,17 +236,11 @@ def run_training(config: dict) -> None:
             data_loader=fisher_loader,
             output_args={
                 "forces": True,
-                "virials": config["GENERAL"].get(
-                    "compute_stress", False
-                ),
-                "stress": config["GENERAL"].get(
-                    "compute_stress", False
-                ),
+                "virials": config["GENERAL"].get("compute_stress", False),
+                "stress": config["GENERAL"].get("compute_stress", False),
             },
             device=device,
-            num_samples=config["TRAINING"].get(
-                "ewc_num_fisher_samples", 1000
-            ),
+            num_samples=config["TRAINING"].get("ewc_num_fisher_samples", 1000),
         )
 
     # Setup optimizer and scheduler
