@@ -257,18 +257,22 @@ def run_training(config: dict) -> None:
     # Setup training tools
     logger, checkpoint_handler, ema = setup_training_tools(config, model)
 
-    # Load checkpoint if exists
-    start_epoch = 0
-    if not warm_start:
-        start_epoch = load_checkpoint_if_exists(
-            model=model,
-            optimizer=optimizer,
-            lr_scheduler=lr_scheduler,
-            checkpoint_handler=checkpoint_handler,
-            ema=ema,
-            device=device,
-            config=config,
-        )
+    # Load checkpoint if exists.
+    # NOTE: we intentionally do NOT gate this on warm_start.  When
+    # fine-tuning from a pretrained model, warm_start=True is set by
+    # _setup_model_for_training(), but a later restart of that
+    # fine-tuning run must still reload the training checkpoint.
+    # load_checkpoint_if_exists() handles the "no checkpoint found"
+    # case gracefully (returns 0), so removing the guard is safe.
+    start_epoch = load_checkpoint_if_exists(
+        model=model,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        checkpoint_handler=checkpoint_handler,
+        ema=ema,
+        device=device,
+        config=config,
+    )
 
     if rank == 0:
         _first_batch = next(iter(train_loader))
