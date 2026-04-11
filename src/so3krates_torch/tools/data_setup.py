@@ -863,9 +863,7 @@ def build_ewc_fisher_loader(config: dict) -> DataLoader:
     r_max = config["ARCHITECTURE"].get("r_max", None)
     r_max_lr = config["ARCHITECTURE"].get("r_max_lr", None)
     batch_size = config["TRAINING"]["batch_size"]
-    num_samples = config["TRAINING"].get(
-        "ewc_num_fisher_samples", 1000
-    )
+    num_samples = config["TRAINING"].get("ewc_num_fisher_samples", 1000)
 
     keydict = DefaultKeys.keydict()
     keydict.update(config["TRAINING"].get("keys") or {})
@@ -873,8 +871,7 @@ def build_ewc_fisher_loader(config: dict) -> DataLoader:
 
     file_format = detect_file_format(path)
     logging.info(
-        f"EWC: loading Fisher dataset from {path} "
-        f"(format={file_format})"
+        f"EWC: loading Fisher dataset from {path} " f"(format={file_format})"
     )
 
     if file_format == "hdf5_preprocessed":
@@ -891,12 +888,8 @@ def build_ewc_fisher_loader(config: dict) -> DataLoader:
     elif path.endswith((".h5", ".hdf5")):
         with h5py.File(path, "r") as _f:
             _n = int(_f.attrs["num_configs"])
-        sampled_indices = random.sample(
-            range(_n), min(num_samples, _n)
-        )
-        atoms_list = load_atoms_from_hdf5(
-            path, index=sampled_indices
-        )
+        sampled_indices = random.sample(range(_n), min(num_samples, _n))
+        atoms_list = load_atoms_from_hdf5(path, index=sampled_indices)
         data = create_data_from_list(
             atoms_list,
             r_max=r_max,
@@ -922,9 +915,7 @@ def build_ewc_fisher_loader(config: dict) -> DataLoader:
             ),
         )
     else:
-        raise ValueError(
-            f"Unsupported ewc_fisher_data file format: {path}"
-        )
+        raise ValueError(f"Unsupported ewc_fisher_data file format: {path}")
 
     return create_dataloader_from_data(
         config_list=data,
