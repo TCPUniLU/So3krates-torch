@@ -22,6 +22,7 @@ Implementation of the So3krates + SO3LR model in pytorch.
 6. Data preprocessing: `torchkrates-preprocess`
 7. HDF5 file merging: `torchkrates-merge`
 8. LAMMPS model export: `torchkrates-create-lammps-model`
+9. PME parameter tuning: `torchkrates-tune-pme`
 
 
 > [!IMPORTANT]
@@ -212,6 +213,39 @@ torchkrates-metric \
   --output_args energy forces
 ```
 
+### `torchkrates-tune-pme` — PME Parameter Tuning
+
+Find optimal PME parameters (`pme_smearing`, `pme_mesh_spacing`) for a given dataset and SR cutoff. Runs `torchpme.tuning.tune_pme()` on a representative sample of training structures and reports the median values. Requires `torch-pme` and `matscipy` to be installed.
+
+```bash
+torchkrates-tune-pme \
+    --data_path train_data.h5 \
+    --r_max 6.0 \
+    --n_samples 50 \
+    --update_config config.yaml
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--data_path` | *required* | Training dataset (`.xyz`, `.extxyz`, `.h5`/`.hdf5`) |
+| `--r_max` | *required* | SR cutoff radius in Å — must match the model's `r_max` |
+| `--n_samples` | `50` | Maximum number of periodic structures to use for tuning |
+| `--accuracy` | `1e-3` | Target accuracy for the PME error bound |
+| `--charges_key` | `None` | Key in `atoms.arrays` for partial charges (default: unit charges) |
+| `--device` | `cpu` | Device for torch tensors |
+| `--dtype` | `float64` | `float32` or `float64` |
+| `--update_config` | `None` | If given, write `pme_smearing` and `pme_mesh_spacing` to this YAML config |
+
+Example output:
+```
+PME tuning results (median over structures):
+  Electrostatics:
+    pme_smearing:     1.1842 Å
+    pme_mesh_spacing: 0.5921 Å
+```
+
+---
+
 ### `torchkrates-jax2torch` / `torchkrates-torch2jax` — Weight Conversion
 
 Convert model weights between the PyTorch and JAX (mlff) implementations. Requires `jax`, `flax`, and [`mlff`](https://github.com/thorben-frank/mlff/tree/v1.0-lrs-gems) to be installed.
@@ -297,6 +331,30 @@ These enable the physics-based long-range interactions that distinguish SO3LR fr
 | `dispersion_energy_scale` | `float` | `1.2` | Scaling factor for the dispersion energy contribution. |
 | `dispersion_energy_cutoff_lr_damping` | `float` | `None` | Damping cutoff for dispersion interactions. |
 | `neighborlist_format_lr` | `str` | `"sparse"` | Storage format for the long-range neighbor list. |
+
+#### PME Electrostatics (Particle Mesh Ewald)
+
+For periodic systems, the direct-space Coulomb sum is conditionally convergent and a cutoff scheme introduces systematic errors that worsen with smaller boxes. PME splits the 1/r sum into a real-space part (using the SR neighbor list) and a reciprocal-space FFT part that captures the long-range tail exactly. When `use_pme: true`, `r_max_lr` is no longer required for electrostatics.
+
+**Requires `torch-pme>=0.4` to be installed.** Use `torchkrates-tune-pme` to find optimal parameter values for your dataset.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `use_pme` | `bool` | `False` | Enable PME electrostatics. Replaces the direct cutoff scheme (`ElectrostaticInteraction`) with `PMEElectrostaticInteraction`. When `True`, `r_max_lr` is not required for the electrostatic contribution. |
+| `pme_smearing` | `float` | `r_max / 5` | Ewald splitting width in Å. Controls the split between real- and reciprocal-space contributions. Smaller values shift more work to the mesh but reduce real-space accuracy. Run `torchkrates-tune-pme` to find the optimal value. |
+| `pme_mesh_spacing` | `float` | `smearing / 2` | FFT grid spacing in Å. Finer grids improve reciprocal-space accuracy at higher computational cost. |
+
+Example config with PME enabled:
+```yaml
+ARCHITECTURE:
+  r_max: 6.0
+  # r_max_lr can be omitted when use_pme is true (and dispersion uses PME too)
+  use_pme: true
+  pme_smearing: 1.18       # from torchkrates-tune-pme
+  pme_mesh_spacing: 0.59
+  electrostatic_energy_bool: true
+  electrostatic_energy_scale: 4.0
+```
 
 #### Multi-Head Ensemble
 
