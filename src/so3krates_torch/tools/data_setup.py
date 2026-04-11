@@ -1,6 +1,7 @@
 import math
 import random
 import logging
+import h5py
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
@@ -843,9 +844,10 @@ def build_ewc_fisher_loader(config: dict) -> DataLoader:
 
     Loads the dataset at ``config["TRAINING"]["ewc_fisher_data"]``
     (XYZ, raw HDF5, or preprocessed HDF5), shuffles it, and returns a
-    DataLoader with the training ``batch_size``.  The caller is
-    responsible for stopping after ``ewc_num_fisher_samples`` structures
-    have been processed.
+    DataLoader with the training ``batch_size``.  Loads at most
+    ``config['TRAINING']['ewc_num_fisher_samples']`` structures (default
+    1000) into the DataLoader. ``compute_fisher()`` will iterate over
+    all of them.
 
     Parameters
     ----------
@@ -861,6 +863,9 @@ def build_ewc_fisher_loader(config: dict) -> DataLoader:
     r_max = config["ARCHITECTURE"].get("r_max", None)
     r_max_lr = config["ARCHITECTURE"].get("r_max_lr", None)
     batch_size = config["TRAINING"]["batch_size"]
+    num_samples = config["TRAINING"].get(
+        "ewc_num_fisher_samples", 1000
+    )
 
     keydict = DefaultKeys.keydict()
     keydict.update(config["TRAINING"].get("keys") or {})
@@ -881,10 +886,17 @@ def build_ewc_fisher_loader(config: dict) -> DataLoader:
         )
         indices = list(range(len(dataset)))
         random.shuffle(indices)
+        indices = indices[:num_samples]
         data = [dataset[i] for i in indices]
     elif path.endswith((".h5", ".hdf5")):
-        atoms_list = load_atoms_from_hdf5(path, index=None)
-        random.shuffle(atoms_list)
+        with h5py.File(path, "r") as _f:
+            _n = int(_f.attrs["num_configs"])
+        sampled_indices = random.sample(
+            range(_n), min(num_samples, _n)
+        )
+        atoms_list = load_atoms_from_hdf5(
+            path, index=sampled_indices
+        )
         data = create_data_from_list(
             atoms_list,
             r_max=r_max,
@@ -895,8 +907,11 @@ def build_ewc_fisher_loader(config: dict) -> DataLoader:
             ),
         )
     elif path.endswith((".xyz", ".extxyz")):
+        # XYZ has no random-access; full read is unavoidable.
+        # Large pretraining datasets should use HDF5 instead.
         atoms_list = list(read(path, index=":"))
         random.shuffle(atoms_list)
+        atoms_list = atoms_list[:num_samples]
         data = create_data_from_list(
             atoms_list,
             r_max=r_max,
