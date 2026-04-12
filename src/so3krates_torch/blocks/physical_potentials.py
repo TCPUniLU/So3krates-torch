@@ -754,6 +754,103 @@ class PMEElectrostaticInteraction(nn.Module):
         pass  # interface compatibility
 
 
+class PMEDispersionInteraction(nn.Module):
+    """C6-only dispersion energy via Particle Mesh Ewald (torch-pme).
+
+    Uses the geometric mean combination rule C6_ij = sqrt(C6_i * C6_j),
+    which factorizes as c_i * c_j with c_i = sqrt(C6_i). This is an
+    approximation to the Tkatchenko-Scheffler rule used by
+    DispersionInteraction but is required for PME factorization.
+    The NN compensates via the Hirshfeld head. C8/C10 terms are dropped;
+    C6 dominates at distances > r_max.
+
+    C6_i = C6_COEF[Z_i-1] * BOHR**6 * hirshfeld_ratio_i**2  [eV·Å^6]
+    """
+
+    def __init__(
+        self,
+        *,
+        smearing: float,
+        mesh_spacing: float,
+        interpolation_nodes: int = 4,
+    ) -> None:
+        super().__init__()
+        import torchpme  # lazy import — only required when use_pme_dispersion=True
+
+        potential = torchpme.InversePowerLawPotential(
+            exponent=6, smearing=smearing
+        )
+        self.calculator = torchpme.PMECalculator(
+            potential=potential,
+            mesh_spacing=mesh_spacing,
+            interpolation_nodes=interpolation_nodes,
+        )
+        self.register_buffer("c6_coef", C6_COEF)  # (118,), eV·Bohr^6
+
+    def forward(
+        self,
+        hirshfeld_ratios: torch.Tensor,  # (N,)
+        atomic_numbers: torch.Tensor,  # (N,)
+        positions: torch.Tensor,  # (N, 3) in Å
+        cell: torch.Tensor,  # (N_graphs, 3, 3) in Å
+        edge_index: torch.Tensor,  # (2, E_sr) — SR neighbor list
+        lengths: torch.Tensor,  # (E_sr,) in Å
+        batch_segments: torch.Tensor,  # (N,)
+        num_graphs: int,
+        num_nodes: int,
+        dispersion_energy_scale: float = 1.0,
+    ) -> torch.Tensor:  # (N, 1)
+        # Per-atom C6 in eV·Å^6
+        C6_i = (
+            self.c6_coef[atomic_numbers - 1]
+            * (BOHR**6)
+            * hirshfeld_ratios**2
+        )  # (N,)
+        c_i = torch.sqrt(C6_i.clamp(min=1e-30))  # (N,)
+
+        atomic_e = torch.zeros(
+            num_nodes,
+            1,
+            dtype=positions.dtype,
+            device=positions.device,
+        )
+        for g in range(num_graphs):
+            atom_mask = batch_segments == g
+            pos_g = positions[atom_mask]
+            c_g = c_i[atom_mask]
+            cell_g = cell[g]
+
+            edge_mask = atom_mask[edge_index[0]]
+            idx_g = edge_index[:, edge_mask]
+            d_g = lengths[edge_mask]
+
+            offset = atom_mask.nonzero(as_tuple=False)[0, 0]
+            local_idx = idx_g - offset  # (2, E_g)
+
+            # charges shape (N_g, 1); neighbor_indices shape (E_g, 2)
+            potentials_g = self.calculator.forward(
+                charges=c_g.unsqueeze(1),
+                cell=cell_g,
+                positions=pos_g,
+                neighbor_indices=local_idx.T,
+                neighbor_distances=d_g,
+            )  # (N_g, 1)
+
+            # E_i = -0.5 * scale * c_i * phi_i  (negative: attractive)
+            e_g = (
+                -0.5
+                * dispersion_energy_scale
+                * c_g.unsqueeze(1)
+                * potentials_g
+            )  # (N_g, 1)
+            atomic_e[atom_mask] = e_g
+
+        return atomic_e
+
+    def reset_output_convention(self, output_convention):
+        pass
+
+
 class DispersionInteraction(nn.Module):
     """
     Dispersion energy calculation using vdW-QDO method with Hirshfeld ratios.

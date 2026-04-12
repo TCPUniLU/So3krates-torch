@@ -42,6 +42,10 @@ ARCHITECTURE:
   # pme_mesh_spacing: 0.6   # FFT grid spacing (Å); default = smearing / 2
   # Run torchkrates-tune-pme to get optimal values
   # Note: r_max_lr can be omitted when use_pme: true (electrostatics only)
+  use_pme_dispersion: false   # true = PME C6 dispersion (geometric mean rule)
+  # pme_smearing_dispersion: 1.2      # default = r_max / 5
+  # pme_mesh_spacing_dispersion: 0.6  # default = smearing / 2
+  # Note: r_max_lr can be omitted when both use_pme and use_pme_dispersion are true
   compute_avg_num_neighbors: True
 
 TRAINING:
