@@ -785,7 +785,7 @@ class PMEDispersionInteraction(nn.Module):
             mesh_spacing=mesh_spacing,
             interpolation_nodes=interpolation_nodes,
         )
-        self.register_buffer("c6_coef", C6_COEF)  # (118,), eV·Bohr^6
+        self.register_buffer("c6_coef", C6_COEF)  # (118,), Hartree·Bohr^6
 
     def forward(
         self,
@@ -800,13 +800,16 @@ class PMEDispersionInteraction(nn.Module):
         num_nodes: int,
         dispersion_energy_scale: float = 1.0,
     ) -> torch.Tensor:  # (N, 1)
-        # Per-atom C6 in eV·Å^6
+        # Per-atom C6 in eV·Å^6.
+        # C6_COEF is in Hartree·Bohr^6 (same units as DispersionInteraction).
+        # Multiply by HARTREE (Hartree→eV) and BOHR**6 (Bohr^6→Å^6).
         C6_i = (
             self.c6_coef[atomic_numbers - 1]
+            * HARTREE
             * (BOHR**6)
             * hirshfeld_ratios**2
-        )  # (N,)
-        c_i = torch.sqrt(C6_i.clamp(min=1e-30))  # (N,)
+        )  # (N,) [eV·Å^6]
+        c_i = torch.sqrt(C6_i.clamp(min=1e-30))  # (N,) [sqrt(eV)·Å^3]
 
         atomic_e = torch.zeros(
             num_nodes,

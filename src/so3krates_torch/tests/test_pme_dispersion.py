@@ -16,6 +16,7 @@ import torch
 from so3krates_torch.blocks.physical_potentials import (
     BOHR,
     C6_COEF,
+    HARTREE,
     PMEDispersionInteraction,
 )
 
@@ -112,9 +113,8 @@ def test_pme_dispersion_sign_and_magnitude():
     )
 
     # Rough direct pairwise sum using geometric mean C6 rule (same as PME).
-    # C6_i for Ar (Z=18): C6_COEF[17] * BOHR**6 (with hirshfeld_ratio=1).
-    # Access via registered buffer to match the exact value used in forward.
-    c6_ar = pme.c6_coef[17].item() * (BOHR**6)  # eV·Å^6
+    # C6_i for Ar (Z=18): C6_COEF[17] is Hartree·Bohr^6; convert to eV·Å^6.
+    c6_ar = pme.c6_coef[17].item() * HARTREE * (BOHR**6)  # eV·Å^6
     c_ar = c6_ar**0.5  # sqrt(C6) — same "charge" as in PME path
 
     # Geometric mean: C6_ij = c_i * c_j = c_ar^2 (homogeneous system)
