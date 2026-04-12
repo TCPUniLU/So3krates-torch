@@ -30,7 +30,7 @@ def run_evaluation(
     compute_stress: bool = False,
     compute_hirshfeld: bool = False,
     compute_partial_charges: bool = False,
-    dispersion_energy_cutoff_lr_damping: float = 2.0,
+    dispersion_energy_cutoff_lr_damping: Optional[float] = None,
     energy_key: str = "REF_energy",
     forces_key: str = "REF_forces",
     stress_key: str = "REF_stress",
@@ -189,7 +189,7 @@ def main():
         "--compute_partial_charges", action="store_true", default=False
     )
     argparser.add_argument(
-        "--dispersion_energy_cutoff_lr_damping", type=float, default=2.0
+        "--dispersion_energy_cutoff_lr_damping", type=float, default=None
     )
     argparser.add_argument(
         "--energy_key", type=str, help="Energy key", default="REF_energy"
