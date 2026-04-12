@@ -5,6 +5,7 @@ optimal PME parameters (smearing, mesh_spacing) for a given r_max cutoff.
 """
 import argparse
 import logging
+import time
 import torch
 import numpy as np
 from pathlib import Path
@@ -83,8 +84,9 @@ def tune_pme_params(
     )
 
     smearings, mesh_spacings = [], []
+    t0 = time.time()
 
-    for atoms in sample:
+    for idx, atoms in enumerate(sample, 1):
         positions = torch.tensor(
             atoms.get_positions(), dtype=dtype, device=dev
         )
@@ -121,7 +123,17 @@ def tune_pme_params(
             mesh_spacings.append(mesh_params["mesh_spacing"])
         except Exception as e:
             logging.warning(f"tune_pme failed for a structure: {e}")
-            continue
+
+        elapsed = time.time() - t0
+        avg = elapsed / idx
+        eta = avg * (len(sample) - idx)
+        logging.info(
+            "[electrostatics %d/%d] elapsed %.1fs  ETA %.0fs",
+            idx,
+            len(sample),
+            elapsed,
+            eta,
+        )
 
     if not smearings:
         raise RuntimeError("tune_pme failed for all structures.")
@@ -198,8 +210,9 @@ def tune_dispersion_params(
 
     # Per-grid-point median errors across structures
     errors_per_point = {pt: [] for pt in grid}
+    t0 = time.time()
 
-    for atoms in sample:
+    for idx, atoms in enumerate(sample, 1):
         positions = torch.tensor(
             atoms.get_positions(), dtype=dtype, device=dev
         )
@@ -271,6 +284,17 @@ def tune_dispersion_params(
                     mesh_spacing_g,
                     exc,
                 )
+
+        elapsed = time.time() - t0
+        avg = elapsed / idx
+        eta = avg * (len(sample) - idx)
+        logging.info(
+            "[dispersion %d/%d] elapsed %.1fs  ETA %.0fs",
+            idx,
+            len(sample),
+            elapsed,
+            eta,
+        )
 
     # Pick coarsest (largest smearing, largest mesh_spacing) within
     # accuracy. Grid is ordered from finest to coarsest — reverse to
