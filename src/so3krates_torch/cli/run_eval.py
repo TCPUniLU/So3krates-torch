@@ -1,5 +1,6 @@
 import argparse
 import logging
+from typing import Optional
 
 from so3krates_torch.config import EvalArgs
 from so3krates_torch.data.hdf5_utils import load_atoms_from_hdf5
@@ -22,7 +23,7 @@ def run_evaluation(
     device: str = "cuda",
     batch_size: int = 5,
     model_type: str = "so3lr",
-    r_max_lr: float = 12.0,
+    r_max_lr: Optional[float] = None,
     multispecies: bool = False,
     multihead_model: bool = False,
     compute_dipole: bool = False,

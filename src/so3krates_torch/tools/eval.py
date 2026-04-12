@@ -28,7 +28,7 @@ def evaluate_model(
     batch_size: int,
     device: str,
     model_type: str,
-    r_max_lr: float = 12.0,
+    r_max_lr: Optional[float] = None,
     multi_species: bool = False,
     multihead_model: bool = False,
     dispersion_energy_cutoff_lr_damping: Optional[float] = None,
@@ -98,6 +98,15 @@ def evaluate_model(
     ], f"Unknown model type: {model_type}"
     key_spec = KeySpecification() if key_spec is None else key_spec
 
+    # Resolve r_max_lr and damping from model when not explicitly provided.
+    # PME models (use_lr=False) resolve to None → no LR neighbor list built.
+    if r_max_lr is None:
+        r_max_lr = getattr(model, "r_max_lr", None)
+    if dispersion_energy_cutoff_lr_damping is None:
+        dispersion_energy_cutoff_lr_damping = getattr(
+            model, "dispersion_energy_cutoff_lr_damping", None
+        )
+
     data_loader = create_dataloader_from_list(
         atoms_list=atoms_list,
         batch_size=batch_size,
@@ -128,10 +137,12 @@ def evaluate_model(
     mean_eqv_list: list = []
 
     if model_type == "so3lr":
-        model.r_max_lr = r_max_lr
-        model.dispersion_energy_cutoff_lr_damping = (
-            dispersion_energy_cutoff_lr_damping
-        )
+        if r_max_lr is not None:
+            model.r_max_lr = r_max_lr
+        if dispersion_energy_cutoff_lr_damping is not None:
+            model.dispersion_energy_cutoff_lr_damping = (
+                dispersion_energy_cutoff_lr_damping
+            )
     model = model.eval()
 
     n_batches = len(data_loader)
@@ -320,7 +331,7 @@ def ensemble_prediction(
     batch_size: int = 1,
     multi_species: bool = False,
     multihead_model: bool = False,
-    r_max_lr: float = 12.0,
+    r_max_lr: Optional[float] = None,
     dispersion_energy_cutoff_lr_damping: Optional[float] = None,
     compute_stress: bool = False,
     compute_hirshfeld: bool = False,
@@ -391,6 +402,15 @@ def ensemble_prediction(
     if compute_partial_charges:
         all_partial_charges = []
     key_spec = KeySpecification() if key_spec is None else key_spec
+
+    # Resolve from representative model when not explicitly provided.
+    if r_max_lr is None:
+        r_max_lr = getattr(models[0], "r_max_lr", None)
+    if dispersion_energy_cutoff_lr_damping is None:
+        dispersion_energy_cutoff_lr_damping = getattr(
+            models[0], "dispersion_energy_cutoff_lr_damping", None
+        )
+
     n_models = len(models)
     for i, model in enumerate(models):
         logger.info("ensemble_prediction: model %d/%d", i + 1, n_models)
@@ -738,7 +758,7 @@ def test_ensemble(
     total_charge_key: str = "charge",
     total_spin_key: str = "spin",
     head_key: str = "head",
-    r_max_lr: float = 12.0,
+    r_max_lr: Optional[float] = None,
     log: bool = False,
 ) -> Tuple[dict, dict]:
     """
