@@ -615,9 +615,7 @@ class SO3LR(So3krates):
         self.use_pme_dispersion = use_pme_dispersion
         if use_pme_dispersion:
             _smearing_d = pme_smearing_dispersion or self.r_max / 5.0
-            _mesh_spacing_d = (
-                pme_mesh_spacing_dispersion or _smearing_d / 2.0
-            )
+            _mesh_spacing_d = pme_mesh_spacing_dispersion or _smearing_d / 2.0
             self.pme_dispersion_potential = PMEDispersionInteraction(
                 smearing=_smearing_d,
                 mesh_spacing=_mesh_spacing_d,

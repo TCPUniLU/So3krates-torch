@@ -85,9 +85,7 @@ def test_pme_dispersion_sign_and_magnitude():
     )
 
     positions = torch.tensor(positions_np, dtype=dtype)
-    atomic_numbers = torch.tensor(
-        atoms.get_atomic_numbers(), dtype=torch.long
-    )
+    atomic_numbers = torch.tensor(atoms.get_atomic_numbers(), dtype=torch.long)
     hirshfeld_ratios = torch.ones(n, dtype=dtype)
     cell = torch.tensor(cell_np, dtype=dtype).unsqueeze(0)  # (1, 3, 3)
     edge_index = torch.tensor(edge_index_np, dtype=torch.long)
@@ -165,17 +163,13 @@ def test_pme_dispersion_gradcheck():
         mesh_spacing=_MESH_SPACING,
     )
 
-    atomic_numbers = torch.tensor(
-        atoms.get_atomic_numbers(), dtype=torch.long
-    )
+    atomic_numbers = torch.tensor(atoms.get_atomic_numbers(), dtype=torch.long)
     hirshfeld_ratios = torch.ones(n, dtype=dtype)
     cell = torch.tensor(cell_np, dtype=dtype).unsqueeze(0)  # (1, 3, 3)
     edge_index = torch.tensor(edge_index_np, dtype=torch.long)
     batch_segments = torch.zeros(n, dtype=torch.long)
 
-    positions = torch.tensor(
-        positions_np, dtype=dtype, requires_grad=True
-    )
+    positions = torch.tensor(positions_np, dtype=dtype, requires_grad=True)
 
     def energy_fn(pos):
         # Recompute lengths from current positions for gradcheck.
@@ -277,12 +271,8 @@ def test_pme_dispersion_batch_isolation():
             num_nodes=n,
         )
 
-    e_A = _call_single(
-        ar_A, pos_A_np, cell_A_np, ei_A_np, d_A_np, n_A
-    )
-    e_B = _call_single(
-        ar_B, pos_B_np, cell_B_np, ei_B_np, d_B_np, n_B
-    )
+    e_A = _call_single(ar_A, pos_A_np, cell_A_np, ei_A_np, d_A_np, n_A)
+    e_B = _call_single(ar_B, pos_B_np, cell_B_np, ei_B_np, d_B_np, n_B)
 
     # --- Batched call ---
     n_total = n_A + n_B

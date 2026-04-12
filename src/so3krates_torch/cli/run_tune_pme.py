@@ -213,12 +213,10 @@ def tune_dispersion_params(
         )
 
         # Unit Hirshfeld C6: c_i = sqrt(C6_COEF[Z_i-1] * BOHR^6)
-        C6_i = c6_coef[Z - 1] * (BOHR ** 6)
+        C6_i = c6_coef[Z - 1] * (BOHR**6)
         c_charges = torch.sqrt(C6_i.clamp(min=1e-30)).unsqueeze(1)
 
-        ni, nd = _build_sr_neighbor_list(
-            positions, cell, r_max, dev, dtype
-        )
+        ni, nd = _build_sr_neighbor_list(positions, cell, r_max, dev, dtype)
         if ni.shape[0] == 0:
             continue
 
@@ -239,13 +237,9 @@ def tune_dispersion_params(
                 neighbor_indices=ni,
                 neighbor_distances=nd,
             )
-            E_ref = float(
-                (-0.5 * c_charges * phi_ref).sum().item()
-            )
+            E_ref = float((-0.5 * c_charges * phi_ref).sum().item())
         except Exception as exc:
-            logging.warning(
-                "Reference PME failed for a structure: %s", exc
-            )
+            logging.warning("Reference PME failed for a structure: %s", exc)
             continue
 
         # Evaluate each grid point
@@ -268,9 +262,7 @@ def tune_dispersion_params(
                     neighbor_indices=ni,
                     neighbor_distances=nd,
                 )
-                E_g = float(
-                    (-0.5 * c_charges * phi_g).sum().item()
-                )
+                E_g = float((-0.5 * c_charges * phi_g).sum().item())
                 err = abs(E_g - E_ref) / N
                 errors_per_point[(sf, mf)].append(err)
             except Exception as exc:
@@ -303,9 +295,7 @@ def tune_dispersion_params(
         sf, mf = grid[0]
         errs = errors_per_point[(sf, mf)]
         chosen = (sf * r_max, (sf * r_max) * mf)
-        chosen_err = (
-            float(np.median(errs)) if errs else float("inf")
-        )
+        chosen_err = float(np.median(errs)) if errs else float("inf")
         logging.warning(
             "No grid point met accuracy=%.1e; using finest params "
             "smearing=%.4f mesh=%.4f (err=%.4f eV/atom)",
@@ -433,12 +423,12 @@ def main():
             with open(config_path) as f:
                 config = yaml.safe_load(f)
             config.setdefault("ARCHITECTURE", {})
-            config["ARCHITECTURE"][
-                "pme_smearing_dispersion"
-            ] = round(d_smearing, 6)
-            config["ARCHITECTURE"][
-                "pme_mesh_spacing_dispersion"
-            ] = round(d_mesh_spacing, 6)
+            config["ARCHITECTURE"]["pme_smearing_dispersion"] = round(
+                d_smearing, 6
+            )
+            config["ARCHITECTURE"]["pme_mesh_spacing_dispersion"] = round(
+                d_mesh_spacing, 6
+            )
             with open(config_path, "w") as f:
                 yaml.dump(config, f, default_flow_style=False)
             logging.info(
