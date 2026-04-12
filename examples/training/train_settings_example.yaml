@@ -14,7 +14,7 @@ ARCHITECTURE:
   degrees: [1,2,3,4]
   dispersion_energy_bool: true
   dispersion_energy_scale: 1.2
-  dispersion_energy_cutoff_lr_damping: 2.0
+  dispersion_energy_cutoff_lr_damping: 2.0  # required when use_pme_dispersion: false
   electrostatic_energy_bool: true
   electrostatic_energy_scale: 4.0
   energy_activation_fn: silu
@@ -37,15 +37,17 @@ ARCHITECTURE:
   use_spin_embed: true
   zbl_repulsion_bool: true
   neighborlist_format_lr: sparse
-  use_pme: false  # true = PME electrostatics for periodic systems
+  use_pme: false  # true = PME electrostatics for periodic systems (requires torch-pme)
   # pme_smearing: 1.2       # Ewald splitting (Å); default = r_max / 5
   # pme_mesh_spacing: 0.6   # FFT grid spacing (Å); default = smearing / 2
-  # Run torchkrates-tune-pme to get optimal values
-  # Note: r_max_lr can be omitted when use_pme: true (electrostatics only)
-  use_pme_dispersion: false   # true = PME C6 dispersion (geometric mean rule)
+  # Run: torchkrates-tune-pme --data train.xyz --r_max 6.0 --mode electrostatics
+  # When use_pme: true, r_max_lr is not required for electrostatics.
+  use_pme_dispersion: false  # true = PME C6 dispersion, geometric mean rule (requires torch-pme)
   # pme_smearing_dispersion: 1.2      # default = r_max / 5
   # pme_mesh_spacing_dispersion: 0.6  # default = smearing / 2
-  # Note: r_max_lr can be omitted when both use_pme and use_pme_dispersion are true
+  # Run: torchkrates-tune-pme --data train.xyz --r_max 6.0 --mode dispersion
+  # When use_pme_dispersion: true, r_max_lr and
+  # dispersion_energy_cutoff_lr_damping are not required for dispersion.
   compute_avg_num_neighbors: True
 
 TRAINING:
