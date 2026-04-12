@@ -140,6 +140,20 @@ def tune_pme_params(
 
     med_smearing = float(np.median(smearings))
     med_mesh_spacing = float(np.median(mesh_spacings))
+
+    if med_mesh_spacing > med_smearing:
+        logging.warning(
+            "Electrostatics: mesh_spacing (%.4f Å) > smearing (%.4f Å) "
+            "— the FFT mesh is coarser than the Gaussian width. "
+            "This can cause B-spline interpolation aliasing not captured "
+            "by the analytical error bound. "
+            "Consider tightening --accuracy or setting "
+            "pme_mesh_spacing = smearing / 2 (%.4f Å) manually.",
+            med_mesh_spacing,
+            med_smearing,
+            med_smearing / 2,
+        )
+
     return med_smearing, med_mesh_spacing
 
 
@@ -328,7 +342,22 @@ def tune_dispersion_params(
             chosen_err,
         )
 
-    return float(chosen[0]), float(chosen[1]), float(chosen_err)
+    d_smearing, d_mesh_spacing = float(chosen[0]), float(chosen[1])
+
+    if d_mesh_spacing > d_smearing:
+        logging.warning(
+            "Dispersion: mesh_spacing (%.4f Å) > smearing (%.4f Å) "
+            "— the FFT mesh is coarser than the Gaussian width. "
+            "This can cause B-spline interpolation aliasing not captured "
+            "by the grid scan. "
+            "Consider tightening --dispersion_accuracy or setting "
+            "pme_mesh_spacing_dispersion = smearing / 2 (%.4f Å) manually.",
+            d_mesh_spacing,
+            d_smearing,
+            d_smearing / 2,
+        )
+
+    return d_smearing, d_mesh_spacing, float(chosen_err)
 
 
 def main():
