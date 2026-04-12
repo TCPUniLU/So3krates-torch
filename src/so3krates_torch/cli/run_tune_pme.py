@@ -21,7 +21,6 @@ def _build_sr_neighbor_list(positions, cell, cutoff, device, dtype):
     cell_np = cell.cpu().numpy()
     i, j, d = neighbour_list(
         "ijd",
-        a=None,
         cutoff=cutoff,
         positions=pos_np,
         cell=cell_np,
