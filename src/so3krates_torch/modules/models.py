@@ -21,7 +21,6 @@ from so3krates_torch.blocks.physical_potentials import (
     ElectrostaticInteraction,
     DispersionInteraction,
     PMEElectrostaticInteraction,
-    PMEDispersionInteraction,
 )
 from so3krates_torch.tools import scatter
 from so3krates_torch.tools import utils
@@ -546,9 +545,6 @@ class SO3LR(So3krates):
         use_pme: bool = False,
         pme_smearing: float = None,
         pme_mesh_spacing: float = None,
-        use_pme_dispersion: bool = False,
-        pme_smearing_dispersion: Optional[float] = None,
-        pme_mesh_spacing_dispersion: Optional[float] = None,
         *args,
         **kwargs,
     ):
@@ -602,7 +598,7 @@ class SO3LR(So3krates):
             )
 
         # Dispersion
-        if self.dispersion_energy_bool and not use_pme_dispersion:
+        if self.dispersion_energy_bool:
             self.use_lr = True
         self.hirshfeld_output_block = HirshfeldOutputHead(
             num_features=self.num_features,
@@ -612,14 +608,6 @@ class SO3LR(So3krates):
         self.dispersion_potential = DispersionInteraction(
             neighborlist_format_lr=self.neighborlist_format_lr
         )
-        self.use_pme_dispersion = use_pme_dispersion
-        if use_pme_dispersion:
-            _smearing_d = pme_smearing_dispersion or self.r_max / 5.0
-            _mesh_spacing_d = pme_mesh_spacing_dispersion or _smearing_d / 2.0
-            self.pme_dispersion_potential = PMEDispersionInteraction(
-                smearing=_smearing_d,
-                mesh_spacing=_mesh_spacing_d,
-            )
 
     def load_state_dict(self, state_dict, strict=True):
         """
@@ -857,21 +845,7 @@ class SO3LR(So3krates):
                 inv_features=inv_features,
                 atomic_numbers=data["atomic_numbers"],
             )
-            if getattr(self, "use_pme_dispersion", False):
-                dispersion_energies = self.pme_dispersion_potential(
-                    hirshfeld_ratios=hirshfeld_ratios,
-                    atomic_numbers=data["atomic_numbers"],
-                    positions=self.positions,
-                    cell=self.cell,
-                    edge_index=data["edge_index"],
-                    lengths=self.lengths,
-                    batch_segments=self.batch_segments,
-                    num_graphs=self.num_graphs,
-                    num_nodes=inv_features.shape[0],
-                    dispersion_energy_scale=self.dispersion_energy_scale,
-                )
-            else:
-                dispersion_energies = self.dispersion_potential(
+            dispersion_energies = self.dispersion_potential(
                     hirshfeld_ratios=hirshfeld_ratios,
                     atomic_numbers=data["atomic_numbers"],
                     senders_lr=self.senders_lr,

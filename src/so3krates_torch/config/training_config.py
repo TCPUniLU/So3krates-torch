@@ -55,10 +55,6 @@ class ArchitectureConfig(BaseModel):
     use_pme: bool = False
     pme_smearing: Optional[float] = None
     pme_mesh_spacing: Optional[float] = None
-    # PME dispersion (C6 only, geometric mean combination rule)
-    use_pme_dispersion: bool = False
-    pme_smearing_dispersion: Optional[float] = None
-    pme_mesh_spacing_dispersion: Optional[float] = None
     compute_avg_num_neighbors: bool = True
     # Multi-head
     convert_to_multihead: bool = False
@@ -70,9 +66,7 @@ class ArchitectureConfig(BaseModel):
         electrostatics_needs_lr = (
             self.electrostatic_energy_bool and not self.use_pme
         )
-        dispersion_needs_lr = (
-            self.dispersion_energy_bool and not self.use_pme_dispersion
-        )
+        dispersion_needs_lr = self.dispersion_energy_bool
         if (
             electrostatics_needs_lr or dispersion_needs_lr
         ) and self.r_max_lr is None:
@@ -90,7 +84,6 @@ class ArchitectureConfig(BaseModel):
             )
         if (
             self.dispersion_energy_bool
-            and not self.use_pme_dispersion
             and self.dispersion_energy_cutoff_lr_damping is None
         ):
             raise ValueError(
