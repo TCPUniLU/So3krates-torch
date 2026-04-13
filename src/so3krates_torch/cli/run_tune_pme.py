@@ -73,7 +73,9 @@ def _direct_lattice_sum_c6(
     ns = torch.arange(-n_max, n_max + 1, device=device, dtype=dtype)
     grid = torch.stack(
         torch.meshgrid(ns, ns, ns, indexing="ij"), dim=-1
-    ).reshape(-1, 3)  # (M, 3) integer coords
+    ).reshape(
+        -1, 3
+    )  # (M, 3) integer coords
     zero_mask = (grid == 0).all(dim=-1)
     lattice_vecs = grid[~zero_mask] @ cell  # (M-1, 3) in Å
 
