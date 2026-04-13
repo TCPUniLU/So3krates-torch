@@ -846,16 +846,16 @@ class SO3LR(So3krates):
                 atomic_numbers=data["atomic_numbers"],
             )
             dispersion_energies = self.dispersion_potential(
-                    hirshfeld_ratios=hirshfeld_ratios,
-                    atomic_numbers=data["atomic_numbers"],
-                    senders_lr=self.senders_lr,
-                    receivers_lr=self.receivers_lr,
-                    lengths_lr=self.lengths_lr,
-                    num_nodes=inv_features.shape[0],
-                    cutoff_lr=self.r_max_lr,
-                    cutoff_lr_damping=self.dispersion_energy_cutoff_lr_damping,
-                    dispersion_energy_scale=self.dispersion_energy_scale,
-                )
+                hirshfeld_ratios=hirshfeld_ratios,
+                atomic_numbers=data["atomic_numbers"],
+                senders_lr=self.senders_lr,
+                receivers_lr=self.receivers_lr,
+                lengths_lr=self.lengths_lr,
+                num_nodes=inv_features.shape[0],
+                cutoff_lr=self.r_max_lr,
+                cutoff_lr_damping=self.dispersion_energy_cutoff_lr_damping,
+                dispersion_energy_scale=self.dispersion_energy_scale,
+            )
 
         atomic_energies = self._combine_energies(
             atomic_energies=atomic_energies,
