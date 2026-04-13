@@ -714,6 +714,9 @@ class PMEElectrostaticInteraction(nn.Module):
         num_graphs: int,
         num_nodes: int,
     ) -> torch.Tensor:  # (N, 1)
+        # PyG Batch concatenates [3,3] cells along dim 0 → [N*3,3].
+        # Restore to [N,3,3] so cell[g] yields the correct [3,3] matrix.
+        cell = cell.view(-1, 3, 3)
         atomic_e = torch.zeros(
             num_nodes,
             1,
@@ -851,6 +854,9 @@ class PMEDispersionInteraction(nn.Module):
         )  # (N,) [eV·Å^6]
         c_i = torch.sqrt(C6_i.clamp(min=1e-30))  # (N,) [sqrt(eV)·Å^3]
 
+        # PyG Batch concatenates [3,3] cells along dim 0 → [N*3,3].
+        # Restore to [N,3,3] so cell[g] yields the correct [3,3] matrix.
+        cell = cell.view(-1, 3, 3)
         atomic_e = torch.zeros(
             num_nodes,
             1,
