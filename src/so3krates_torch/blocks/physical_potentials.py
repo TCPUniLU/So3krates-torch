@@ -732,7 +732,9 @@ class PMEElectrostaticInteraction(nn.Module):
             # SR edges within graph g
             edge_mask = atom_mask[edge_index[0]]
             idx_g = edge_index[:, edge_mask]  # (2, E_g)
-            d_g = lengths[edge_mask]  # (E_g,)
+            # lengths has shape [E,1] (keepdim=True in prepare_graph);
+            # torchpme expects 1-D distances [E_g].
+            d_g = lengths[edge_mask].squeeze(-1)  # (E_g,)
 
             # Renumber to local indices 0..N_g-1
             offset = atom_mask.nonzero(as_tuple=False)[0, 0]
@@ -871,7 +873,9 @@ class PMEDispersionInteraction(nn.Module):
 
             edge_mask = atom_mask[edge_index[0]]
             idx_g = edge_index[:, edge_mask]
-            d_g = lengths[edge_mask]
+            # lengths has shape [E,1] (keepdim=True in prepare_graph);
+            # torchpme expects 1-D distances [E_g].
+            d_g = lengths[edge_mask].squeeze(-1)
 
             offset = atom_mask.nonzero(as_tuple=False)[0, 0]
             local_idx = idx_g - offset  # (2, E_g)
