@@ -754,6 +754,48 @@ class PMEElectrostaticInteraction(nn.Module):
         pass  # interface compatibility
 
 
+def _make_fixed_inverse_power_law_potential(exponent, smearing):
+    """InversePowerLawPotential with correct finite k=0 limit for p > 3.
+
+    torchpme forces lr_from_k_sq(k=0) = 0 for all potentials. For p=6
+    the correct limit is prefac * 2/3 (proportional to sigma^{-3}), which
+    is nonzero and essential for convergence of the C6 Ewald sum.
+
+    For Coulomb (p=1) the k=0 term diverges and the background charge
+    correction handles it; for C6 (p=6) there is no divergence and the
+    term must be included explicitly.
+    """
+    import torchpme
+    from torchpme.lib.math import gamma, gammaincc_over_powerlaw
+
+    class _Fixed(torchpme.InversePowerLawPotential):
+        def lr_from_k_sq(
+            self, k_sq: torch.Tensor
+        ) -> torch.Tensor:
+            peff = (3 - self.exponent) / 2
+            prefac = (
+                torch.pi ** 1.5
+                / gamma(self.exponent / 2)
+                * (2 * self.smearing ** 2) ** peff
+            )
+            x = 0.5 * self.smearing ** 2 * k_sq
+            # Replace exact zeros with a tiny positive value so that
+            # gammaincc_over_powerlaw evaluates the finite k->0 limit
+            # (2/3 for exponent=6) instead of being forced to 0.
+            masked = torch.where(
+                x == 0,
+                torch.full_like(x, 1e-15),
+                x,
+            )
+            return (
+                self.prefactor
+                * prefac
+                * gammaincc_over_powerlaw(self.exponent, masked)
+            )
+
+    return _Fixed(exponent=exponent, smearing=smearing)
+
+
 class PMEDispersionInteraction(nn.Module):
     """C6-only dispersion energy via Particle Mesh Ewald (torch-pme).
 
@@ -777,7 +819,7 @@ class PMEDispersionInteraction(nn.Module):
         super().__init__()
         import torchpme  # lazy import — only required when use_pme_dispersion=True
 
-        potential = torchpme.InversePowerLawPotential(
+        potential = _make_fixed_inverse_power_law_potential(
             exponent=6, smearing=smearing
         )
         self.calculator = torchpme.PMECalculator(
@@ -839,9 +881,11 @@ class PMEDispersionInteraction(nn.Module):
                 neighbor_distances=d_g,
             )  # (N_g, 1)
 
-            # E_i = -0.5 * scale * c_i * phi_i  (negative: attractive)
+            # E_i = -scale * c_i * phi_i  (negative: attractive)
+            # torchpme returns Vi = (1/2) * sum_j c_j v(r_ij), so the
+            # 1/2 double-counting factor is already in potentials_g.
             e_g = (
-                -0.5
+                -1.0
                 * dispersion_energy_scale
                 * c_g.unsqueeze(1)
                 * potentials_g

@@ -18,6 +18,7 @@ from so3krates_torch.blocks.physical_potentials import (
     C6_COEF,
     HARTREE,
     PMEDispersionInteraction,
+    _make_fixed_inverse_power_law_potential,
 )
 
 
@@ -325,4 +326,133 @@ def test_pme_dispersion_batch_isolation():
         f"Batch isolation failed for system B:\n"
         f"  batched: {e_batch[n_A:].squeeze().tolist()}\n"
         f"  single:  {e_B.squeeze().tolist()}"
+    )
+
+
+# ============================================================
+# Test 4: PME convergence vs exact direct lattice sum
+# ============================================================
+
+
+def test_pme_dispersion_convergence_vs_direct_sum():
+    """PME dispersion energy matches exact direct lattice sum to < 1 meV/atom.
+
+    Verifies that the k=0 Fourier-term fix and the factor-of-2 energy
+    formula fix together make PME converge to the exact C6 sum across
+    a range of smearing values (0.3, 0.4, 0.5 A) appropriate for the
+    ~11 A box of the 3x3x3 Ar FCC supercell.
+
+    Without the k=0 fix, the unfixed InversePowerLawPotential gives
+    large positive energies (e.g. +72 eV at sigma=0.5 vs E_ref=-2.83 eV)
+    due to the missing k=0 Fourier term.  With the fix: < 0.2 meV/atom.
+
+    Notes on mesh_spacing:
+      For sigma < 0.5 A, mesh_spacing=sigma/4 is not fine enough —
+      aliasing in the B-spline interpolation grows. sigma/8 is used
+      here to ensure < 1 meV/atom for all tested smearing values.
+    """
+    import torchpme
+    from ase.build import bulk
+
+    from so3krates_torch.cli.run_tune_pme import _direct_lattice_sum_c6
+
+    dtype = torch.float64
+
+    ar = bulk("Ar", "fcc", a=5.26)
+    atoms = ar.repeat((3, 3, 3))  # 27 atoms, box ~11 A
+    positions_np = atoms.positions
+    cell_np = atoms.cell.array
+    n = len(atoms)  # 27
+    cutoff = 6.0  # A
+
+    edge_index_np, lengths_np = build_nl(positions_np, cell_np, cutoff)
+
+    positions = torch.tensor(positions_np, dtype=dtype)
+    cell = torch.tensor(cell_np, dtype=dtype)  # (3, 3)
+    cell_batched = cell.unsqueeze(0)  # (1, 3, 3)
+    atomic_numbers = torch.tensor(
+        atoms.get_atomic_numbers(), dtype=torch.long
+    )
+    hirshfeld_ratios = torch.ones(n, dtype=dtype)
+    edge_index = torch.tensor(edge_index_np, dtype=torch.long)
+    lengths = torch.tensor(lengths_np, dtype=dtype)
+    batch_segments = torch.zeros(n, dtype=torch.long)
+
+    # Build c_charges for direct sum (same formula as PMEDispersionInteraction)
+    c6_ar = C6_COEF[17].item() * HARTREE * (BOHR**6)  # eV*Ang^6
+    c_charges = torch.full((n,), c6_ar**0.5, dtype=dtype)
+
+    E_ref = _direct_lattice_sum_c6(
+        positions=positions,
+        cell=cell,
+        c_charges=c_charges,
+        n_max=5,
+    )
+
+    # sigma in {0.3, 0.4, 0.5} A — realistic for an ~11 A periodic box.
+    # mesh_spacing = sigma/8 ensures aliasing errors are < 0.2 meV/atom.
+    pme_energies = {}
+    for smearing in [0.3, 0.4, 0.5]:
+        pme = PMEDispersionInteraction(
+            smearing=smearing,
+            mesh_spacing=smearing / 8,
+        )
+        atomic_e = pme(
+            hirshfeld_ratios=hirshfeld_ratios,
+            atomic_numbers=atomic_numbers,
+            positions=positions,
+            cell=cell_batched,
+            edge_index=edge_index,
+            lengths=lengths,
+            batch_segments=batch_segments,
+            num_graphs=1,
+            num_nodes=n,
+        )
+        E_pme = atomic_e.sum().item()
+        pme_energies[smearing] = E_pme
+        err_mev = abs(E_pme - E_ref) / n * 1000  # meV/atom
+        assert err_mev < 1.0, (
+            f"PME dispersion (sigma={smearing}) deviates from direct "
+            f"lattice sum by {err_mev:.3f} meV/atom (tolerance: 1.0). "
+            f"E_pme={E_pme:.6f} eV, E_ref={E_ref:.6f} eV"
+        )
+
+    # sigma-independence: energies at sigma=0.3 and sigma=0.5 must agree
+    # within 1% — they would differ by thousands of percent without the fix.
+    rel_spread = abs(
+        pme_energies[0.3] - pme_energies[0.5]
+    ) / abs(pme_energies[0.4])
+    assert rel_spread < 0.01, (
+        f"PME energy is not sigma-independent: "
+        f"E(sigma=0.3)={pme_energies[0.3]:.6f}, "
+        f"E(sigma=0.5)={pme_energies[0.5]:.6f}, "
+        f"relative spread={rel_spread:.4f} (tolerance: 0.01)"
+    )
+
+    # Regression guard: the unfixed potential gives a wrong answer
+    # (large positive energy due to missing k=0 term).
+    pot_unfixed = torchpme.InversePowerLawPotential(
+        exponent=6, smearing=0.5
+    )
+    calc_unfixed = torchpme.PMECalculator(
+        potential=pot_unfixed,
+        mesh_spacing=0.5 / 8,
+        interpolation_nodes=4,
+    )
+    phi_unfixed = calc_unfixed.forward(
+        charges=c_charges.unsqueeze(1),
+        cell=cell,
+        positions=positions,
+        neighbor_indices=edge_index.T,
+        neighbor_distances=lengths,
+    )
+    E_unfixed = float(
+        (-1.0 * c_charges.unsqueeze(1) * phi_unfixed).sum().item()
+    )
+    err_unfixed_mev = abs(E_unfixed - E_ref) / n * 1000
+    assert err_unfixed_mev > 100.0, (
+        f"Unfixed InversePowerLawPotential unexpectedly gave a correct "
+        f"answer ({err_unfixed_mev:.1f} meV/atom). The regression guard "
+        f"assumes it is very wrong (> 100 meV/atom due to missing k=0 "
+        f"term) — check whether torchpme was updated upstream."
     )

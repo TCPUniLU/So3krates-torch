@@ -269,6 +269,8 @@ def tune_dispersion_params(
     from so3krates_torch.blocks.physical_potentials import (
         C6_COEF,
         BOHR,
+        HARTREE,
+        _make_fixed_inverse_power_law_potential,
     )
 
     c6_coef = C6_COEF.to(device=dev, dtype=dtype)
@@ -295,8 +297,9 @@ def tune_dispersion_params(
             atoms.get_atomic_numbers(), dtype=torch.long, device=dev
         )
 
-        # Unit Hirshfeld C6: c_i = sqrt(C6_COEF[Z_i-1] * BOHR^6)
-        C6_i = c6_coef[Z - 1] * (BOHR**6)
+        # Unit Hirshfeld C6: c_i = sqrt(C6_COEF[Z_i-1] * HARTREE * BOHR^6)
+        # C6_COEF is in Hartree*Bohr^6; convert to eV*Ang^6.
+        C6_i = c6_coef[Z - 1] * HARTREE * (BOHR**6)
         c_charges = torch.sqrt(C6_i.clamp(min=1e-30)).unsqueeze(1)
 
         ni, nd = _build_sr_neighbor_list(positions, cell, r_max, dev, dtype)
@@ -322,7 +325,7 @@ def tune_dispersion_params(
             smearing_g = r_max * sf
             mesh_spacing_g = smearing_g * mf
             try:
-                pot_g = torchpme.InversePowerLawPotential(
+                pot_g = _make_fixed_inverse_power_law_potential(
                     exponent=6, smearing=smearing_g
                 )
                 calc_g = torchpme.PMECalculator(
@@ -337,7 +340,10 @@ def tune_dispersion_params(
                     neighbor_indices=ni,
                     neighbor_distances=nd,
                 )
-                E_g = float((-0.5 * c_charges * phi_g).sum().item())
+                # torchpme returns Vi = (1/2)*sum_j c_j*v(r_ij); the 1/2
+                # double-counting factor is already included, so E = -sum_i
+                # c_i * Vi (not -0.5 * c_i * Vi).
+                E_g = float((-1.0 * c_charges * phi_g).sum().item())
                 err = abs(E_g - E_ref) / N
                 errors_per_point[(sf, mf)].append(err)
             except Exception as exc:
