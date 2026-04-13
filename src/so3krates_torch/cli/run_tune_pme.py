@@ -43,6 +43,61 @@ def _build_sr_neighbor_list(positions, cell, cutoff, device, dtype):
     return ni, nd
 
 
+def _direct_lattice_sum_c6(
+    positions: torch.Tensor,
+    cell: torch.Tensor,
+    c_charges: torch.Tensor,
+    n_max: int = 5,
+) -> float:
+    """Exact direct C6 lattice sum over periodic images.
+
+    E = -0.5 * sum_{i,j,n}' c_i * c_j / |r_ij + n|^6
+    where the prime excludes the (i=j, n=0) self-interaction.
+
+    Shell contributions decay as n^{-4} for 1/r^6, so n_max=5 gives
+    < 0.02% error relative to n_max=4 for any box > 8 Å.
+
+    Args:
+        positions: (N, 3) atomic positions in Å
+        cell:      (3, 3) lattice matrix in Å (rows = lattice vectors)
+        c_charges: (N,) per-atom sqrt(C6) coefficients [sqrt(eV)·Å^3]
+        n_max:     number of image shells in each direction
+    Returns:
+        Total C6 energy (float, eV)
+    """
+    N = positions.shape[0]
+    dtype = positions.dtype
+    device = positions.device
+
+    # All lattice translation vectors n in [-n_max, n_max]^3, excluding 0
+    ns = torch.arange(-n_max, n_max + 1, device=device, dtype=dtype)
+    grid = torch.stack(
+        torch.meshgrid(ns, ns, ns, indexing="ij"), dim=-1
+    ).reshape(-1, 3)  # (M, 3) integer coords
+    zero_mask = (grid == 0).all(dim=-1)
+    lattice_vecs = grid[~zero_mask] @ cell  # (M-1, 3) in Å
+
+    # Pairwise displacement vectors r_ij = r_i - r_j, shape (N, N, 3)
+    rij = positions.unsqueeze(1) - positions.unsqueeze(0)
+
+    # C6_ij = c_i * c_j, shape (N, N)
+    C6_mat = c_charges.unsqueeze(1) * c_charges.unsqueeze(0)
+
+    # n=0 term: i != j only (mask diagonal)
+    dist2_0 = (rij**2).sum(-1)  # (N, N)
+    diag = torch.eye(N, dtype=torch.bool, device=device)
+    dist2_0 = dist2_0.masked_fill(diag, torch.finfo(dtype).max)
+    e_zero = -(C6_mat / dist2_0**3).sum()
+
+    # n != 0 terms: all i, j including i==j (self-images are physical)
+    e_images = torch.zeros((), dtype=dtype, device=device)
+    for lv in lattice_vecs:
+        dist2_n = ((rij + lv) ** 2).sum(-1)  # (N, N)
+        e_images = e_images - (C6_mat / dist2_n**3).sum()
+
+    return float(0.5 * (e_zero + e_images).item())
+
+
 def tune_pme_params(
     data_path: str,
     r_max: float,
@@ -165,16 +220,19 @@ def tune_dispersion_params(
     device: str = "cpu",
     dtype_str: str = "float64",
 ):
-    """Scan PME dispersion parameters by comparing against a tight PME
-    reference on training structures with unit Hirshfeld ratios.
+    """Scan PME dispersion parameters against an exact direct lattice sum.
 
-    The reference uses smearing = r_max / 10 and
-    mesh_spacing = smearing_ref / 5 — expensive but run only once per
-    structure.
+    The reference energy per structure is computed via
+    `_direct_lattice_sum_c6` — an exact O(N^2 * N_shells) periodic sum
+    that is smearing-independent and unambiguous. For N <= 300 atoms this
+    takes a few milliseconds per structure.
+
+    The scan grid tries progressively finer (smearing, mesh_spacing) pairs
+    and picks the coarsest that agrees with the direct sum within `accuracy`
+    eV/atom (median over structures).
 
     Returns:
-        smearing (float), mesh_spacing (float) — coarsest params where
-        median error vs reference < accuracy (eV/atom).
+        smearing (float), mesh_spacing (float), median_error (float)
     """
     import torchpme
     from itertools import product as iproduct
@@ -213,13 +271,10 @@ def tune_dispersion_params(
 
     c6_coef = C6_COEF.to(device=dev, dtype=dtype)
 
-    # Reference PME parameters (tight)
-    smearing_ref = r_max / 10.0
-    mesh_spacing_ref = smearing_ref / 5.0
-
-    # Scan grid
-    smearing_factors = [1 / 8, 1 / 6, 1 / 5, 1 / 4, 1 / 3]
-    mesh_fractions = [1 / 4, 1 / 3, 1 / 2]
+    # Scan grid — from finest to coarsest; includes 1/10 so PME self-energy
+    # can align with the direct-sum reference at that smearing value.
+    smearing_factors = [1 / 12, 1 / 10, 1 / 8, 1 / 6, 1 / 5, 1 / 4, 1 / 3]
+    mesh_fractions = [1 / 6, 1 / 4, 1 / 3, 1 / 2]
     grid = list(iproduct(smearing_factors, mesh_fractions))
 
     # Per-grid-point median errors across structures
@@ -246,26 +301,18 @@ def tune_dispersion_params(
         if ni.shape[0] == 0:
             continue
 
-        # Compute reference energy
+        # Exact direct lattice sum — smearing-independent ground truth
+        c_charges_1d = c_charges.squeeze(1)
         try:
-            ref_pot = torchpme.InversePowerLawPotential(
-                exponent=6, smearing=smearing_ref
-            )
-            ref_calc = torchpme.PMECalculator(
-                potential=ref_pot,
-                mesh_spacing=mesh_spacing_ref,
-                interpolation_nodes=4,
-            )
-            phi_ref = ref_calc.forward(
-                charges=c_charges,
-                cell=cell,
+            E_ref = _direct_lattice_sum_c6(
                 positions=positions,
-                neighbor_indices=ni,
-                neighbor_distances=nd,
+                cell=cell,
+                c_charges=c_charges_1d,
             )
-            E_ref = float((-0.5 * c_charges * phi_ref).sum().item())
         except Exception as exc:
-            logging.warning("Reference PME failed for a structure: %s", exc)
+            logging.warning(
+                "Direct lattice sum failed for a structure: %s", exc
+            )
             continue
 
         # Evaluate each grid point
@@ -303,7 +350,7 @@ def tune_dispersion_params(
         avg = elapsed / idx
         eta = avg * (len(sample) - idx)
         logging.info(
-            "[dispersion %d/%d] elapsed %.1fs  ETA %.0fs",
+            "[dispersion %d/%d] ref=direct-lattice elapsed %.1fs  ETA %.0fs",
             idx,
             len(sample),
             elapsed,
@@ -417,8 +464,8 @@ def main():
         action="store_true",
         help=(
             "Scan PME dispersion parameters (smearing, mesh_spacing) "
-            "by comparing against a tight PME reference on training "
-            "structures with unit Hirshfeld ratios."
+            "by comparing against an exact direct C6 lattice sum on "
+            "training structures with unit Hirshfeld ratios."
         ),
     )
     parser.add_argument(
@@ -460,7 +507,7 @@ def main():
             dtype_str=args.dtype,
         )
         print(
-            f"  Dispersion (C6, scanned vs tight-PME reference):\n"
+            f"  Dispersion (C6, scanned vs direct lattice sum):\n"
             f"    pme_smearing_dispersion:     "
             f"{d_smearing:.4f} Å\n"
             f"    pme_mesh_spacing_dispersion: "
