@@ -370,9 +370,7 @@ def test_pme_dispersion_convergence_vs_direct_sum():
     positions = torch.tensor(positions_np, dtype=dtype)
     cell = torch.tensor(cell_np, dtype=dtype)  # (3, 3)
     cell_batched = cell.unsqueeze(0)  # (1, 3, 3)
-    atomic_numbers = torch.tensor(
-        atoms.get_atomic_numbers(), dtype=torch.long
-    )
+    atomic_numbers = torch.tensor(atoms.get_atomic_numbers(), dtype=torch.long)
     hirshfeld_ratios = torch.ones(n, dtype=dtype)
     edge_index = torch.tensor(edge_index_np, dtype=torch.long)
     lengths = torch.tensor(lengths_np, dtype=dtype)
@@ -419,9 +417,9 @@ def test_pme_dispersion_convergence_vs_direct_sum():
 
     # sigma-independence: energies at sigma=0.3 and sigma=0.5 must agree
     # within 1% — they would differ by thousands of percent without the fix.
-    rel_spread = abs(
-        pme_energies[0.3] - pme_energies[0.5]
-    ) / abs(pme_energies[0.4])
+    rel_spread = abs(pme_energies[0.3] - pme_energies[0.5]) / abs(
+        pme_energies[0.4]
+    )
     assert rel_spread < 0.01, (
         f"PME energy is not sigma-independent: "
         f"E(sigma=0.3)={pme_energies[0.3]:.6f}, "
@@ -431,9 +429,7 @@ def test_pme_dispersion_convergence_vs_direct_sum():
 
     # Regression guard: the unfixed potential gives a wrong answer
     # (large positive energy due to missing k=0 term).
-    pot_unfixed = torchpme.InversePowerLawPotential(
-        exponent=6, smearing=0.5
-    )
+    pot_unfixed = torchpme.InversePowerLawPotential(exponent=6, smearing=0.5)
     calc_unfixed = torchpme.PMECalculator(
         potential=pot_unfixed,
         mesh_spacing=0.5 / 8,

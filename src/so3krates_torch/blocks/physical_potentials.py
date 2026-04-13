@@ -769,16 +769,14 @@ def _make_fixed_inverse_power_law_potential(exponent, smearing):
     from torchpme.lib.math import gamma, gammaincc_over_powerlaw
 
     class _Fixed(torchpme.InversePowerLawPotential):
-        def lr_from_k_sq(
-            self, k_sq: torch.Tensor
-        ) -> torch.Tensor:
+        def lr_from_k_sq(self, k_sq: torch.Tensor) -> torch.Tensor:
             peff = (3 - self.exponent) / 2
             prefac = (
-                torch.pi ** 1.5
+                torch.pi**1.5
                 / gamma(self.exponent / 2)
-                * (2 * self.smearing ** 2) ** peff
+                * (2 * self.smearing**2) ** peff
             )
-            x = 0.5 * self.smearing ** 2 * k_sq
+            x = 0.5 * self.smearing**2 * k_sq
             # Replace exact zeros with a tiny positive value so that
             # gammaincc_over_powerlaw evaluates the finite k->0 limit
             # (2/3 for exponent=6) instead of being forced to 0.
