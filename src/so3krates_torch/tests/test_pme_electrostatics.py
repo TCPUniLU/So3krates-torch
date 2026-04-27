@@ -1,8 +1,9 @@
-"""Tests for PMEElectrostaticInteraction.
+"""Tests for PMEElectrostaticInteraction and combined PME+dispersion mode.
 
 Tests verify correctness of the PME-based electrostatic energy against
-analytical references, gradient consistency via autograd, and correct
-batch isolation for multi-system batches.
+analytical references, gradient consistency via autograd, correct batch
+isolation for multi-system batches, and end-to-end correctness of the
+combined PME electrostatics + real-space vdW-QDO dispersion mode.
 """
 
 import numpy as np
@@ -313,4 +314,133 @@ def test_pme_batch_isolation():
         f"Batch isolation failed for system B:\n"
         f"  batched: {e_batch[n_A:].squeeze().tolist()}\n"
         f"  single:  {e_B.squeeze().tolist()}"
+    )
+
+
+# ============================================================
+# Test 4: End-to-end SO3LR with PME electrostatics + vdW-QDO
+# ============================================================
+
+
+def test_pme_electrostatics_plus_vdw_dispersion():
+    """Combined mode: PME electrostatics + real-space vdW-QDO dispersion.
+
+    Builds a minimal SO3LR with use_pme=True and dispersion_energy_bool=True
+    on an NaCl rock-salt primitive cell (2 atoms, a=5.6402 Å). The SR neighbor
+    list feeds PME; the LR neighbor list feeds the vdW-QDO dispersion potential
+    (C6+C8+C10, Tang-Toennies damping). Verifies that:
+      - The forward pass completes without error.
+      - Energy is finite and non-NaN.
+      - Forces are finite and non-NaN (autograd through both PME and dispersion).
+      - Energy is deterministic across two identical forward passes.
+    """
+    from ase.build import bulk
+    from matscipy.neighbours import neighbour_list as matscipy_nl
+    from so3krates_torch.modules.models import SO3LR
+
+    torch.set_default_dtype(torch.float64)
+    dtype = torch.float64
+    device = torch.device("cpu")
+
+    r_max = 4.5
+    r_max_lr = 8.0
+    a = 5.6402
+
+    model = SO3LR(
+        r_max=r_max,
+        r_max_lr=r_max_lr,
+        num_radial_basis_fn=8,
+        degrees=[1, 2],
+        num_features=16,
+        num_heads=2,
+        num_layers=1,
+        num_elements=20,
+        energy_regression_dim=16,
+        seed=42,
+        device=device,
+        dtype="float64",
+        use_pme=True,
+        pme_smearing=0.5,
+        pme_mesh_spacing=0.25,
+        electrostatic_energy_bool=True,
+        dispersion_energy_bool=True,
+        dispersion_energy_scale=1.2,
+        dispersion_energy_cutoff_lr_damping=2.0,
+        zbl_repulsion_bool=True,
+    )
+
+    nacl = bulk("NaCl", crystalstructure="rocksalt", a=a)
+    pos_np = nacl.positions
+    cell_np = nacl.cell.array
+
+    def _build_edges(cutoff):
+        i, j, S = matscipy_nl(
+            "ijS",
+            cutoff=cutoff,
+            positions=pos_np,
+            cell=cell_np,
+            pbc=[True, True, True],
+        )
+        edge_index = torch.tensor(
+            np.stack([i, j]), dtype=torch.long
+        )
+        shifts = torch.tensor(
+            (S @ cell_np).astype(np.float64), dtype=dtype
+        )
+        unit_shifts = torch.tensor(S.astype(np.float64), dtype=dtype)
+        return edge_index, shifts, unit_shifts
+
+    ei_sr, shifts_sr, us_sr = _build_edges(r_max)
+    ei_lr, shifts_lr, us_lr = _build_edges(r_max_lr)
+
+    # Na=11, Cl=17; use indices 10, 16 into a 20-element table
+    node_attrs = torch.zeros(2, 20, dtype=dtype)
+    node_attrs[0, 10] = 1.0
+    node_attrs[1, 16] = 1.0
+    atomic_numbers = torch.tensor([11, 17], dtype=torch.long)
+
+    positions = torch.tensor(pos_np, dtype=dtype)
+    cell = torch.tensor(cell_np, dtype=dtype)
+
+    data = {
+        "positions": positions,
+        "cell": cell,
+        "edge_index": ei_sr,
+        "edge_index_lr": ei_lr,
+        "shifts": shifts_sr,
+        "shifts_lr": shifts_lr,
+        "unit_shifts": us_sr,
+        "unit_shifts_lr": us_lr,
+        "node_attrs": node_attrs,
+        "atomic_numbers": atomic_numbers,
+        "batch": torch.zeros(2, dtype=torch.long),
+        "ptr": torch.tensor([0, 2], dtype=torch.long),
+        "total_charge": torch.zeros(1, dtype=dtype),
+        "total_spin": torch.zeros(1, dtype=dtype),
+        "weight": torch.ones(1, dtype=dtype),
+        "head": torch.zeros(2, dtype=torch.long),
+    }
+
+    # Forward pass with forces (autograd through PME + dispersion)
+    out = model(data, compute_force=True)
+
+    energy = out["energy"]
+    forces = out["forces"]
+
+    assert energy is not None, "Energy is None"
+    assert forces is not None, "Forces is None"
+    assert torch.isfinite(energy).all(), (
+        f"Energy is not finite: {energy}"
+    )
+    assert torch.isfinite(forces).all(), (
+        f"Forces contain non-finite values: {forces}"
+    )
+
+    # Determinism: second call with fresh positions tensor must match
+    positions2 = torch.tensor(pos_np, dtype=dtype)
+    data2 = dict(data)
+    data2["positions"] = positions2
+    out2 = model(data2, compute_force=False)
+    assert torch.allclose(out2["energy"], energy.detach()), (
+        "Energy is not deterministic across two identical forward passes"
     )

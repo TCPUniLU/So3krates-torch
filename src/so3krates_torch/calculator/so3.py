@@ -144,9 +144,11 @@ class TorchkratesCalculator(Calculator):
 
         if self.model_type == "so3lr":
             for model in self.models:
-                model.dispersion_energy_cutoff_lr_damping = (
-                    dispersion_energy_cutoff_lr_damping
-                )
+                if dispersion_energy_cutoff_lr_damping is not None:
+                    model.dispersion_energy_cutoff_lr_damping = (
+                        dispersion_energy_cutoff_lr_damping
+                    )
+                # else: keep the value saved in the model checkpoint
 
         for model in self.models:
             model.to(device)
