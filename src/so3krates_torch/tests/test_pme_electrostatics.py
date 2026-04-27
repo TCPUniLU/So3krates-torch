@@ -381,12 +381,8 @@ def test_pme_electrostatics_plus_vdw_dispersion():
             cell=cell_np,
             pbc=[True, True, True],
         )
-        edge_index = torch.tensor(
-            np.stack([i, j]), dtype=torch.long
-        )
-        shifts = torch.tensor(
-            (S @ cell_np).astype(np.float64), dtype=dtype
-        )
+        edge_index = torch.tensor(np.stack([i, j]), dtype=torch.long)
+        shifts = torch.tensor((S @ cell_np).astype(np.float64), dtype=dtype)
         unit_shifts = torch.tensor(S.astype(np.float64), dtype=dtype)
         return edge_index, shifts, unit_shifts
 
@@ -429,18 +425,16 @@ def test_pme_electrostatics_plus_vdw_dispersion():
 
     assert energy is not None, "Energy is None"
     assert forces is not None, "Forces is None"
-    assert torch.isfinite(energy).all(), (
-        f"Energy is not finite: {energy}"
-    )
-    assert torch.isfinite(forces).all(), (
-        f"Forces contain non-finite values: {forces}"
-    )
+    assert torch.isfinite(energy).all(), f"Energy is not finite: {energy}"
+    assert torch.isfinite(
+        forces
+    ).all(), f"Forces contain non-finite values: {forces}"
 
     # Determinism: second call with fresh positions tensor must match
     positions2 = torch.tensor(pos_np, dtype=dtype)
     data2 = dict(data)
     data2["positions"] = positions2
     out2 = model(data2, compute_force=False)
-    assert torch.allclose(out2["energy"], energy.detach()), (
-        "Energy is not deterministic across two identical forward passes"
-    )
+    assert torch.allclose(
+        out2["energy"], energy.detach()
+    ), "Energy is not deterministic across two identical forward passes"
