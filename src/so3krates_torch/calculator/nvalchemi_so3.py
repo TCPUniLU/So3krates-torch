@@ -64,9 +64,7 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
 
         self.r_sr: float = float(model.r_max)
         self.has_lr: bool = hasattr(model, "r_max_lr")
-        self.r_lr: float = (
-            float(model.r_max_lr) if self.has_lr else self.r_sr
-        )
+        self.r_lr: float = float(model.r_max_lr) if self.has_lr else self.r_sr
         self.num_elements: int = int(model.num_elements)
 
         # Pre-build one-hot lookup table: _node_emb[z] → one-hot row.
@@ -176,8 +174,8 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
         # internally as:  vectors[e] = positions[nj] - positions[ni] + shifts[e]
         # So we pass shifts (Cartesian) and unit_shifts (integer) rather than
         # pre-computed vectors. unit_shifts are needed for the stress path.
-        shifts_sr = shifts[sr_mask]         # [E_sr, 3] Cartesian
-        unit_shifts_sr = nl_shifts[sr_mask] # [E_sr, 3] integer
+        shifts_sr = shifts[sr_mask]  # [E_sr, 3] Cartesian
+        unit_shifts_sr = nl_shifts[sr_mask]  # [E_sr, 3] integer
 
         d: dict[str, Any] = {
             # One-hot via lookup table — single GPU op, no CPU round-trip
@@ -191,16 +189,16 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
             # Head index per graph (0 for single-head models)
             "head": torch.zeros(B, dtype=torch.long, device=device),
             "edge_index": edge_index_lr[:, sr_mask],  # [2, E_sr]
-            "shifts": shifts_sr,                       # [E_sr, 3]
-            "unit_shifts": unit_shifts_sr,             # [E_sr, 3]
+            "shifts": shifts_sr,  # [E_sr, 3]
+            "unit_shifts": unit_shifts_sr,  # [E_sr, 3]
             # PME and cell-dependent terms need real positions and cell
-            "positions": positions,                    # [N, 3]
-            "cell": cell,                              # [B, 3, 3]
+            "positions": positions,  # [N, 3]
+            "cell": cell,  # [B, 3, 3]
         }
         if self.has_lr:
             d["edge_index_lr"] = edge_index_lr  # [2, E_lr]
-            d["shifts_lr"] = shifts              # [E_lr, 3]
-            d["unit_shifts_lr"] = nl_shifts      # [E_lr, 3]
+            d["shifts_lr"] = shifts  # [E_lr, 3]
+            d["unit_shifts_lr"] = nl_shifts  # [E_lr, 3]
 
         return d
 

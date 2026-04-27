@@ -99,9 +99,7 @@ def test_positions_not_zeros():
     wrapper = NVAlchemiSO3LR(model)
     batch = _make_batch_with_nl(wrapper, atoms)
     d = wrapper.adapt_input(batch)
-    assert not torch.allclose(
-        d["positions"], torch.zeros_like(d["positions"])
-    )
+    assert not torch.allclose(d["positions"], torch.zeros_like(d["positions"]))
 
 
 def test_energy_forces_finite():
@@ -146,14 +144,15 @@ def test_energy_matches_ase_calc():
     out = wrapper.model(d, compute_force=True)
     e_wrap = out["energy"].item()
 
-    assert abs(e_wrap - e_ref) < 1e-4, (
-        f"Energy mismatch: wrapper={e_wrap:.6f} eV, ASE={e_ref:.6f} eV"
-    )
+    assert (
+        abs(e_wrap - e_ref) < 1e-4
+    ), f"Energy mismatch: wrapper={e_wrap:.6f} eV, ASE={e_ref:.6f} eV"
 
 
 # ---------------------------------------------------------------------------
 # Helper: build AtomicData with neighbor list set, then batch
 # ---------------------------------------------------------------------------
+
 
 def _make_batch_with_nl(wrapper: NVAlchemiSO3LR, atoms) -> Batch:
     """Build a nvalchemi Batch that includes a pre-built neighbor list."""
@@ -166,7 +165,10 @@ def _make_batch_with_nl(wrapper: NVAlchemiSO3LR, atoms) -> Batch:
     pbc_t = torch.tensor(atoms.pbc, dtype=torch.bool).unsqueeze(0)  # [1, 3]
 
     nm, _num_nb, nm_shifts = cell_list(
-        pos, wrapper.r_lr, cell=cell_t, pbc=pbc_t,
+        pos,
+        wrapper.r_lr,
+        cell=cell_t,
+        pbc=pbc_t,
         return_neighbor_list=True,
     )
     # nm: [E, 2] COO pairs, nm_shifts: [E, 3] integer image offsets
@@ -178,7 +180,7 @@ def _make_batch_with_nl(wrapper: NVAlchemiSO3LR, atoms) -> Batch:
     # AtomicData.neighbor_list expects [E, 2].
     data = data.model_copy(
         update={
-            "neighbor_list": nm.long().T,        # [E, 2]
+            "neighbor_list": nm.long().T,  # [E, 2]
             "neighbor_list_shifts": nm_shifts.float(),  # [E, 3]
         }
     )
