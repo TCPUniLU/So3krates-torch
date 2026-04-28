@@ -81,9 +81,9 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
         self.register_buffer("_node_emb", node_emb, persistent=False)
 
         self.model_config = ModelConfig(
-            outputs=frozenset({"energy", "forces"}),
-            active_outputs={"energy", "forces"},
-            autograd_outputs=frozenset({"forces"}),
+            outputs=frozenset({"energy", "forces", "stress"}),
+            active_outputs={"energy", "forces", "stress"},
+            autograd_outputs=frozenset({"forces", "stress"}),
             autograd_inputs=frozenset({"positions"}),
             required_inputs=frozenset(),
             optional_inputs=frozenset({"cell"}),
@@ -194,6 +194,9 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
             # PME and cell-dependent terms need real positions and cell
             "positions": positions,  # [N, 3]
             "cell": cell,  # [B, 3, 3]
+            # Required by electrostatic output block; zero charge / spin
+            "total_charge": torch.zeros(B, dtype=dtype, device=device),
+            "total_spin": torch.zeros(B, dtype=dtype, device=device),
         }
         if self.has_lr:
             d["edge_index_lr"] = edge_index_lr  # [2, E_lr]
@@ -208,8 +211,10 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
         data: AtomicData | Batch,
     ) -> dict[str, Any]:
         return {
-            "energy": raw_output["energy"],
+            # nvalchemi expects [B, 1]; LoggingHook squeezes to [B]
+            "energy": raw_output["energy"].unsqueeze(-1),
             "forces": raw_output["forces"],
+            "stress": raw_output["stress"],  # [B, 3, 3]
         }
 
     # ------------------------------------------------------------------
@@ -220,5 +225,5 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
         self, data: AtomicData | Batch, **kwargs: Any
     ) -> dict[str, Any]:
         model_inputs = self.adapt_input(data, **kwargs)
-        raw = self.model(model_inputs, compute_force=True)
+        raw = self.model(model_inputs, compute_force=True, compute_stress=True)
         return self.adapt_output(raw, data)

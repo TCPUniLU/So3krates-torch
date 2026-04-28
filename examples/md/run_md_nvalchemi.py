@@ -1,0 +1,305 @@
+"""NVT / NPT molecular dynamics using NVAlchemi + So3krates-torch.
+
+Runs GPU-native MD with a trained So3krates / SO3LR model.  The neighbor
+list is managed automatically by NVAlchemi's NeighborListHook.
+
+Usage (NVT)::
+
+    python run_md_nvalchemi.py \\
+        --model  model.pt \\
+        --atoms  NaCl.xyz \\
+        --ensemble nvt \\
+        --temperature 300 \\
+        --steps 10000
+
+Usage (NPT)::
+
+    python run_md_nvalchemi.py \\
+        --model  model.pt \\
+        --atoms  NaCl.xyz \\
+        --ensemble npt \\
+        --temperature 300 \\
+        --pressure 1.0 \\
+        --steps 10000
+
+CSV log columns:
+    step, graph_idx, status, energy (eV), fmax (eV/Å), temperature (K),
+    volume_A3 (Å³), density_g_cm3 (g/cm³), elapsed_s (s), s_per_step (s)
+"""
+
+from __future__ import annotations
+
+import argparse
+import time
+
+import torch
+from ase.io import read as ase_read
+
+from nvalchemi.data.atomic_data import AtomicData
+from nvalchemi.data.batch import Batch
+from nvalchemi.dynamics.base import DynamicsStage
+from nvalchemi.dynamics.hooks.logging import LoggingHook
+from nvalchemi.dynamics.integrators.npt import NPT
+from nvalchemi.dynamics.integrators.nvt_langevin import NVTLangevin
+from nvalchemi.hooks.neighbor_list import NeighborListHook
+
+from so3krates_torch.calculator.nvalchemi_so3 import NVAlchemiSO3LR
+
+# ---------------------------------------------------------------------------
+# Unit conversion constants
+# ---------------------------------------------------------------------------
+AMU_TO_G_PER_CM3 = 1.66054  # (amu/Å³) → g/cm³
+BAR_TO_EV_PER_A3 = 6.2415e-7  # bar → eV/Å³
+
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+
+
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="NVT / NPT MD with So3krates-torch + NVAlchemi"
+    )
+    p.add_argument(
+        "--model", required=True, help="Path to trained model (.pt)"
+    )
+    p.add_argument(
+        "--atoms", required=True, help="Input structure (ASE-readable)"
+    )
+    p.add_argument(
+        "--ensemble",
+        choices=["nvt", "npt"],
+        default="nvt",
+        help="Ensemble: nvt (Langevin) or npt (MTK barostat, default: nvt)",
+    )
+    p.add_argument(
+        "--temperature", type=float, default=300.0, help="Temperature [K]"
+    )
+    p.add_argument(
+        "--pressure",
+        type=float,
+        default=1.0,
+        help="Pressure [bar], NPT only (default: 1.0 bar)",
+    )
+    p.add_argument(
+        "--dt",
+        type=float,
+        default=0.5,
+        help="Time step [fs] (default: 0.5 fs)",
+    )
+    p.add_argument(
+        "--steps",
+        type=int,
+        default=10_000,
+        help="Number of MD steps (default: 10000)",
+    )
+    p.add_argument(
+        "--log-freq",
+        type=int,
+        default=100,
+        help="Log every N steps (default: 100)",
+    )
+    p.add_argument(
+        "--log-file",
+        default="md_log.csv",
+        help="Output CSV file (default: md_log.csv)",
+    )
+    p.add_argument(
+        "--device",
+        default="cuda" if torch.cuda.is_available() else "cpu",
+        help="Device: cuda or cpu (default: cuda if available)",
+    )
+    p.add_argument(
+        "--dtype",
+        choices=["float32", "float64"],
+        default="float64",
+        help="Floating-point precision (default: float64)",
+    )
+    p.add_argument(
+        "--skin",
+        type=float,
+        default=0.5,
+        help="Verlet skin distance [Å] (default: 0.5 Å)",
+    )
+    p.add_argument(
+        "--friction",
+        type=float,
+        default=1e-2,
+        help="Langevin friction coefficient [1/fs] (default: 1e-2, NVT only)",
+    )
+    p.add_argument(
+        "--barostat-time",
+        type=float,
+        default=2000.0,
+        help="NPT barostat time constant [fs] (default: 2000 fs)",
+    )
+    p.add_argument(
+        "--thermostat-time",
+        type=float,
+        default=500.0,
+        help="NPT thermostat time constant [fs] (default: 500 fs)",
+    )
+    p.add_argument(
+        "--pressure-coupling",
+        choices=["isotropic", "anisotropic", "triclinic"],
+        default="isotropic",
+        help="NPT pressure coupling mode (default: isotropic)",
+    )
+    return p.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Model loading
+# ---------------------------------------------------------------------------
+
+
+def load_model(path: str, device: str, dtype: torch.dtype) -> NVAlchemiSO3LR:
+    raw = torch.load(path, map_location=device, weights_only=False)
+    if isinstance(raw, dict) and "model" in raw:
+        raw = raw["model"]
+    wrapper = NVAlchemiSO3LR(raw).to(device=device, dtype=dtype)
+    wrapper.eval()
+    return wrapper
+
+
+# ---------------------------------------------------------------------------
+# Hooks
+# ---------------------------------------------------------------------------
+
+
+def _make_hooks(
+    model: NVAlchemiSO3LR,
+    skin: float,
+    log_file: str,
+    log_freq: int,
+    start_time_ref: list[float],
+) -> list:
+    nl_hook = NeighborListHook(
+        config=model.model_config.neighbor_config,
+        skin=skin,
+        stage=DynamicsStage.BEFORE_COMPUTE,
+    )
+
+    def _volume(ctx):
+        # ctx.batch.cell: [B, 3, 3]
+        return torch.abs(torch.linalg.det(ctx.batch.cell))  # [B] Å³
+
+    def _density(ctx):
+        cell = ctx.batch.cell
+        vol = torch.abs(torch.linalg.det(cell))  # [B] Å³
+        mass = torch.zeros(
+            ctx.batch.num_graphs,
+            dtype=cell.dtype,
+            device=cell.device,
+        )
+        mass.index_add_(0, ctx.batch.batch_idx, ctx.batch.atomic_masses)
+        return mass / vol * AMU_TO_G_PER_CM3  # [B] g/cm³
+
+    def _elapsed(ctx) -> float:
+        return time.perf_counter() - start_time_ref[0]
+
+    def _s_per_step(ctx) -> float:
+        step = max(ctx.step_count, 1)
+        return _elapsed(ctx) / step
+
+    log_hook = LoggingHook(
+        backend="csv",
+        log_path=log_file,
+        frequency=log_freq,
+        custom_scalars={
+            "volume_A3": _volume,
+            "density_g_cm3": _density,
+            "elapsed_s": _elapsed,
+            "s_per_step": _s_per_step,
+        },
+    )
+    return [nl_hook, log_hook]
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    args = _parse_args()
+    dtype = torch.float64 if args.dtype == "float64" else torch.float32
+
+    print(f"Loading model from {args.model} …")
+    model = load_model(args.model, args.device, dtype)
+    print(
+        f"  r_max={model.r_sr:.2f} Å"
+        + (f"  r_max_lr={model.r_lr:.2f} Å" if model.has_lr else "")
+    )
+
+    print(f"Reading structure from {args.atoms} …")
+    atoms = ase_read(args.atoms)
+    print(
+        f"  {len(atoms)} atoms  cell={'periodic' if any(atoms.pbc) else 'cluster'}"
+    )
+
+    data = AtomicData.from_atoms(atoms, device=args.device, dtype=dtype)
+    # Initialise forces, energy, and stress to zeros so compute() can
+    # write back to the batch in-place; real values fill at BEFORE_COMPUTE.
+    data = data.model_copy(
+        update={
+            "forces": torch.zeros(
+                len(atoms), 3, dtype=dtype, device=args.device
+            ),
+            "energy": torch.zeros(1, 1, dtype=dtype, device=args.device),
+            "stress": torch.zeros(1, 3, 3, dtype=dtype, device=args.device),
+        }
+    )
+    batch = Batch.from_data_list([data])
+
+    # start_time_ref is a mutable list so the closure in _make_hooks can
+    # share the value that is set just before integrator.run().
+    start_time_ref: list[float] = [0.0]
+    hooks = _make_hooks(
+        model, args.skin, args.log_file, args.log_freq, start_time_ref
+    )
+
+    # dt, friction, barostat_time, thermostat_time are all in fs
+    if args.ensemble == "nvt":
+        integrator = NVTLangevin(
+            model=model,
+            dt=args.dt,
+            temperature=args.temperature,
+            friction=args.friction,
+            n_steps=args.steps,
+            hooks=hooks,
+        )
+    else:
+        integrator = NPT(
+            model=model,
+            dt=args.dt,
+            temperature=args.temperature,
+            pressure=args.pressure * BAR_TO_EV_PER_A3,
+            barostat_time=args.barostat_time,
+            thermostat_time=args.thermostat_time,
+            pressure_coupling=args.pressure_coupling,
+            n_steps=args.steps,
+            hooks=hooks,
+        )
+
+    print(
+        f"\nRunning {args.ensemble.upper()}: {args.steps} steps  "
+        f"T={args.temperature} K  dt={args.dt} fs"
+        + (f"  P={args.pressure} bar" if args.ensemble == "npt" else "")
+    )
+    print(f"Logging every {args.log_freq} steps → {args.log_file}\n")
+
+    start_time_ref[0] = time.perf_counter()
+    batch = integrator.run(batch)
+    total = time.perf_counter() - start_time_ref[0]
+
+    print(
+        f"\nDone in {total:.1f} s  "
+        f"({total / args.steps * 1000:.2f} ms/step).\n"
+        f"Log written to {args.log_file}"
+    )
+
+
+if __name__ == "__main__":
+    main()
