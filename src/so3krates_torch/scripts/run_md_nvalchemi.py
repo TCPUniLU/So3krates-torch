@@ -30,6 +30,7 @@ CSV log columns:
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 
 import torch
@@ -38,7 +39,7 @@ from ase.io import read as ase_read
 from nvalchemi.data.atomic_data import AtomicData
 from nvalchemi.data.batch import Batch
 from nvalchemi.dynamics.base import DynamicsStage
-from nvalchemi.dynamics.hooks.logging import LoggingHook
+from nvalchemi.dynamics.hooks.logging import LoggingHook, temperature_per_graph
 from nvalchemi.dynamics.integrators.npt import NPT
 from nvalchemi.dynamics.integrators.nvt_langevin import NVTLangevin
 from nvalchemi.hooks.neighbor_list import NeighborListHook
@@ -167,12 +168,94 @@ def load_model(path: str, device: str, dtype: torch.dtype) -> NVAlchemiSO3LR:
 # Hooks
 # ---------------------------------------------------------------------------
 
+_HDR_NVT = (
+    f"{'step':>8}  {'time/ps':>8}  {'energy/eV':>12}"
+    f"  {'T/K':>8}  {'elapsed/s':>10}  {'ms/step':>8}"
+)
+_HDR_NPT = (
+    f"{'step':>8}  {'time/ps':>8}  {'energy/eV':>12}  {'T/K':>8}"
+    f"  {'vol/Å³':>10}  {'dens/gcc':>9}  {'elapsed/s':>10}  {'ms/step':>8}"
+)
+_DIV_NVT = "-" * 72
+_DIV_NPT = "-" * 90
+
+
+class _PrintHook:
+    """Prints a live table row to stdout at each log step."""
+
+    def __init__(
+        self,
+        frequency: int,
+        dt_fs: float,
+        ensemble: str,
+        start_time_ref: list[float],
+    ) -> None:
+        self.frequency = frequency
+        self.stage = DynamicsStage.AFTER_STEP
+        self._dt_fs = dt_fs
+        self._npt = ensemble == "npt"
+        self._start = start_time_ref
+        self._header_done = False
+
+    def _header(self) -> None:
+        div = _DIV_NPT if self._npt else _DIV_NVT
+        print(div)
+        print(_HDR_NPT if self._npt else _HDR_NVT)
+        print(div)
+        self._header_done = True
+
+    def __call__(self, ctx, stage) -> None:  # noqa: ARG002
+        if not self._header_done:
+            self._header()
+
+        batch = ctx.batch
+        step = int(ctx.step_count)
+        time_ps = step * self._dt_fs * 1e-3
+        energy = float(batch.energy.squeeze())
+        elapsed = time.perf_counter() - self._start[0]
+        ms = elapsed / max(step, 1) * 1000
+
+        temp = float(
+            temperature_per_graph(
+                batch.velocities,
+                batch.atomic_masses,
+                batch.batch_idx,
+                batch.num_graphs,
+                batch.num_nodes_per_graph,
+            )[0]
+        )
+
+        if self._npt:
+            cell = batch.cell
+            vol = float(torch.abs(torch.linalg.det(cell))[0])
+            mass = torch.zeros(
+                batch.num_graphs,
+                dtype=cell.dtype,
+                device=cell.device,
+            )
+            mass.index_add_(0, batch.batch_idx, batch.atomic_masses)
+            dens = float(mass[0] / vol * AMU_TO_G_PER_CM3)
+            row = (
+                f"{step:>8d}  {time_ps:>8.3f}  {energy:>12.4f}"
+                f"  {temp:>8.2f}  {vol:>10.2f}  {dens:>9.4f}"
+                f"  {elapsed:>10.1f}  {ms:>8.1f}"
+            )
+        else:
+            row = (
+                f"{step:>8d}  {time_ps:>8.3f}  {energy:>12.4f}"
+                f"  {temp:>8.2f}  {elapsed:>10.1f}  {ms:>8.1f}"
+            )
+
+        print(row, flush=True)
+
 
 def _make_hooks(
     model: NVAlchemiSO3LR,
     skin: float,
     log_file: str,
     log_freq: int,
+    dt_fs: float,
+    ensemble: str,
     start_time_ref: list[float],
 ) -> list:
     nl_hook = NeighborListHook(
@@ -182,7 +265,6 @@ def _make_hooks(
     )
 
     def _volume(ctx):
-        # ctx.batch.cell: [B, 3, 3]
         return torch.abs(torch.linalg.det(ctx.batch.cell))  # [B] Å³
 
     def _density(ctx):
@@ -214,7 +296,8 @@ def _make_hooks(
             "s_per_step": _s_per_step,
         },
     )
-    return [nl_hook, log_hook]
+    print_hook = _PrintHook(log_freq, dt_fs, ensemble, start_time_ref)
+    return [nl_hook, log_hook, print_hook]
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +340,13 @@ def main() -> None:
     # share the value that is set just before integrator.run().
     start_time_ref: list[float] = [0.0]
     hooks = _make_hooks(
-        model, args.skin, args.log_file, args.log_freq, start_time_ref
+        model,
+        args.skin,
+        args.log_file,
+        args.log_freq,
+        args.dt,
+        args.ensemble,
+        start_time_ref,
     )
 
     # dt, friction, barostat_time, thermostat_time are all in fs
