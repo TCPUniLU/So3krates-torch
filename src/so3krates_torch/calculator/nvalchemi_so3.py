@@ -63,7 +63,9 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
         self._cached_dtype: torch.dtype = next(model.parameters()).dtype
 
         self.r_sr: float = float(model.r_max)
-        self.has_lr: bool = hasattr(model, "r_max_lr")
+        self.has_lr: bool = (
+            hasattr(model, "r_max_lr") and model.r_max_lr is not None
+        )
         self.r_lr: float = float(model.r_max_lr) if self.has_lr else self.r_sr
         self.num_elements: int = int(model.num_elements)
 
