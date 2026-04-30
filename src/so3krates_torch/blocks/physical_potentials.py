@@ -728,6 +728,14 @@ class PMEElectrostaticInteraction(nn.Module):
             pos_g = positions[atom_mask]  # (N_g, 3)
             q_g = partial_charges[atom_mask]  # (N_g,)
             cell_g = cell[g]  # (3, 3)
+            if cell_g.abs().sum() == 0:
+                raise ValueError(
+                    "PME electrostatics requires periodic boundary "
+                    "conditions, but the cell for graph "
+                    f"{g} is all zeros (non-periodic system). "
+                    "Either set pbc=True and provide a cell, or "
+                    "use use_pme=False for non-periodic systems."
+                )
 
             # SR edges within graph g
             edge_mask = atom_mask[edge_index[0]]
