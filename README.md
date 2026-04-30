@@ -344,7 +344,7 @@ For periodic systems, the direct-space Coulomb sum is conditionally convergent a
 **Limitations:**
 - PME requires **periodic boundary conditions** (`pbc=True` on all axes). Calling a PME model on a non-periodic system raises a `ValueError`.
 - The PME sum assumes **charge neutrality** (total charge ≈ 0). Non-neutral systems produce a conditionally-convergent result that depends on the background charge convention.
-- PME models are **incompatible with the LAMMPS ML-IAP interface** (LAMMPS passes edge vectors, not absolute positions). Use the ASE calculator or the `nvalchemi` MD script for PME production runs.
+- PME models are **incompatible with the LAMMPS ML-IAP interface** (LAMMPS passes edge vectors, not absolute positions). Use the ASE calculator for PME production runs.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|

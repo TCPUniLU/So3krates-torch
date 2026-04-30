@@ -50,13 +50,11 @@ dependencies = [
     "torch-ema>=0.3.0",
     "torch-geometric==2.7.0",
     "torchmetrics>=1.0.0",
-    "torchvision>=0.21.0",
-    "torchaudio>=2.6.0",
-    "torch-pme>=0.4",
 ]
 
 [project.optional-dependencies]
 dev = ["pre-commit", "pytest"]
+pme = ["torch-pme>=0.4"]
 slurm = ["python-hostlist"]
 jax = ["jax", "flax", "ml-collections"]
 vis = ["matplotlib>=3.5.0", "pandas>=1.5.0"]

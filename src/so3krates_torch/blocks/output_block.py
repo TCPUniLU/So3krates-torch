@@ -168,7 +168,7 @@ class AtomicEnergyOutputHead(nn.Module):
 
         atomic_energies = self.final_layer(inv_features)
         if self.final_non_linearity:
-            atomic_energies = self.non_linearity(inv_features)
+            atomic_energies = self.non_linearity(atomic_energies)
 
         one_hot = data["node_attrs"]
         atomic_number_idx = torch.argmax(one_hot, dim=1)

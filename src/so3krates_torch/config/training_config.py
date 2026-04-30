@@ -13,6 +13,8 @@ class GeneralConfig(BaseModel):
         "float32", "float64", "float16", "bfloat16"
     ] = "float64"
     seed: int = 100
+    # inference-only: stress is computed during evaluation but has no
+    # loss weight and is never used as a training target
     compute_stress: bool = False
 
 

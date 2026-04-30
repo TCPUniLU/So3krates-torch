@@ -1,6 +1,5 @@
 import logging
 import os
-import sys
 import time
 from contextlib import contextmanager
 from typing import Dict, List, Tuple
@@ -186,8 +185,8 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
                 "wrong results. Use the ASE calculator for PME models."
             )
         if self.use_lr:
-            # Request neighbor list at r_max_lr so we get all
-            # pairs needed for long-range interactions.
+            # rcutfac is the LAMMPS half-cutoff (rcut = 2*rcutfac).
+            # Request the LR cutoff so all long-range pairs are included.
             self.rcutfac = 0.5 * float(model.r_max_lr)
             self.r_max_sr = float(model.r_max)
         else:
@@ -359,8 +358,7 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
         if self.step == self.config.profile_end_step:
             logging.info(f"Stopping CUDA profiler at step {self.step}")
             torch.cuda.profiler.stop()
-            logging.info("Profiling complete. Exiting.")
-            sys.exit()
+            self.config.debug_profile = False
 
     def compute_descriptors(self, data):
         pass
