@@ -51,6 +51,10 @@ class ArchitectureConfig(BaseModel):
     dispersion_energy_scale: float = 1.2
     dispersion_energy_cutoff_lr_damping: Optional[float] = None
     neighborlist_format_lr: str = "sparse"
+    # PME electrostatics
+    use_pme: bool = False
+    pme_smearing: Optional[float] = None
+    pme_mesh_spacing: Optional[float] = None
     compute_avg_num_neighbors: bool = True
     # Multi-head
     convert_to_multihead: bool = False
@@ -59,21 +63,28 @@ class ArchitectureConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_long_range(self):
+        electrostatics_needs_lr = (
+            self.electrostatic_energy_bool and not self.use_pme
+        )
+        dispersion_needs_lr = self.dispersion_energy_bool
         if (
-            self.electrostatic_energy_bool or self.dispersion_energy_bool
+            electrostatics_needs_lr or dispersion_needs_lr
         ) and self.r_max_lr is None:
             raise ValueError(
                 "Long-range cutoff 'r_max_lr' must be specified "
                 "when electrostatic_energy_bool or "
-                "dispersion_energy_bool is True. "
+                "dispersion_energy_bool is True (and the "
+                "corresponding PME flag is False). "
                 f"Current: r_max_lr={self.r_max_lr}, "
                 f"electrostatic_energy_bool="
                 f"{self.electrostatic_energy_bool}, "
+                f"use_pme={self.use_pme}, "
                 f"dispersion_energy_bool="
                 f"{self.dispersion_energy_bool}"
             )
-        if self.dispersion_energy_bool and (
-            self.dispersion_energy_cutoff_lr_damping is None
+        if (
+            self.dispersion_energy_bool
+            and self.dispersion_energy_cutoff_lr_damping is None
         ):
             raise ValueError(
                 "dispersion_energy_cutoff_lr_damping must be "

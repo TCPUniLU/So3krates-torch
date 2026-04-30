@@ -25,12 +25,17 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
     electrostatic_bool = arch_config.get("electrostatic_energy_bool", True)
     dispersion_bool = arch_config.get("dispersion_energy_bool", True)
 
-    if (electrostatic_bool or dispersion_bool) and r_max_lr is None:
+    use_pme = arch_config.get("use_pme", False)
+    electrostatics_needs_lr = electrostatic_bool and not use_pme
+    dispersion_needs_lr = dispersion_bool
+    if (electrostatics_needs_lr or dispersion_needs_lr) and r_max_lr is None:
         raise ValueError(
             "Long-range cutoff 'r_max_lr' must be specified when "
-            "electrostatic_energy_bool or dispersion_energy_bool is True. "
+            "electrostatic_energy_bool or dispersion_energy_bool "
+            "is True (and the corresponding PME flag is False). "
             f"Current: r_max_lr={r_max_lr}, "
             f"electrostatic_energy_bool={electrostatic_bool}, "
+            f"use_pme={use_pme}, "
             f"dispersion_energy_bool={dispersion_bool}"
         )
 
@@ -106,6 +111,9 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
             "dispersion_energy_cutoff_lr_damping", None
         ),
         "r_max_lr": arch_config.get("r_max_lr", None),
+        "use_pme": arch_config.get("use_pme", False),
+        "pme_smearing": arch_config.get("pme_smearing", None),
+        "pme_mesh_spacing": arch_config.get("pme_mesh_spacing", None),
         "neighborlist_format_lr": arch_config.get(
             "neighborlist_format_lr", "sparse"
         ),

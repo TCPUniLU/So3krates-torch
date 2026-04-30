@@ -61,7 +61,7 @@ def main():
         "--dispersion_energy_cutoff_lr_damping",
         type=float,
         help="Dispersion energy cutoff for long-range potentials",
-        default=2.0,
+        default=None,
     )
     parser.add_argument(
         "--energy_key", type=str, help="Energy key", default="REF_energy"

@@ -1,5 +1,6 @@
 import argparse
 import logging
+from typing import Optional
 
 from so3krates_torch.config import EvalArgs
 from so3krates_torch.data.hdf5_utils import load_atoms_from_hdf5
@@ -22,14 +23,14 @@ def run_evaluation(
     device: str = "cuda",
     batch_size: int = 5,
     model_type: str = "so3lr",
-    r_max_lr: float = 12.0,
+    r_max_lr: Optional[float] = None,
     multispecies: bool = False,
     multihead_model: bool = False,
     compute_dipole: bool = False,
     compute_stress: bool = False,
     compute_hirshfeld: bool = False,
     compute_partial_charges: bool = False,
-    dispersion_energy_cutoff_lr_damping: float = 2.0,
+    dispersion_energy_cutoff_lr_damping: Optional[float] = None,
     energy_key: str = "REF_energy",
     forces_key: str = "REF_forces",
     stress_key: str = "REF_stress",
@@ -188,7 +189,7 @@ def main():
         "--compute_partial_charges", action="store_true", default=False
     )
     argparser.add_argument(
-        "--dispersion_energy_cutoff_lr_damping", type=float, default=2.0
+        "--dispersion_energy_cutoff_lr_damping", type=float, default=None
     )
     argparser.add_argument(
         "--energy_key", type=str, help="Energy key", default="REF_energy"

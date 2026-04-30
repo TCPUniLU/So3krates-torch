@@ -19,7 +19,7 @@ class EvalArgs(BaseModel):
     compute_stress: bool = False
     compute_hirshfeld: bool = False
     compute_partial_charges: bool = False
-    dispersion_energy_cutoff_lr_damping: float = 2.0
+    dispersion_energy_cutoff_lr_damping: Optional[float] = None
     energy_key: str = "REF_energy"
     forces_key: str = "REF_forces"
     stress_key: str = "REF_stress"
@@ -79,7 +79,7 @@ class MetricArgs(BaseModel):
     log_file: str = "test_ensemble.log"
     results_file: str = "ensemble_test_results.npz"
     r_max_lr: Optional[float] = None
-    dispersion_energy_cutoff_lr_damping: float = 2.0
+    dispersion_energy_cutoff_lr_damping: Optional[float] = None
     energy_key: str = "REF_energy"
     forces_key: str = "REF_forces"
     stress_key: str = "REF_stress"
