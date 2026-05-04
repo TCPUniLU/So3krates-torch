@@ -252,16 +252,6 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
                     data, atom_energies, pair_forces, natoms
                 )
 
-            # Release PyTorch's cached GPU memory back to CUDA so Kokkos
-            # can allocate rij/pair_i/pair_j for the next step. Without
-            # this, PyTorch's caching allocator holds nearly all device
-            # memory and Kokkos OOMs even on large GPUs.
-            if (
-                isinstance(self.device, torch.device)
-                and self.device.type != "cpu"
-            ):
-                torch.cuda.empty_cache()
-
     def _prepare_batch(self, data, natoms, nghosts, species):
         """Build input dictionary from LAMMPS data structures.
 
