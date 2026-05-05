@@ -441,9 +441,7 @@ def test_weighted_mse_charges(mock_batch_for_loss):
     for i, g_idx in enumerate(batch.batch.tolist()):
         weight = batch.weight[g_idx].item()
         ch_weight = batch.charges_weight[g_idx].item()
-        diff_sq = (
-            (batch.charges[i] - pred["partial_charges"][i]) ** 2
-        ).item()
+        diff_sq = ((batch.charges[i] - pred["partial_charges"][i]) ** 2).item()
         raw_loss.append(weight * ch_weight * diff_sq)
 
     expected = sum(raw_loss) / len(raw_loss)
