@@ -11,10 +11,13 @@ from so3krates_torch.modules.loss import (
     mean_squared_error_forces,
     weighted_mean_squared_error_dipole,
     weighted_mean_squared_error_hirshfeld,
+    weighted_mean_squared_error_charges,
     WeightedEnergyForcesLoss,
     WeightedEnergyForcesDipoleLoss,
     WeightedEnergyForcesHirshfeldLoss,
     WeightedEnergyForcesDipoleHirshfeldLoss,
+    WeightedEnergyForcesChargesLoss,
+    WeightedEnergyForcesChargesHirshfeldLoss,
 )
 
 
@@ -418,4 +421,95 @@ def test_WeightedEnergyForcesDipoleHirshfeldLoss(mock_batch_for_loss):
     )
     loss = loss_fn(batch, pred, ddp=False)
     expected = loss_energy + loss_forces + loss_dipole
+    assert torch.allclose(loss, expected, atol=1e-6)
+
+
+def test_weighted_mse_charges(mock_batch_for_loss):
+    """Verify charge loss broadcasts per-graph weights correctly to atoms.
+
+    Graph 0 (3 atoms): weight=1.0, charges_weight=1.0
+    Graph 1 (4 atoms): weight=2.0, charges_weight=2.0
+    pred = ref * 0.5 so diff^2 = (ref * 0.5)^2 = ref^2 * 0.25
+    Mean over 7 atom-level terms.
+    """
+    batch = mock_batch_for_loss
+    pred = {"partial_charges": batch.charges * 0.5}
+
+    loss = weighted_mean_squared_error_charges(batch, pred, ddp=False)
+
+    raw_loss = []
+    for i, g_idx in enumerate(batch.batch.tolist()):
+        weight = batch.weight[g_idx].item()
+        ch_weight = batch.charges_weight[g_idx].item()
+        diff_sq = (
+            (batch.charges[i] - pred["partial_charges"][i]) ** 2
+        ).item()
+        raw_loss.append(weight * ch_weight * diff_sq)
+
+    expected = sum(raw_loss) / len(raw_loss)
+    assert torch.allclose(loss, torch.tensor(expected), atol=1e-6)
+
+
+def test_weighted_mse_charges_zero_when_equal(mock_batch_for_loss):
+    """Verify charge loss is zero when pred matches ref."""
+    batch = mock_batch_for_loss
+    pred = {"partial_charges": batch.charges.clone()}
+    loss = weighted_mean_squared_error_charges(batch, pred, ddp=False)
+    assert torch.allclose(loss, torch.tensor(0.0), atol=1e-8)
+
+
+def test_WeightedEnergyForcesChargesLoss(mock_batch_for_loss):
+    """Verify charges loss class sums energy + forces + charges correctly."""
+    batch = mock_batch_for_loss
+    pred = {
+        "energy": torch.tensor([8.0, 16.0]),
+        "forces": torch.zeros_like(batch.forces),
+        "partial_charges": batch.charges * 0.5,
+    }
+
+    loss_energy = weighted_mean_squared_error_energy(batch, pred, ddp=False)
+    loss_forces = mean_squared_error_forces(batch, pred, ddp=False)
+    loss_charges = weighted_mean_squared_error_charges(batch, pred, ddp=False)
+
+    loss_fn = WeightedEnergyForcesChargesLoss(
+        energy_weight=1.0, forces_weight=1.0, charges_weight=1.0
+    )
+    loss = loss_fn(batch, pred, ddp=False)
+    expected = loss_energy + loss_forces + loss_charges
+    assert torch.allclose(loss, expected, atol=1e-6)
+
+    # Zero charges_weight excludes charges term
+    loss_fn = WeightedEnergyForcesChargesLoss(
+        energy_weight=1.0, forces_weight=1.0, charges_weight=0.0
+    )
+    loss = loss_fn(batch, pred, ddp=False)
+    expected = loss_energy + loss_forces
+    assert torch.allclose(loss, expected, atol=1e-6)
+
+
+def test_WeightedEnergyForcesChargesHirshfeldLoss(mock_batch_for_loss):
+    """Verify four-component charges+hirshfeld loss."""
+    batch = mock_batch_for_loss
+    pred = {
+        "energy": torch.tensor([8.0, 16.0]),
+        "forces": torch.zeros_like(batch.forces),
+        "partial_charges": batch.charges * 0.5,
+        "hirshfeld_ratios": batch.hirshfeld_ratios * 0.5,
+    }
+
+    loss_energy = weighted_mean_squared_error_energy(batch, pred, ddp=False)
+    loss_forces = mean_squared_error_forces(batch, pred, ddp=False)
+    loss_charges = weighted_mean_squared_error_charges(batch, pred, ddp=False)
+    loss_hirshfeld = weighted_mean_squared_error_hirshfeld(
+        batch, pred, ddp=False
+    )
+
+    loss_fn = WeightedEnergyForcesChargesHirshfeldLoss(
+        energy_weight=1.0,
+        forces_weight=1.0,
+        charges_weight=1.0,
+        hirshfeld_weight=1.0,
+    )
+    loss = loss_fn(batch, pred, ddp=False)
+    expected = loss_energy + loss_forces + loss_charges + loss_hirshfeld
     assert torch.allclose(loss, expected, atol=1e-6)

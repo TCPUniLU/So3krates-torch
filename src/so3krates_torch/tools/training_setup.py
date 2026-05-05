@@ -8,6 +8,8 @@ from so3krates_torch.modules.loss import (
     WeightedEnergyForcesDipoleLoss,
     WeightedEnergyForcesHirshfeldLoss,
     WeightedEnergyForcesDipoleHirshfeldLoss,
+    WeightedEnergyForcesChargesLoss,
+    WeightedEnergyForcesChargesHirshfeldLoss,
 )
 from so3krates_torch.tools.checkpoint import (
     CheckpointHandler,
@@ -26,6 +28,7 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
     forces_w = loss_config.get("forces_weight", 1000.0)
     dipole_w = loss_config.get("dipole_weight", 0.0)
     hirshfeld_w = loss_config.get("hirshfeld_weight", 0.0)
+    charges_w = loss_config.get("charges_weight", 0.0)
 
     # Check if explicit loss type is specified
     loss_type = loss_config.get("loss_type", "auto")
@@ -34,8 +37,26 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
         # Auto-determine loss function type based on weights
         has_dipole = dipole_w > 0
         has_hirshfeld = hirshfeld_w > 0
+        has_charges = charges_w > 0
 
-        if has_dipole and has_hirshfeld:
+        if has_charges and has_hirshfeld:
+            loss_fn = WeightedEnergyForcesChargesHirshfeldLoss(
+                energy_weight=energy_w,
+                forces_weight=forces_w,
+                charges_weight=charges_w,
+                hirshfeld_weight=hirshfeld_w,
+            )
+            logging.info(
+                "Auto-selected WeightedEnergyForcesChargesHirshfeldLoss"
+            )
+        elif has_charges:
+            loss_fn = WeightedEnergyForcesChargesLoss(
+                energy_weight=energy_w,
+                forces_weight=forces_w,
+                charges_weight=charges_w,
+            )
+            logging.info("Auto-selected WeightedEnergyForcesChargesLoss")
+        elif has_dipole and has_hirshfeld:
             loss_fn = WeightedEnergyForcesDipoleHirshfeldLoss(
                 energy_weight=energy_w,
                 forces_weight=forces_w,
@@ -43,7 +64,7 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
                 hirshfeld_weight=hirshfeld_w,
             )
             logging.info(
-                "Auto-selected " "WeightedEnergyForcesDipoleHirshfeldLoss"
+                "Auto-selected WeightedEnergyForcesDipoleHirshfeldLoss"
             )
         elif has_dipole:
             loss_fn = WeightedEnergyForcesDipoleLoss(
@@ -90,6 +111,19 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
                 dipole_weight=dipole_w,
                 hirshfeld_weight=hirshfeld_w,
             )
+        elif loss_type == "energy_forces_charges":
+            loss_fn = WeightedEnergyForcesChargesLoss(
+                energy_weight=energy_w,
+                forces_weight=forces_w,
+                charges_weight=charges_w,
+            )
+        elif loss_type == "energy_forces_charges_hirshfeld":
+            loss_fn = WeightedEnergyForcesChargesHirshfeldLoss(
+                energy_weight=energy_w,
+                forces_weight=forces_w,
+                charges_weight=charges_w,
+                hirshfeld_weight=hirshfeld_w,
+            )
         else:
             supported_types = [
                 "auto",
@@ -97,6 +131,8 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
                 "energy_forces_dipole",
                 "energy_forces_hirshfeld",
                 "energy_forces_dipole_hirshfeld",
+                "energy_forces_charges",
+                "energy_forces_charges_hirshfeld",
             ]
             raise ValueError(
                 f"Unknown loss_type: {loss_type}. "
@@ -107,7 +143,7 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
 
     logging.info(
         f"Loss weights: energy={energy_w}, forces={forces_w}, "
-        f"dipole={dipole_w}, hirshfeld={hirshfeld_w}"
+        f"dipole={dipole_w}, hirshfeld={hirshfeld_w}, charges={charges_w}"
     )
 
     return loss_fn

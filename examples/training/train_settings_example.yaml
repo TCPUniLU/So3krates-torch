@@ -60,6 +60,8 @@ TRAINING:
   lr_scheduler_gamma: 0.85
   energy_weight: 0.
   forces_weight: 1000.
+  # charges_weight: 0.   # partial charge MSE loss; requires REF_charges per-atom array in training data
+  # hirshfeld_weight: 0. # Hirshfeld ratio MSE loss; requires REF_hirsh_ratios per-atom array
   eval_interval: 1
   num_epochs: 5
   path_to_train_data: ./path/to/train/data
