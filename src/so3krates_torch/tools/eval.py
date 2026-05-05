@@ -542,9 +542,7 @@ class ModelEval(Metric):
             default=torch.tensor(0.0),
             dist_reduce_fx="sum",
         )
-        self.add_state(
-            "delta_charges", default=[], dist_reduce_fx="cat"
-        )
+        self.add_state("delta_charges", default=[], dist_reduce_fx="cat")
 
     def update(self, batch, output):  # pylint: disable=arguments-differ
         if self.loss_fn is not None:
