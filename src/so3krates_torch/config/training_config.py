@@ -9,9 +9,9 @@ class GeneralConfig(BaseModel):
     checkpoints_dir: str = "./checkpoints"
     model_dir: str = "./model"
     log_dir: str = "./logs"
-    default_dtype: Literal[
-        "float32", "float64", "float16", "bfloat16"
-    ] = "float64"
+    default_dtype: Literal["float32", "float64", "float16", "bfloat16"] = (
+        "float64"
+    )
     seed: int = 100
     # inference-only: stress is computed during evaluation but has no
     # loss weight and is never used as a training target
@@ -47,6 +47,10 @@ class ArchitectureConfig(BaseModel):
     output_is_zero_at_init: bool = False
     # SO3LR-specific
     zbl_repulsion_bool: bool = True
+    nhl_repulsion_bool: bool = False
+    c6_ratios_bool: bool = False
+    use_simple_hirshfeld: bool = False
+    num_theory_levels: int = 1
     electrostatic_energy_bool: bool = True
     electrostatic_energy_scale: float = 4.0
     dispersion_energy_bool: bool = True
@@ -99,6 +103,25 @@ class ArchitectureConfig(BaseModel):
                 "num_output_heads must be specified when using "
                 "convert_to_multihead"
             )
+        if self.nhl_repulsion_bool and self.zbl_repulsion_bool:
+            import logging
+
+            logging.warning(
+                "nhl_repulsion_bool and zbl_repulsion_bool are both "
+                "True. NHL takes precedence; ZBL module is instantiated "
+                "but never called."
+            )
+        if self.c6_ratios_bool and not self.dispersion_energy_bool:
+            raise ValueError(
+                "c6_ratios_bool=True requires dispersion_energy_bool=True."
+            )
+        if self.use_simple_hirshfeld and not self.dispersion_energy_bool:
+            raise ValueError(
+                "use_simple_hirshfeld=True requires "
+                "dispersion_energy_bool=True."
+            )
+        if self.num_theory_levels < 1:
+            raise ValueError("num_theory_levels must be >= 1.")
         return self
 
 

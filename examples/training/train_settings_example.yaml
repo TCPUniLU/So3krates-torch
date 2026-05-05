@@ -36,6 +36,28 @@ ARCHITECTURE:
   use_charge_embed: true
   use_spin_embed: true
   zbl_repulsion_bool: true
+  # --- Alternative / extended physics options ---
+  # nhl_repulsion_bool: false
+  #   Use the NHL fixed-table pair repulsion instead of the learnable ZBL
+  #   potential. NHL has no trainable parameters (pair-specific Zi/Zj lookup
+  #   tables). Mutually exclusive with zbl_repulsion_bool; when both are true,
+  #   NHL takes precedence.
+  #
+  # c6_ratios_bool: false
+  #   Add a second dispersion output head predicting per-atom C6 scaling ratios
+  #   independently of Hirshfeld ratios. Requires dispersion_energy_bool: true.
+  #   When false (default), C6 scales as hirshfeld_ratio^2 (original SO3LR).
+  #
+  # use_simple_hirshfeld: false
+  #   Use the simplified Hirshfeld head (scalar embedding + optional MLP + abs)
+  #   instead of the original attention-based head. Requires
+  #   dispersion_energy_bool: true. Use when fine-tuning a JAX checkpoint
+  #   trained with the new HirshfeldSparse architecture.
+  #
+  # num_theory_levels: 1
+  #   NOT YET SUPPORTED for training — the data pipeline does not yet create
+  #   theory_mask. Reserved for future multi-theory training and for loading
+  #   JAX multi-theory checkpoints via torchkrates-jax2torch.
   neighborlist_format_lr: sparse
   use_pme: false  # true = PME electrostatics for periodic systems (requires torch-pme)
   # pme_smearing: 1.2       # Ewald splitting (Å); default = r_max / 5

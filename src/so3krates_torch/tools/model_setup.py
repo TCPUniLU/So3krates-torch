@@ -117,7 +117,19 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
         "neighborlist_format_lr": arch_config.get(
             "neighborlist_format_lr", "sparse"
         ),
+        "nhl_repulsion_bool": arch_config.get("nhl_repulsion_bool", False),
+        "c6_ratios_bool": arch_config.get("c6_ratios_bool", False),
+        "use_simple_hirshfeld": arch_config.get("use_simple_hirshfeld", False),
+        "num_theory_levels": arch_config.get("num_theory_levels", 1),
     }
+
+    if model_params.get("num_theory_levels", 1) > 1:
+        raise NotImplementedError(
+            "num_theory_levels > 1 requires theory_mask in every "
+            "training batch, which the current data pipeline does not "
+            "provide. Set num_theory_levels: 1 or implement theory_mask "
+            "support in AtomicData / config_from_atoms first."
+        )
 
     if arch_config.get("convert_to_multihead", False):
         model_params["num_output_heads"] = arch_config.get(
