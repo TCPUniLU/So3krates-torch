@@ -13,6 +13,7 @@ class AtomicEnergyOutputHead(nn.Module):
         final_output_features: int = 1,
         layers: int = 2,
         bias: bool = True,
+        final_layer_bias: bool = True,
         use_non_linearity: bool = True,
         non_linearity: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
         final_non_linearity: bool = False,
@@ -20,20 +21,26 @@ class AtomicEnergyOutputHead(nn.Module):
         energy_learn_atomic_type_shifts: bool = False,
         energy_learn_atomic_type_scales: bool = False,
         num_elements: Optional[int] = None,
+        num_theory_levels: int = 1,
         device: str = "cpu",
     ):
         super().__init__()
         self.device = device
+        self.num_theory_levels = num_theory_levels
         self.layers = nn.ModuleList()
         if energy_regression_dim is None:
             energy_regression_dim = num_features
+
+        # final_output_features is multiplied by num_theory_levels so that
+        # each theory level gets its own scalar output per atom.
+        final_features = final_output_features * num_theory_levels
 
         for _ in range(layers - 1):
             self.layers.append(
                 nn.Linear(num_features, energy_regression_dim, bias=bias)
             )
         self.final_layer = nn.Linear(
-            energy_regression_dim, final_output_features, bias=bias
+            energy_regression_dim, final_features, bias=final_layer_bias
         )
         # make sure non_linearity is not None if use_non_linearity is True
         if use_non_linearity and non_linearity is None:
@@ -47,17 +54,23 @@ class AtomicEnergyOutputHead(nn.Module):
         self.energy_learn_atomic_type_shifts = energy_learn_atomic_type_shifts
         self.energy_learn_atomic_type_scales = energy_learn_atomic_type_scales
 
+        shifts_shape = (
+            (num_elements, num_theory_levels)
+            if num_theory_levels > 1
+            else (num_elements,)
+        )
         self.energy_shifts = nn.Parameter(
             torch.zeros(
-                num_elements,
+                shifts_shape,
                 dtype=torch.get_default_dtype(),
                 device=self.device,
             ),
             requires_grad=False,
         )
+        # energy_scales: Linear maps one-hot (num_elements,) → (num_theory_levels,)
         self.energy_scales = nn.Linear(
             num_elements,
-            1,
+            num_theory_levels,
             bias=False,
             dtype=torch.get_default_dtype(),
             device=self.device,
@@ -172,8 +185,30 @@ class AtomicEnergyOutputHead(nn.Module):
 
         one_hot = data["node_attrs"]
         atomic_number_idx = torch.argmax(one_hot, dim=1)
-        atomic_energies *= self.energy_scales(data["node_attrs"])
-        atomic_energies += self.energy_shifts[atomic_number_idx].unsqueeze(1)
+
+        if getattr(self, "num_theory_levels", 1) > 1:
+            # atomic_energies: (N, num_theory_levels)
+            scales = self.energy_scales(one_hot)  # (N, num_theory_levels)
+            shifts = self.energy_shifts[
+                atomic_number_idx
+            ]  # (N, num_theory_levels)
+            atomic_energies = atomic_energies * scales + shifts
+
+            theory_mask = data[
+                "theory_mask"
+            ]  # (num_graphs, num_theory_levels)
+            batch = data["batch"]  # (N,)
+            node_theory_mask = theory_mask[batch].to(
+                dtype=atomic_energies.dtype
+            )  # (N, num_theory_levels)
+            atomic_energies = (atomic_energies * node_theory_mask).sum(
+                -1, keepdim=True
+            )  # (N, 1)
+        else:
+            atomic_energies *= self.energy_scales(one_hot)
+            atomic_energies += self.energy_shifts[atomic_number_idx].unsqueeze(
+                1
+            )
 
         return atomic_energies
 
@@ -568,6 +603,91 @@ class HirshfeldOutputHead(nn.Module):
         hirshfeld_ratios = torch.abs(v_eff)
 
         return hirshfeld_ratios
+
+
+class _SimpleRatioOutputHead(nn.Module):
+    """Shared architecture for SimpleHirshfeldOutputHead and C6RatiosOutputHead.
+
+    Matches the current JAX HirshfeldSparse / C6RatiosSparse architecture:
+      q   = Embed(100, 1)(z).squeeze()            element-dependent bias
+      x_  = [opt Linear(F, regression_dim//2) → activation →] Linear(F_in, 1)(x).squeeze()
+      out = abs(x_ + q)
+    """
+
+    def __init__(
+        self,
+        num_features: int,
+        regression_dim: Optional[int] = None,
+        activation_fn: torch.nn.Module = torch.nn.Identity,
+    ):
+        super().__init__()
+        self.regression_dim = regression_dim
+
+        self.element_embedding = nn.Embedding(
+            num_embeddings=100, embedding_dim=1
+        )
+
+        if regression_dim is not None:
+            hidden = regression_dim // 2
+            self.transform_features = nn.Sequential(
+                nn.Linear(num_features, hidden),
+                activation_fn(),
+                nn.Linear(hidden, 1),
+            )
+        else:
+            self.transform_features = nn.Linear(num_features, 1)
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        std = 1.0 / (self.element_embedding.embedding_dim**0.5)
+        nn.init.normal_(self.element_embedding.weight, mean=0.0, std=std)
+
+        if isinstance(self.transform_features, nn.Sequential):
+            for i, m in enumerate(self.transform_features):
+                if isinstance(m, nn.Linear):
+                    is_last = i == len(self.transform_features) - 1
+                    if is_last:
+                        nn.init.zeros_(m.weight)
+                    else:
+                        nn.init.normal_(
+                            m.weight, mean=0.0, std=1.0 / m.in_features**0.5
+                        )
+                    if m.bias is not None:
+                        nn.init.zeros_(m.bias)
+        else:
+            nn.init.zeros_(self.transform_features.weight)
+            if self.transform_features.bias is not None:
+                nn.init.zeros_(self.transform_features.bias)
+
+    def forward(
+        self,
+        inv_features: torch.Tensor,
+        atomic_numbers: torch.Tensor,
+    ) -> torch.Tensor:
+        q = self.element_embedding(atomic_numbers).squeeze(-1)  # (N,)
+        x_ = self.transform_features(inv_features).squeeze(-1)  # (N,)
+        return torch.abs(x_ + q)
+
+
+class SimpleHirshfeldOutputHead(_SimpleRatioOutputHead):
+    """Hirshfeld ratio head matching the new (simplified) JAX HirshfeldSparse.
+
+    Use this when loading models trained with so3lr_dev after the architecture
+    change.  For the original attention-based head use HirshfeldOutputHead.
+    """
+
+    pass
+
+
+class C6RatiosOutputHead(_SimpleRatioOutputHead):
+    """Per-atom C6 ratio head matching JAX C6RatiosSparse.
+
+    Predicts independent per-atom scaling factors for free-atom C6
+    coefficients, decoupled from the Hirshfeld ratios that scale alpha.
+    """
+
+    pass
 
 
 class DirectForceOutputHead(nn.Module):

@@ -13,11 +13,14 @@ from so3krates_torch.blocks.output_block import (
     PartialChargesOutputHead,
     DipoleVecOutputHead,
     HirshfeldOutputHead,
+    SimpleHirshfeldOutputHead,
+    C6RatiosOutputHead,
 )
 from so3krates_torch.blocks import radial_basis
 import math
 from so3krates_torch.blocks.physical_potentials import (
     ZBLRepulsion,
+    NHLRepulsion,
     ElectrostaticInteraction,
     DispersionInteraction,
     PMEElectrostaticInteraction,
@@ -67,6 +70,8 @@ class So3krates(torch.nn.Module):
         num_features_head: Optional[
             int
         ] = None,  # not used; just for compatibility with jax version
+        final_layer_bias: bool = True,
+        num_theory_levels: int = 1,
     ):
         super().__init__()
 
@@ -212,6 +217,7 @@ class So3krates(torch.nn.Module):
             final_output_features=1,  # scalar energy per atom
             layers=self.final_mlp_layers,
             bias=True,
+            final_layer_bias=final_layer_bias,
             non_linearity=self.energy_activation_fn,
             final_non_linearity=False,
             use_non_linearity=True,
@@ -219,6 +225,7 @@ class So3krates(torch.nn.Module):
             energy_learn_atomic_type_shifts=self.energy_learn_atomic_type_shifts,
             energy_learn_atomic_type_scales=self.energy_learn_atomic_type_scales,
             num_elements=self.num_elements,
+            num_theory_levels=num_theory_levels,
             device=self.device,
         )
 
@@ -535,6 +542,7 @@ class SO3LR(So3krates):
     def __init__(
         self,
         zbl_repulsion_bool: bool = True,
+        nhl_repulsion_bool: bool = False,
         electrostatic_energy_bool: bool = True,
         electrostatic_energy_scale: float = 4.0,
         dispersion_energy_bool: bool = True,
@@ -545,6 +553,8 @@ class SO3LR(So3krates):
         use_pme: bool = False,
         pme_smearing: float = None,
         pme_mesh_spacing: float = None,
+        c6_ratios_bool: bool = False,
+        use_simple_hirshfeld: bool = False,
         *args,
         **kwargs,
     ):
@@ -552,6 +562,7 @@ class SO3LR(So3krates):
 
         # Store SO3LR-specific constructor arguments as attributes
         self.zbl_repulsion_bool = zbl_repulsion_bool
+        self.nhl_repulsion_bool = nhl_repulsion_bool
         self.electrostatic_energy_bool = electrostatic_energy_bool
         self.electrostatic_energy_scale = electrostatic_energy_scale
         self.dispersion_energy_bool = dispersion_energy_bool
@@ -560,6 +571,8 @@ class SO3LR(So3krates):
             dispersion_energy_cutoff_lr_damping
         )
         self.neighborlist_format_lr = neighborlist_format_lr
+        self.c6_ratios_bool = c6_ratios_bool
+        self.use_simple_hirshfeld = use_simple_hirshfeld
 
         if r_max_lr is not None:
             self.r_max_lr = r_max_lr
@@ -568,8 +581,11 @@ class SO3LR(So3krates):
 
         self.use_lr = False
 
-        # Short-range repulsion
-        self.zbl_repulsion = ZBLRepulsion()
+        # Short-range repulsion — learnable ZBL or fixed-table NHL
+        if nhl_repulsion_bool:
+            self.nhl_repulsion = NHLRepulsion()
+        else:
+            self.zbl_repulsion = ZBLRepulsion()
 
         # i'm sorry for this. but in the jax version they always initiate
         # the long range modules even though the booleans are set to false.
@@ -602,7 +618,14 @@ class SO3LR(So3krates):
         # Dispersion
         if self.dispersion_energy_bool:
             self.use_lr = True
-        self.hirshfeld_output_block = HirshfeldOutputHead(
+
+        # Hirshfeld head: new simplified arch or original attention-based arch
+        HirshfeldHead = (
+            SimpleHirshfeldOutputHead
+            if use_simple_hirshfeld
+            else HirshfeldOutputHead
+        )
+        self.hirshfeld_output_block = HirshfeldHead(
             num_features=self.num_features,
             regression_dim=self.energy_regression_dim,
             activation_fn=self.energy_activation_fn,
@@ -610,6 +633,14 @@ class SO3LR(So3krates):
         self.dispersion_potential = DispersionInteraction(
             neighborlist_format_lr=self.neighborlist_format_lr
         )
+
+        # Independent C6 ratio head (new JAX feature)
+        if c6_ratios_bool:
+            self.c6_ratios_output_block = C6RatiosOutputHead(
+                num_features=self.num_features,
+                regression_dim=self.energy_regression_dim,
+                activation_fn=self.energy_activation_fn,
+            )
 
     def load_state_dict(self, state_dict, strict=True):
         """
@@ -725,6 +756,7 @@ class SO3LR(So3krates):
         ev_features: torch.Tensor,
         att_scores: torch.Tensor,
         node_energy: Optional[torch.Tensor] = None,
+        c6_ratios: Optional[torch.Tensor] = None,
         training: bool = False,
     ) -> Dict[str, Optional[torch.Tensor]]:
         return {
@@ -739,6 +771,7 @@ class SO3LR(So3krates):
             "partial_charges": partial_charges,
             "dipole": dipole,
             "hirshfeld_ratios": hirshfeld_ratios,
+            "c6_ratios": c6_ratios,
             "inv_features": inv_features,
             "ev_features": ev_features,
             "att_scores": att_scores,
@@ -793,7 +826,16 @@ class SO3LR(So3krates):
             self.lengths_lr = self.ctx.lengths_lr
 
         zbl_atomic_energies = None
-        if self.zbl_repulsion_bool:
+        if getattr(self, "nhl_repulsion_bool", False):
+            zbl_atomic_energies = self.nhl_repulsion(
+                atomic_numbers=data["atomic_numbers"],
+                cutoffs=self.cutoffs,
+                senders=self.senders,
+                receivers=self.receivers,
+                lengths=self.lengths,
+                num_nodes=inv_features.shape[0],
+            )
+        elif self.zbl_repulsion_bool:
             zbl_atomic_energies = self.zbl_repulsion(
                 atomic_numbers=data["atomic_numbers"],
                 cutoffs=self.cutoffs,
@@ -842,11 +884,18 @@ class SO3LR(So3krates):
                     ),
                 )
         dispersion_energies = None
+        hirshfeld_ratios = None
+        c6_ratios = None
         if self.dispersion_energy_bool:
             hirshfeld_ratios = self.hirshfeld_output_block(
                 inv_features=inv_features,
                 atomic_numbers=data["atomic_numbers"],
             )
+            if getattr(self, "c6_ratios_bool", False):
+                c6_ratios = self.c6_ratios_output_block(
+                    inv_features=inv_features,
+                    atomic_numbers=data["atomic_numbers"],
+                )
             dispersion_energies = self.dispersion_potential(
                 hirshfeld_ratios=hirshfeld_ratios,
                 atomic_numbers=data["atomic_numbers"],
@@ -857,6 +906,7 @@ class SO3LR(So3krates):
                 cutoff_lr=self.r_max_lr,
                 cutoff_lr_damping=self.dispersion_energy_cutoff_lr_damping,
                 dispersion_energy_scale=self.dispersion_energy_scale,
+                c6_ratios=c6_ratios,
             )
 
         atomic_energies = self._combine_energies(
@@ -919,6 +969,7 @@ class SO3LR(So3krates):
             hirshfeld_ratios=(
                 hirshfeld_ratios if self.dispersion_energy_bool else None
             ),
+            c6_ratios=c6_ratios,
             inv_features=inv_features if return_descriptors else None,
             ev_features=(ev_features if return_eqv_descriptors else None),
             att_scores=att_scores if return_att else None,
@@ -1057,6 +1108,7 @@ class MultiHeadSO3LR(SO3LR):
         att_scores: torch.Tensor,
         node_energy: Optional[torch.Tensor] = None,
         training: bool = False,
+        c6_ratios: Optional[torch.Tensor] = None,
     ) -> Dict[str, Optional[torch.Tensor]]:
         # total_energy has shape (num_graphs, num_output_heads)
         # permute to shape (num_output_heads, num_graphs)
@@ -1073,6 +1125,7 @@ class MultiHeadSO3LR(SO3LR):
             "partial_charges": partial_charges,
             "dipole": dipole,
             "hirshfeld_ratios": hirshfeld_ratios,
+            "c6_ratios": c6_ratios,
             "inv_features": inv_features,
             "ev_features": ev_features,
             "att_scores": att_scores,

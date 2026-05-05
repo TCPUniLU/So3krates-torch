@@ -1,9 +1,11 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import math
+import numpy as np
 from so3krates_torch.tools.scatter import scatter_sum
+from so3krates_torch.blocks.dispersion_ref_data import NHL_AA, NHL_BB
 
 
 # Constants for dispersion energy calculations
@@ -262,24 +264,36 @@ def mixing_rules(
     idx_i: torch.Tensor,
     idx_j: torch.Tensor,
     hirshfeld_ratios: torch.Tensor,
+    c6_ratios: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Apply mixing rules to compute alpha_ij and C6_ij for dispersion"""
+    """Apply mixing rules to compute alpha_ij and C6_ij for dispersion.
+
+    When c6_ratios is provided, alpha and C6 are scaled independently:
+      alpha_i = alpha_free[Z_i] * hirshfeld_ratio_i
+      C6_i    = C6_free[Z_i]   * c6_ratio_i
+    Otherwise (backward compat) C6 is scaled by hirshfeld_ratio²:
+      C6_i    = C6_free[Z_i]   * hirshfeld_ratio_i²
+    """
     dtype = hirshfeld_ratios.dtype
     device = hirshfeld_ratios.device
 
-    # Move reference data to correct device and dtype
     alphas = ALPHAS.to(device=device, dtype=dtype)
     c6_coef = C6_COEF.to(device=device, dtype=dtype)
 
-    atomic_number_i = atomic_numbers[idx_i] - 1  # Convert to 0-based indexing
+    atomic_number_i = atomic_numbers[idx_i] - 1
     atomic_number_j = atomic_numbers[idx_j] - 1
     hirshfeld_ratio_i = hirshfeld_ratios[idx_i]
     hirshfeld_ratio_j = hirshfeld_ratios[idx_j]
 
     alpha_i = alphas[atomic_number_i] * hirshfeld_ratio_i
-    C6_i = c6_coef[atomic_number_i] * torch.square(hirshfeld_ratio_i)
     alpha_j = alphas[atomic_number_j] * hirshfeld_ratio_j
-    C6_j = c6_coef[atomic_number_j] * torch.square(hirshfeld_ratio_j)
+
+    if c6_ratios is not None:
+        C6_i = c6_coef[atomic_number_i] * c6_ratios[idx_i]
+        C6_j = c6_coef[atomic_number_j] * c6_ratios[idx_j]
+    else:
+        C6_i = c6_coef[atomic_number_i] * torch.square(hirshfeld_ratio_i)
+        C6_j = c6_coef[atomic_number_j] * torch.square(hirshfeld_ratio_j)
 
     alpha_ij = (alpha_i + alpha_j) / 2
     C6_ij = (
@@ -338,11 +352,7 @@ def vdw_qdo_disp_damp(
     p = gamma_scale * 2 * 2.54 * alpha_ij ** (1 / 7)
 
     # Compute potential — inline to avoid 6 simultaneous [N_pairs] tensors
-    V3 = (
-        -C6 / (R**6 + p**6)
-        - C8 / (R**8 + p**8)
-        - C10 / (R**10 + p**10)
-    )
+    V3 = -C6 / (R**6 + p**6) - C8 / (R**8 + p**8) - C10 / (R**10 + p**10)
 
     hartree_factor = torch.tensor(HARTREE, dtype=input_dtype, device=device)
     return c * V3 * hartree_factor
@@ -594,6 +604,68 @@ class ZBLRepulsion(nn.Module):
         pass
 
 
+class NHLRepulsion(nn.Module):
+    """Pair-specific NHL (nuclear-nuclear Hartree-like) short-range repulsion.
+
+    Uses pre-tabulated element-pair screening coefficients instead of the
+    learnable universal ZBL screening.  No trainable parameters.
+
+    φ(r) = Σ_k  a[zi,zj,k] * exp(-b[zi,zj,k] * r)
+    E_rep = Σ_{ij} w(r) * ke * (Zi*Zj/r) * cutoff * φ(r) / 2
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.module_name = "nhl_repulsion"
+        self.ke = 14.399645351950548
+
+        # Fixed lookup tables (92×92×3), indexed by (Z-1) with zi≤zj
+        nhl_aa = torch.tensor(np.array(NHL_AA), dtype=torch.float64)
+        nhl_bb = torch.tensor(np.array(NHL_BB), dtype=torch.float64)
+        self.register_buffer("nhl_aa", nhl_aa)
+        self.register_buffer("nhl_bb", nhl_bb)
+
+    def forward(
+        self,
+        atomic_numbers: torch.Tensor,
+        cutoffs: torch.Tensor,
+        senders: torch.Tensor,
+        receivers: torch.Tensor,
+        lengths: torch.Tensor,
+        num_nodes: int,
+    ) -> torch.Tensor:
+        cutoffs = cutoffs.squeeze(1)
+        lengths = lengths.squeeze(1)
+
+        z_i = atomic_numbers[receivers] - 1  # 0-based
+        z_j = atomic_numbers[senders] - 1
+
+        zi = torch.minimum(z_i, z_j)
+        zj = torch.maximum(z_i, z_j)
+
+        dtype = lengths.dtype
+        aa = self.nhl_aa.to(dtype=dtype)[zi, zj]  # (E, 3)
+        bb = self.nhl_bb.to(dtype=dtype)[zi, zj]  # (E, 3)
+
+        phi = (aa * torch.exp(-bb * lengths.unsqueeze(-1))).sum(-1)
+
+        z_over_r = (z_i + 1) * (z_j + 1) / lengths.clamp(min=1e-6)
+        x = self.ke * cutoffs * z_over_r
+
+        w = switching_fn(lengths, x_on=0.0, x_off=1.5)
+        e_rep_edge = w * x * phi / 2.0
+
+        return scatter_sum(
+            src=e_rep_edge,
+            index=receivers,
+            dim=0,
+            dim_size=num_nodes,
+        ).unsqueeze(1)
+
+    def reset_output_convention(self, output_convention):
+        pass
+
+
 class ElectrostaticInteraction(nn.Module):
     """
     Electrostatic energy with erf damping and optional smooth cutoff.
@@ -786,9 +858,10 @@ class DispersionInteraction(nn.Module):
         receivers_lr: torch.Tensor,
         lengths_lr: torch.Tensor,
         num_nodes: int,
-        cutoff_lr: float | None = None,
-        cutoff_lr_damping: float | None = None,
+        cutoff_lr: Optional[float] = None,
+        cutoff_lr_damping: Optional[float] = None,
         dispersion_energy_scale: float = 1.0,
+        c6_ratios: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Compute per-node dispersion energy using potential described
@@ -801,7 +874,10 @@ class DispersionInteraction(nn.Module):
             receivers_lr: (E,) target indices (i) for long-range edges.
             lengths_lr: (E,) or (E,1) edge distances in Angstrom.
             num_nodes: number of nodes to scatter to.
-            node_mask: (N,) optional node mask for padded nodes.
+            c6_ratios: (N,) optional per-atom C6 scaling ratios. When
+                provided, C6 is scaled independently from alpha (new JAX
+                behaviour). When None, C6 is scaled by hirshfeld_ratio²
+                (backward-compatible).
 
         Returns:
             (N,1) atomic dispersion energies.
@@ -818,13 +894,19 @@ class DispersionInteraction(nn.Module):
             lengths_lr = lengths_lr.squeeze(-1)
         if hirshfeld_ratios.dim() == 2 and hirshfeld_ratios.size(-1) == 1:
             hirshfeld_ratios = hirshfeld_ratios.squeeze(-1)
+        if c6_ratios is not None and c6_ratios.dim() == 2:
+            c6_ratios = c6_ratios.squeeze(-1)
 
         input_dtype = lengths_lr.dtype
         device = lengths_lr.device
 
         # Calculate alpha_ij and C6_ij using mixing rules
         alpha_ij, C6_ij = mixing_rules(
-            atomic_numbers, receivers_lr, senders_lr, hirshfeld_ratios
+            atomic_numbers,
+            receivers_lr,
+            senders_lr,
+            hirshfeld_ratios,
+            c6_ratios=c6_ratios,
         )
 
         # Use cubic fit for gamma
