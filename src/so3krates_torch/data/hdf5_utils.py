@@ -1024,9 +1024,9 @@ def _write_atomic_data_to_hdf5_group(
     if data.charges_weight is not None:
         weights_grp["charges_weight"] = data.charges_weight.cpu().numpy()
     if data.hirshfeld_ratios_weight is not None:
-        weights_grp["hirshfeld_ratios_weight"] = (
-            data.hirshfeld_ratios_weight.cpu().numpy()
-        )
+        weights_grp[
+            "hirshfeld_ratios_weight"
+        ] = data.hirshfeld_ratios_weight.cpu().numpy()
 
 
 def _read_atomic_data_from_hdf5_group(
@@ -1677,9 +1677,9 @@ def merge_raw_hdf5_files(
                     out["config_metadata/config_type"][
                         cfg_off : cfg_off + b_len
                     ] = inp["config_metadata/config_type"][b_start:b_end]
-                    out["config_metadata/head"][cfg_off : cfg_off + b_len] = (
-                        inp["config_metadata/head"][b_start:b_end]
-                    )
+                    out["config_metadata/head"][
+                        cfg_off : cfg_off + b_len
+                    ] = inp["config_metadata/head"][b_start:b_end]
                     out["config_metadata/weight"][
                         cfg_off : cfg_off + b_len
                     ] = inp["config_metadata/weight"][b_start:b_end]
