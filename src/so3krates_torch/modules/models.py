@@ -517,6 +517,8 @@ class So3krates(torch.nn.Module):
             compute_hessian=compute_hessian,
             compute_edge_forces=compute_edge_forces,
         )
+        if lammps_mliap:
+            del self.ctx
         return self._create_output_dict(
             total_energy=total_energy,
             forces=forces,
@@ -903,6 +905,8 @@ class SO3LR(So3krates):
             # SR+LR pair forces in one autograd call.
             vectors_all=self.ctx.vectors_all,
         )
+        if lammps_mliap:
+            del self.ctx
 
         return self._create_output_dict(
             total_energy=total_energy,
