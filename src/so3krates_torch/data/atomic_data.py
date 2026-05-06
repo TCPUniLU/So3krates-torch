@@ -82,6 +82,7 @@ class AtomicData(torch_geometric.data.Data):
         unit_shifts_lr: Optional[torch.Tensor] = None,  # [n_edges_lr, 3]
         total_charge: Optional[torch.Tensor] = None,  # [,]
         total_spin: Optional[torch.Tensor] = None,  # [,]
+        theory_level: Optional[torch.Tensor] = None,  # [,] scalar int64
     ):
         # Check shapes
         num_nodes = node_attrs.shape[0]
@@ -119,6 +120,7 @@ class AtomicData(torch_geometric.data.Data):
         assert elec_temp is None or len(elec_temp.shape) == 0
         assert total_charge is None or len(total_charge.shape) == 0
         assert total_spin is None or len(total_spin.shape) == 0
+        assert theory_level is None or len(theory_level.shape) == 0
         assert edge_index_lr is None or edge_index_lr.shape[0] == 2
         assert shifts_lr is None or shifts_lr.shape[1] == 3
         assert unit_shifts_lr is None or unit_shifts_lr.shape[1] == 3
@@ -155,6 +157,7 @@ class AtomicData(torch_geometric.data.Data):
             "elec_temp": elec_temp,
             "total_charge": total_charge,
             "total_spin": total_spin,
+            "theory_level": theory_level,
         }
         super().__init__(**data)
 
@@ -213,6 +216,11 @@ class AtomicData(torch_geometric.data.Data):
             head = torch.tensor(heads.index(config.head), dtype=torch.long)
         except ValueError:
             head = torch.tensor(len(heads) - 1, dtype=torch.long)
+        theory_level = (
+            torch.tensor(config.theory_level, dtype=torch.long)
+            if config.theory_level is not None
+            else None
+        )
         cell = (
             torch.tensor(cell, dtype=torch.get_default_dtype())
             if cell is not None
@@ -420,6 +428,7 @@ class AtomicData(torch_geometric.data.Data):
             elec_temp=elec_temp,
             total_charge=total_charge,
             total_spin=total_spin,
+            theory_level=theory_level,
         )
 
 

@@ -317,6 +317,9 @@ def _stream_atoms_to_hdf5_v2(
         # --- Config metadata ---
         config_type = [a.info.get("config_type", "") for a in batch]
         head_vals = [a.info.get("head", "") for a in batch]
+        theory_level_vals = np.array(
+            [a.info.get("theory_level", -1) for a in batch], dtype=np.int32
+        )
         weight = np.array(
             [a.info.get("config_weight", np.nan) for a in batch],
             dtype=np.float64,
@@ -405,6 +408,13 @@ def _stream_atoms_to_hdf5_v2(
                 dtype=np.float64,
                 chunks=(c,),
             )
+            meta_grp.create_dataset(
+                "theory_level",
+                shape=(0,),
+                maxshape=(None,),
+                dtype=np.int32,
+                chunks=(c,),
+            )
 
             pw_grp = f.require_group("property_weights")
             for pw_name in ("energy", "forces", "stress"):
@@ -442,6 +452,7 @@ def _stream_atoms_to_hdf5_v2(
         _append_dataset(f["config_metadata/config_type"], config_type)
         _append_dataset(f["config_metadata/head"], head_vals)
         _append_dataset(f["config_metadata/weight"], weight)
+        _append_dataset(f["config_metadata/theory_level"], theory_level_vals)
         _append_dataset(f["property_weights/energy"], energy_weight)
         _append_dataset(f["property_weights/forces"], forces_weight)
         _append_dataset(f["property_weights/stress"], stress_weight)
@@ -518,6 +529,11 @@ def _load_all_atoms_v2(f: h5py.File, num_configs: int) -> List[ase.Atoms]:
     config_types = cfg_meta["config_type"][:]
     head_vals = cfg_meta["head"][:]
     weights = cfg_meta["weight"][:]
+    theory_level_vals = (
+        cfg_meta["theory_level"][:]
+        if "theory_level" in cfg_meta
+        else np.full(num_configs, -1, dtype=np.int32)
+    )
 
     pw = f["property_weights"]
     energy_weights = pw["energy"][:]
@@ -558,6 +574,7 @@ def _load_all_atoms_v2(f: h5py.File, num_configs: int) -> List[ase.Atoms]:
             stress_weights,
             info_props,
             arrays_props,
+            theory_level_vals,
         )
         atoms_list.append(a)
 
@@ -585,6 +602,11 @@ def _load_single_atom_v2(f: h5py.File, idx: int) -> ase.Atoms:
     h = h_raw.decode() if isinstance(h_raw, bytes) else str(h_raw)
     if h:
         a.info["head"] = h
+
+    if "theory_level" in f["config_metadata"]:
+        tl = int(f["config_metadata/theory_level"][idx])
+        if tl >= 0:
+            a.info["theory_level"] = tl
 
     w = float(f["config_metadata/weight"][idx])
     if not np.isnan(w):
@@ -632,6 +654,7 @@ def _fill_atoms_metadata(
     stress_weights,
     info_props: Dict[str, np.ndarray],
     arrays_props: Dict[str, np.ndarray],
+    theory_level_vals=None,
 ) -> None:
     """Fill metadata onto an already-constructed Atoms (batch-load path)."""
     ct_raw = config_types[i]
@@ -643,6 +666,11 @@ def _fill_atoms_metadata(
     h = h_raw.decode() if isinstance(h_raw, bytes) else str(h_raw)
     if h:
         a.info["head"] = h
+
+    if theory_level_vals is not None:
+        tl = int(theory_level_vals[i])
+        if tl >= 0:
+            a.info["theory_level"] = tl
 
     w = float(weights[i])
     if not np.isnan(w):
@@ -942,6 +970,8 @@ def _write_atomic_data_to_hdf5_group(
         group["weight"] = data.weight.cpu().numpy()
     if data.head is not None:
         group["head"] = data.head.cpu().numpy()
+    if data.theory_level is not None:
+        group["theory_level"] = data.theory_level.cpu().numpy()
 
     # Short-range edges
     edges_grp = group.create_group("edges")
@@ -1022,6 +1052,11 @@ def _read_atomic_data_from_hdf5_group(
         torch.from_numpy(np.array(group["head"]))
         if "head" in group
         else torch.tensor(0, dtype=torch.long)
+    )
+    theory_level = (
+        torch.from_numpy(np.array(group["theory_level"]))
+        if "theory_level" in group
+        else None
     )
 
     # Short-range edges
@@ -1166,6 +1201,7 @@ def _read_atomic_data_from_hdf5_group(
         edge_index_lr=edge_index_lr,
         shifts_lr=shifts_lr,
         unit_shifts_lr=unit_shifts_lr,
+        theory_level=theory_level,
     )
 
 

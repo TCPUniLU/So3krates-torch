@@ -124,11 +124,12 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
     }
 
     if model_params.get("num_theory_levels", 1) > 1:
-        raise NotImplementedError(
-            "num_theory_levels > 1 requires theory_mask in every "
-            "training batch, which the current data pipeline does not "
-            "provide. Set num_theory_levels: 1 or implement theory_mask "
-            "support in AtomicData / config_from_atoms first."
+        logging.warning(
+            "num_theory_levels=%d: every training structure must carry "
+            "atoms.info['theory_level'] = <int 0..%d>. Structures "
+            "without this key will raise a KeyError at forward time.",
+            model_params["num_theory_levels"],
+            model_params["num_theory_levels"] - 1,
         )
 
     if arch_config.get("convert_to_multihead", False):

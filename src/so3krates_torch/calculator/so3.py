@@ -45,9 +45,11 @@ class TorchkratesCalculator(Calculator):
         key_specification: Optional[KeySpecification] = None,
         model_type="so3lr",
         fullgraph=True,
+        theory_level: Optional[int] = None,
         **kwargs,
     ):
         Calculator.__init__(self, **kwargs)
+        self.theory_level = theory_level
         if (model_paths is None) == (models is None):
             raise ValueError(
                 "Exactly one of 'model_paths' or 'models' must be provided"
@@ -273,8 +275,17 @@ class TorchkratesCalculator(Calculator):
         )
         for i, model in enumerate(self.models):
             batch = self._clone_batch(batch_base)
+            batch_dict = batch.to_dict()
+            if self.theory_level is not None:
+                n_graphs = int(batch_dict["batch"].max().item()) + 1
+                batch_dict["theory_level"] = torch.full(
+                    (n_graphs,),
+                    self.theory_level,
+                    dtype=torch.long,
+                    device=self.device,
+                )
             out = model(
-                batch.to_dict(),
+                batch_dict,
                 compute_stress=self.compute_stress,
             )
             if self.model_type in ["so3lr", "so3krates"]:
@@ -441,6 +452,7 @@ class SO3LRCalculator(TorchkratesCalculator):
         default_dtype="",
         charges_key="Qs",
         key_specification=None,
+        theory_level: int = 0,
         **kwargs,
     ):
         models = [self._load_model(device)]
@@ -458,6 +470,7 @@ class SO3LRCalculator(TorchkratesCalculator):
             charges_key=charges_key,
             key_specification=key_specification,
             model_type="so3lr",
+            theory_level=theory_level,
             **kwargs,
         )
 

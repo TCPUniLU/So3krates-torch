@@ -55,9 +55,13 @@ ARCHITECTURE:
   #   trained with the new HirshfeldSparse architecture.
   #
   # num_theory_levels: 1
-  #   NOT YET SUPPORTED for training — the data pipeline does not yet create
-  #   theory_mask. Reserved for future multi-theory training and for loading
-  #   JAX multi-theory checkpoints via torchkrates-jax2torch.
+  #   Number of distinct theory levels in the training data. Any N >= 1.
+  #   Examples: 2 (PBE + PBE0), 3 (PBE + PBE0 + CCSD(T)).
+  #   Each training structure must have atoms.info["theory_level"] = <int 0..N-1>.
+  #   The model learns a shared representation but N independent sets of
+  #   output weights, shifts, and scales (one per level).
+  #   At inference: SO3LRCalculator(theory_level=<int>) selects the level.
+  #   Default: 1 (standard single-theory SO3LR, no theory_level field required).
   neighborlist_format_lr: sparse
   use_pme: false  # true = PME electrostatics for periodic systems (requires torch-pme)
   # pme_smearing: 1.2       # Ewald splitting (Å); default = r_max / 5

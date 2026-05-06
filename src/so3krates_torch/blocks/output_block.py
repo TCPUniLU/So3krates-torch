@@ -194,13 +194,16 @@ class AtomicEnergyOutputHead(nn.Module):
             ]  # (N, num_theory_levels)
             atomic_energies = atomic_energies * scales + shifts
 
-            theory_mask = data[
-                "theory_mask"
-            ]  # (num_graphs, num_theory_levels)
+            theory_level = data["theory_level"]  # (num_graphs,) int64
             batch = data["batch"]  # (N,)
-            node_theory_mask = theory_mask[batch].to(
-                dtype=atomic_energies.dtype
-            )  # (N, num_theory_levels)
+            theory_mask = torch.zeros(
+                theory_level.shape[0],
+                self.num_theory_levels,
+                dtype=atomic_energies.dtype,
+                device=atomic_energies.device,
+            )
+            theory_mask.scatter_(1, theory_level.unsqueeze(1), 1.0)
+            node_theory_mask = theory_mask[batch]  # (N, num_theory_levels)
             atomic_energies = (atomic_energies * node_theory_mask).sum(
                 -1, keepdim=True
             )  # (N, 1)

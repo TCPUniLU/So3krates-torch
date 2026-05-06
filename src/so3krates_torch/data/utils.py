@@ -92,6 +92,7 @@ class Configuration:
     weight: float = 1.0  # weight of config in loss
     config_type: str = DEFAULT_CONFIG_TYPE  # config_type of config
     head: str = "Default"  # head used to compute the config
+    theory_level: Optional[int] = None  # integer index 0..num_theory_levels-1
 
 
 Configurations = List[Configuration]
@@ -196,6 +197,11 @@ def config_from_atoms(
     # otherwise fall back to the caller-supplied default.
     head = atoms.info.get("head", head_name)
 
+    theory_level_raw = atoms.info.get("theory_level", None)
+    theory_level = (
+        int(theory_level_raw) if theory_level_raw is not None else None
+    )
+
     return Configuration(
         atomic_numbers=atomic_numbers,
         positions=atoms.get_positions(),
@@ -206,6 +212,7 @@ def config_from_atoms(
         config_type=config_type,
         pbc=pbc,
         cell=cell,
+        theory_level=theory_level,
     )
 
 
