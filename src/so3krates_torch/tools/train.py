@@ -136,7 +136,7 @@ def valid_err_log(
         error_f = eval_metrics["mae_f"] * 1e3
         error_hirshfeld_ratios = eval_metrics["mae_hirshfeld_ratios"]
         logging.info(
-            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_hirshfeld_ratios={error_hirshfeld_ratios:8.2f}",
+            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_hirshfeld_ratios={error_hirshfeld_ratios:8.4f}",
         )
     elif log_errors == "EnergyForceDipoleHirshfeldMAE":
         error_e = eval_metrics["mae_e_per_atom"] * 1e3
@@ -144,7 +144,7 @@ def valid_err_log(
         error_dipole = eval_metrics["mae_dipole"] * 1e3
         error_hirshfeld_ratios = eval_metrics["mae_hirshfeld_ratios"]
         logging.info(
-            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_dipole={error_dipole:8.2f} mDebye, MAE_hirshfeld_ratios={error_hirshfeld_ratios:8.2f}",
+            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_dipole={error_dipole:8.2f} mDebye, MAE_hirshfeld_ratios={error_hirshfeld_ratios:8.4f}",
         )
     elif log_errors == "EnergyForceChargesMAE":
         error_e = eval_metrics["mae_e_per_atom"] * 1e3
@@ -159,7 +159,7 @@ def valid_err_log(
         error_charges = eval_metrics["mae_charges"]
         error_hirshfeld_ratios = eval_metrics["mae_hirshfeld_ratios"]
         logging.info(
-            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_charges={error_charges:8.4f} e, MAE_hirshfeld_ratios={error_hirshfeld_ratios:8.2f}",
+            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_charges={error_charges:8.4f} e, MAE_hirshfeld_ratios={error_hirshfeld_ratios:8.4f}",
         )
 
 
