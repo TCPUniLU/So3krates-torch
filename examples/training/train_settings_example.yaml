@@ -86,22 +86,6 @@ TRAINING:
   # replay_total: 5000            # total number of replay structures to sample
   # replay_oversample_finetune: true   # repeat fine-tune data to match replay size (default: true)
   # replay_resample_per_epoch: false   # re-draw replay subset each epoch (default: false)
-  # --- EWC / reEWC (forgetting-aware fine-tuning) ---
-  # Elastic Weight Consolidation prevents catastrophic forgetting by adding a
-  # penalty that keeps parameters close to their pretrained values, weighted
-  # by their Fisher importance on the pretraining dataset.
-  # reEWC = EWC + replay: enable both blocks below simultaneously.
-  # use_ewc: false                     # enable EWC regularisation (default: false)
-  # ewc_lambda: 1.e6                   # regularisation strength λ (paper default: 1e6)
-  # ewc_fisher_data: /path/to/pretrain_subset.xyz
-  #   # Path to a subset of the PRETRAINING dataset for Fisher estimation.
-  #   # Use the same format as replay_datasets (XYZ, raw/preprocessed HDF5).
-  #   # Must NOT be the fine-tuning training or validation set — EWC protects
-  #   # parameters important for OLD knowledge, so Fisher must be computed on
-  #   # pretraining data.  Can be the same file as replay_datasets.
-  # ewc_num_fisher_samples: 1000       # number of STRUCTURES (not batches) to use;
-  #                                    # batches of size `batch_size` are drawn until
-  #                                    # this many structures have been processed
   # --- LoRA+ optimizer (use with finetune_choice: lora / dora / vera) ---
   # use_lora_plus: false           # apply a separate LR to LoRA B matrices
   # lora_B_lr: 0.01                # B-matrix LR (e.g. 10x the base lr)

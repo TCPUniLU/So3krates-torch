@@ -147,34 +147,6 @@ class TrainingConfig(BaseModel):
     replay_resample_per_epoch: bool = False
     # Per-config-type loss weight multipliers
     config_type_weights: Optional[Dict[str, float]] = None
-    # EWC settings (forgetting-aware fine-tuning)
-    use_ewc: bool = False
-    ewc_lambda: float = 1e6
-    ewc_fisher_data: Optional[str] = None
-    ewc_num_fisher_samples: int = 1000
-
-    @model_validator(mode="after")
-    def validate_ewc(self):
-        if self.use_ewc and self.ewc_fisher_data is None:
-            raise ValueError(
-                "'ewc_fisher_data' must be set when 'use_ewc' is True. "
-                "Provide a path to a subset of the pretraining dataset "
-                "(same format as replay_datasets; NOT the fine-tuning set)."
-            )
-        _adapter_choices = {"lora", "dora", "vera", "lora+mlp"}
-        if self.use_ewc and self.finetune_choice in _adapter_choices:
-            raise ValueError(
-                f"EWC cannot be used with adapter-based fine-tuning "
-                f"(finetune_choice='{self.finetune_choice}'). "
-                f"Adapter methods freeze the base weights before "
-                f"training begins, so EWC would only see the "
-                f"freshly-initialised adapter parameters and protect "
-                f"nothing meaningful. Use one approach or the other: "
-                f"full fine-tuning (naive/last_layer/qkv/mlp) + EWC, "
-                f"or adapter-based fine-tuning without EWC."
-            )
-        return self
-
     @model_validator(mode="after")
     def validate_pretrained(self):
         if (

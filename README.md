@@ -553,46 +553,6 @@ TRAINING:
 This samples 3500 structures from `pretrain_A.xyz` and 1500 from `pretrain_B.h5`, then combines them with the fine-tuning data (oversampled to ~5000) for a total of ~10000 training structures per epoch.
 
 
-#### Elastic Weight Consolidation (EWC / reEWC)
-
-EWC is a regularisation technique that prevents catastrophic forgetting during fine-tuning. It adds a penalty to the loss that keeps model parameters close to their pretrained values, weighted by their importance on the pretraining task. Importance is estimated via the diagonal of the Fisher Information Matrix (FIM), computed once on a subset of the pretraining data before training begins.
-
-**reEWC** — the variant proposed in [An efficient forgetting-aware fine-tuning framework for pretrained universal MLIPs](https://www.nature.com/articles/s41524-025-01895-w) — combines EWC with data replay. To use reEWC, enable both EWC (below) and the replay settings above simultaneously.
-
-The EWC penalty added to each gradient step is:
-
-$$\mathcal{L}_\text{EWC} = \mathcal{L}_\text{FT} + \frac{\lambda}{2} \sum_i F_i \left(\theta_i - \theta^*_i\right)^2$$
-
-where $F_i$ is the diagonal FIM entry for parameter $i$, $\theta^*_i$ is its pretrained value, and $\lambda$ controls the regularisation strength.
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `use_ewc` | `bool` | `False` | Enable EWC regularisation. |
-| `ewc_lambda` | `float` | `1e6` | Regularisation strength λ. The paper reports λ = 10⁶ for eV/atom energy and eV/Å force losses; So3krates uses comparable loss scales so this is a reasonable starting point, but should be validated empirically. |
-| `ewc_fisher_data` | `str` | `None` | Path to a subset of the **pretraining** dataset for Fisher estimation (XYZ, raw HDF5, or preprocessed HDF5). Must **not** be the fine-tuning training or validation set — EWC protects parameters important for old knowledge, so Fisher must be computed on pretraining data. Can point to the same file as `replay_datasets`. Required when `use_ewc: true`. |
-| `ewc_num_fisher_samples` | `int` | `1000` | Number of individual **structures** (not batches) to use for Fisher estimation. Batches of size `batch_size` are drawn until this count is reached. |
-
-**Example (reEWC — EWC + replay):**
-
-```yaml
-TRAINING:
-  path_to_train_data: finetune.xyz
-  finetune_choice: naive
-  # EWC
-  use_ewc: true
-  ewc_lambda: 1.e6
-  ewc_fisher_data: /data/pretrain_subset.xyz
-  ewc_num_fisher_samples: 1000
-  # Replay (makes this reEWC)
-  replay_datasets:
-    - /data/pretrain_subset.xyz
-  replay_fractions: [1.0]
-  replay_total: 1000
-```
-
-> **Note on computational cost:** EWC alone adds negligible overhead (one-time Fisher pass before training, a cheap quadratic penalty per step). reEWC doubles the per-epoch data volume due to the replay component.
-
-
 ### General Settings (`GENERAL`)
 
 | Key | Type | Default | Description |
