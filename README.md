@@ -12,6 +12,7 @@ Implementation of the So3krates + SO3LR model in pytorch.
 3. move to the clone repository
 4. `pip install -r requirements.txt`
 5. `pip install .`
+6. (Optional) PME electrostatics support: `pip install ".[pme]"` (installs `torch-pme>=0.4`)
 
 #### Implemented features:
 1. ASE calculator for MD (including pre-trained SO3LR)
