@@ -147,6 +147,7 @@ class TrainingConfig(BaseModel):
     replay_resample_per_epoch: bool = False
     # Per-config-type loss weight multipliers
     config_type_weights: Optional[Dict[str, float]] = None
+
     @model_validator(mode="after")
     def validate_pretrained(self):
         if (

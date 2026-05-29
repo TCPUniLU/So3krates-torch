@@ -34,6 +34,7 @@ from so3krates_torch.tools.utils import (
 from so3krates_torch.tools.eval import ModelEval
 from so3krates_torch.tools.finetune import preserve_grad_state
 
+
 @dataclasses.dataclass
 class SWAContainer:
     model: AveragedModel
