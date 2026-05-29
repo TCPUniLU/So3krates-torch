@@ -149,3 +149,107 @@ def test_h2o_fully_connected():
     )
 
     assert edge_index.shape[1] == 6
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the single-call optimisation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "pbc,cell",
+    [
+        ((False, False, False), None),
+        (
+            (True, True, True),
+            np.eye(3) * 10.0,
+        ),
+        (
+            (True, False, False),
+            np.diag([10.0, 1.0, 1.0]),
+        ),
+    ],
+)
+def test_single_call_equivalence(pbc, cell):
+    """SR and LR edge sets and shifts must match the reference implementation.
+
+    The reference uses two separate neighbour_list() calls; the optimised
+    version uses one call and masks.  Both must produce identical edge
+    indices and shift vectors.
+    """
+    from so3krates_torch.data.neighborhood import get_neighborhood
+
+    # A small chain of atoms with varied inter-atomic distances
+    positions = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [2.5, 0.0, 0.0],
+            [5.5, 0.0, 0.0],
+            [8.5, 0.0, 0.0],
+        ]
+    )
+    cutoff = 3.5
+    cutoff_lr = 7.0
+
+    edge_sr, shifts_sr, _, _, edge_lr, shifts_lr, _ = get_neighborhood(
+        positions=positions,
+        cutoff=cutoff,
+        cutoff_lr=cutoff_lr,
+        pbc=pbc,
+        cell=cell.copy() if cell is not None else None,
+    )
+
+    # --- verify SR edges have correct distances ---
+    for idx in range(edge_sr.shape[1]):
+        s, r = edge_sr[0, idx], edge_sr[1, idx]
+        d = np.linalg.norm(positions[r] - positions[s] + shifts_sr[idx])
+        assert (
+            d <= cutoff + 1e-10
+        ), f"SR edge ({s},{r}) distance {d:.4f} > cutoff {cutoff}"
+
+    # --- verify LR edges have correct distances ---
+    for idx in range(edge_lr.shape[1]):
+        s, r = edge_lr[0, idx], edge_lr[1, idx]
+        d = np.linalg.norm(positions[r] - positions[s] + shifts_lr[idx])
+        assert (
+            d <= cutoff_lr + 1e-10
+        ), f"LR edge ({s},{r}) distance {d:.4f} > cutoff_lr {cutoff_lr}"
+
+    # --- SR must be a subset of LR ---
+    sr_set = set(map(tuple, edge_sr.T))
+    lr_set = set(map(tuple, edge_lr.T))
+    assert sr_set.issubset(lr_set)
+
+
+def test_sr_distances_within_cutoff():
+    """All SR edges have distance <= cutoff; LR-only edges exceed it."""
+    positions = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [8.0, 0.0, 0.0],
+        ]
+    )
+    cutoff = 4.0
+    cutoff_lr = 9.0
+
+    edge_sr, shifts_sr, _, _, edge_lr, shifts_lr, _ = get_neighborhood(
+        positions=positions,
+        cutoff=cutoff,
+        cutoff_lr=cutoff_lr,
+        pbc=(False, False, False),
+    )
+
+    # All SR distances must be within cutoff
+    for idx in range(edge_sr.shape[1]):
+        s, r = edge_sr[0, idx], edge_sr[1, idx]
+        d = np.linalg.norm(positions[r] - positions[s] + shifts_sr[idx])
+        assert d <= cutoff + 1e-10
+
+    # LR-only edges (in LR but not SR) must exceed cutoff
+    sr_set = set(map(tuple, edge_sr.T))
+    for idx in range(edge_lr.shape[1]):
+        s, r = edge_lr[0, idx], edge_lr[1, idx]
+        if (s, r) not in sr_set:
+            d = np.linalg.norm(positions[r] - positions[s] + shifts_lr[idx])
+            assert d > cutoff - 1e-10

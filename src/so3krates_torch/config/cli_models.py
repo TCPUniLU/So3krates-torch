@@ -19,7 +19,7 @@ class EvalArgs(BaseModel):
     compute_stress: bool = False
     compute_hirshfeld: bool = False
     compute_partial_charges: bool = False
-    dispersion_energy_cutoff_lr_damping: float = 2.0
+    dispersion_energy_cutoff_lr_damping: Optional[float] = None
     energy_key: str = "REF_energy"
     forces_key: str = "REF_forces"
     stress_key: str = "REF_stress"
@@ -33,6 +33,11 @@ class EvalArgs(BaseModel):
     head: str = "head"
     dtype: Literal["float32", "float64"] = "float32"
     return_att: bool = False
+    return_inv_descriptors: bool = False
+    return_eqv_descriptors: bool = False
+    return_mean_inv_descriptors: bool = False
+    return_mean_eqv_descriptors: bool = False
+    mean_descriptors_only: bool = False
     output_prefix: str = "SO3"
 
 
@@ -74,7 +79,7 @@ class MetricArgs(BaseModel):
     log_file: str = "test_ensemble.log"
     results_file: str = "ensemble_test_results.npz"
     r_max_lr: Optional[float] = None
-    dispersion_energy_cutoff_lr_damping: float = 2.0
+    dispersion_energy_cutoff_lr_damping: Optional[float] = None
     energy_key: str = "REF_energy"
     forces_key: str = "REF_forces"
     stress_key: str = "REF_stress"
@@ -159,3 +164,7 @@ class CreateLammpsArgs(BaseModel):
     elements: List[str]
     head: Optional[str] = None
     dtype: Literal["float32", "float64"] = "float64"
+    r_max_lr: Optional[float] = None
+    electrostatic_energy_scale: Optional[float] = None
+    dispersion_energy_scale: Optional[float] = None
+    dispersion_energy_cutoff_lr_damping: Optional[float] = None

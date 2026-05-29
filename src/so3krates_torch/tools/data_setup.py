@@ -1,6 +1,7 @@
 import math
 import random
 import logging
+import h5py
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
@@ -167,9 +168,18 @@ def _load_training_dataset(
             f"Splitting training data with validation ratio " f"{valid_ratio}"
         )
 
+    config_type_weights = config["TRAINING"].get("config_type_weights", None)
     train_configs = create_configs_from_list(
-        atoms_list=train_data, key_specification=keyspec
+        atoms_list=train_data,
+        key_specification=keyspec,
+        config_type_weights=config_type_weights,
     )
+    n_weighted = sum(1 for c in train_configs if c.weight != 1.0)
+    if n_weighted > 0:
+        logging.info(
+            f"Config weights found: {n_weighted}/{len(train_configs)} "
+            f"training structures have non-default weights."
+        )
     logging.info("Preprocessing training data (computing neighbor lists)")
     train_atomic_data = create_data_from_configs(
         train_configs, r_max=r_max, r_max_lr=r_max_lr
@@ -284,6 +294,9 @@ def _load_replay_data(
                 r_max=r_max,
                 r_max_lr=r_max_lr,
                 key_specification=keyspec,
+                config_type_weights=config["TRAINING"].get(
+                    "config_type_weights", None
+                ),
             )
 
         all_replay.extend(replay_data)
@@ -381,12 +394,39 @@ def _load_validation_loader(
         if val_data_path.endswith(".xyz"):
             val_data = read(val_data_path, index=":")
         elif val_data_path.endswith((".h5", ".hdf5")):
+            lazy_loading = config["TRAINING"].get("lazy_loading", False)
+            if lazy_loading:
+                num_workers = config["TRAINING"].get("num_workers", 4)
+                prefetch_factor = config["TRAINING"].get("prefetch_factor", 2)
+                valid_dataset = LazyAtomicDataset(
+                    hdf5_path=val_data_path,
+                    r_max=r_max,
+                    r_max_lr=r_max_lr,
+                    keyspec=keyspec,
+                )
+                logging.info(
+                    f"Lazy validation DataLoader: "
+                    f"num_workers={num_workers}"
+                )
+                return DataLoader(
+                    dataset=valid_dataset,
+                    batch_size=valid_batch_size,
+                    shuffle=False,
+                    num_workers=num_workers,
+                    prefetch_factor=prefetch_factor,
+                    persistent_workers=(num_workers > 0),
+                    collate_fn=Collater([None], [None]),
+                    worker_init_fn=_worker_init_fn,
+                )
             val_data = load_atoms_from_hdf5(val_data_path, index=None)
         else:
             raise ValueError(
                 f"Unsupported validation file format: {val_data_path}"
             )
 
+        config_type_weights = config["TRAINING"].get(
+            "config_type_weights", None
+        )
         return create_dataloader_from_list(
             val_data,
             batch_size=valid_batch_size,
@@ -394,6 +434,7 @@ def _load_validation_loader(
             r_max_lr=r_max_lr,
             key_specification=keyspec,
             shuffle=False,
+            config_type_weights=config_type_weights,
         )
 
     # No separate val file — use split from training data
@@ -412,6 +453,7 @@ def _load_validation_loader(
         raise ValueError(
             "val_split_from_train required when splitting raw data"
         )
+    config_type_weights = config["TRAINING"].get("config_type_weights", None)
     return create_dataloader_from_list(
         val_split_from_train,
         batch_size=valid_batch_size,
@@ -419,6 +461,7 @@ def _load_validation_loader(
         r_max_lr=r_max_lr,
         key_specification=keyspec,
         shuffle=False,
+        config_type_weights=config_type_weights,
     )
 
 
@@ -466,10 +509,15 @@ def _setup_multihead_data_loaders(
             f"Head {head_name} - Validation set size: " f"{len(head_val_data)}"
         )
 
+        head_ctw = head_config.get(
+            "config_type_weights",
+            config["TRAINING"].get("config_type_weights", None),
+        )
         head_config_list_train = create_configs_from_list(
             atoms_list=head_train_data,
             key_specification=keyspec,
             head_name=head_name,
+            config_type_weights=head_ctw,
         )
         train_configs.extend(head_config_list_train)
 
@@ -480,6 +528,7 @@ def _setup_multihead_data_loaders(
             key_specification=keyspec,
             head_name=head_name,
             all_heads=list(heads.keys()),
+            config_type_weights=head_ctw,
         )
         val_data[head_name] = create_dataloader_from_data(
             head_config_list_val,

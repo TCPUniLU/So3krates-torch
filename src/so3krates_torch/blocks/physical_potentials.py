@@ -337,15 +337,12 @@ def vdw_qdo_disp_damp(
     C10 = 245 / 8 / gamma**2 * C6
     p = gamma_scale * 2 * 2.54 * alpha_ij ** (1 / 7)
 
-    # Compute potential
-    R6 = torch.pow(R, 6)
-    R8 = torch.pow(R, 8)
-    R10 = torch.pow(R, 10)
-    p6 = torch.pow(p, 6)
-    p8 = torch.pow(p, 8)
-    p10 = torch.pow(p, 10)
-
-    V3 = -C6 / (R6 + p6) - C8 / (R8 + p8) - C10 / (R10 + p10)
+    # Compute potential — inline to avoid 6 simultaneous [N_pairs] tensors
+    V3 = (
+        -C6 / (R**6 + p**6)
+        - C8 / (R**8 + p**8)
+        - C10 / (R**10 + p**10)
+    )
 
     hartree_factor = torch.tensor(HARTREE, dtype=input_dtype, device=device)
     return c * V3 * hartree_factor
@@ -363,6 +360,7 @@ class CoulombErf(nn.Module):
         ke: float,
         sigma: float,
         neighborlist_format_lr: str = "sparse",
+        dtype: torch.dtype = None,
     ) -> None:
         super().__init__()
         if neighborlist_format_lr not in ("sparse", "ordered_sparse"):
@@ -370,10 +368,10 @@ class CoulombErf(nn.Module):
                 "neighborlist_format_lr must be 'sparse' or 'ordered_sparse'"
             )
         c_val = 0.5 if neighborlist_format_lr == "sparse" else 1.0
-        default_dtype = torch.get_default_dtype()
-        self.register_buffer("ke", torch.tensor(ke, dtype=default_dtype))
-        self.register_buffer("sigma", torch.tensor(sigma, dtype=default_dtype))
-        self.register_buffer("c", torch.tensor(c_val, dtype=default_dtype))
+        dt = dtype if dtype is not None else torch.get_default_dtype()
+        self.register_buffer("ke", torch.tensor(ke, dtype=dt))
+        self.register_buffer("sigma", torch.tensor(sigma, dtype=dt))
+        self.register_buffer("c", torch.tensor(c_val, dtype=dt))
         self.neighborlist_format_lr = neighborlist_format_lr
 
     def forward(
@@ -410,6 +408,7 @@ class CoulombErfShiftedForceSmooth(nn.Module):
         cutoff: float,
         cuton: float,
         neighborlist_format_lr: str = "sparse",
+        dtype: torch.dtype = None,
     ) -> None:
         super().__init__()
         if neighborlist_format_lr not in ("sparse", "ordered_sparse"):
@@ -417,14 +416,12 @@ class CoulombErfShiftedForceSmooth(nn.Module):
                 "neighborlist_format_lr must be 'sparse' or 'ordered_sparse'"
             )
         c_val = 0.5 if neighborlist_format_lr == "sparse" else 1.0
-        default_dtype = torch.get_default_dtype()
-        self.register_buffer("ke", torch.tensor(ke, dtype=default_dtype))
-        self.register_buffer("sigma", torch.tensor(sigma, dtype=default_dtype))
-        self.register_buffer(
-            "cutoff", torch.tensor(cutoff, dtype=default_dtype)
-        )
-        self.register_buffer("cuton", torch.tensor(cuton, dtype=default_dtype))
-        self.register_buffer("c", torch.tensor(c_val, dtype=default_dtype))
+        dt = dtype if dtype is not None else torch.get_default_dtype()
+        self.register_buffer("ke", torch.tensor(ke, dtype=dt))
+        self.register_buffer("sigma", torch.tensor(sigma, dtype=dt))
+        self.register_buffer("cutoff", torch.tensor(cutoff, dtype=dt))
+        self.register_buffer("cuton", torch.tensor(cuton, dtype=dt))
+        self.register_buffer("c", torch.tensor(c_val, dtype=dt))
         self.neighborlist_format_lr = neighborlist_format_lr
 
     @torch.no_grad()
@@ -634,27 +631,28 @@ class ElectrostaticInteraction(nn.Module):
         Returns:
             (N,1) atomic electrostatic energies.
         """
+        input_dtype = lengths_lr.dtype
         if cutoff_lr is not None:
             cuton = 0.45 * float(cutoff_lr)
-            self.coulomb = CoulombErfShiftedForceSmooth(
+            coulomb = CoulombErfShiftedForceSmooth(
                 ke=self.ke,
                 sigma=electrostatic_energy_scale,
                 cutoff=float(cutoff_lr),
                 cuton=cuton,
                 neighborlist_format_lr=self.neighborlist_format_lr,
+                dtype=input_dtype,
             )
         else:
-            self.coulomb = CoulombErf(
+            coulomb = CoulombErf(
                 ke=self.ke,
                 sigma=electrostatic_energy_scale,
                 neighborlist_format_lr=self.neighborlist_format_lr,
+                dtype=input_dtype,
             )
         if lengths_lr.dim() == 2 and lengths_lr.size(-1) == 1:
             lengths_lr = lengths_lr.squeeze(-1)
 
-        edge_e = self.coulomb(
-            partial_charges, lengths_lr, senders_lr, receivers_lr
-        )
+        edge_e = coulomb(partial_charges, lengths_lr, senders_lr, receivers_lr)
 
         atomic_e = scatter_sum(
             src=edge_e,
@@ -668,6 +666,102 @@ class ElectrostaticInteraction(nn.Module):
     def reset_output_convention(self, output_convention):
         # No-op to keep interface compatibility
         pass
+
+
+class PMEElectrostaticInteraction(nn.Module):
+    """Electrostatic energy via Particle Mesh Ewald (torch-pme).
+
+    The real-space sum uses the SR neighbor list (cutoff = r_max); the
+    reciprocal-space mesh captures the long-range tail for periodic
+    systems. Parameters follow the torch-pme ML-potential convention:
+        smearing     = r_max / 5
+        mesh_spacing = smearing / 2
+
+    For optimally tuned parameters use torchpme.tuning.tune_pme() on a
+    representative batch and pass the results as smearing / mesh_spacing.
+    """
+
+    def __init__(
+        self,
+        *,
+        smearing: float,
+        mesh_spacing: float,
+        interpolation_nodes: int = 4,
+        ke: float = 14.399645351950548,
+    ) -> None:
+        super().__init__()
+        import torchpme  # lazy import — only required when use_pme=True
+
+        self.ke = ke
+        potential = torchpme.CoulombPotential(smearing=smearing)
+        self.calculator = torchpme.PMECalculator(
+            potential=potential,
+            mesh_spacing=mesh_spacing,
+            interpolation_nodes=interpolation_nodes,
+        )
+
+    def forward(
+        self,
+        partial_charges: torch.Tensor,  # (N,)
+        positions: torch.Tensor,  # (N, 3)
+        cell: torch.Tensor,  # (N_graphs, 3, 3)
+        edge_index: torch.Tensor,  # (2, E_sr) — SR neighbor list
+        lengths: torch.Tensor,  # (E_sr,)
+        batch_segments: torch.Tensor,  # (N,)
+        num_graphs: int,
+        num_nodes: int,
+    ) -> torch.Tensor:  # (N, 1)
+        # PyG Batch concatenates [3,3] cells along dim 0 → [N*3,3].
+        # Restore to [N,3,3] so cell[g] yields the correct [3,3] matrix.
+        cell = cell.view(-1, 3, 3)
+        atomic_e = torch.zeros(
+            num_nodes,
+            1,
+            dtype=positions.dtype,
+            device=positions.device,
+        )
+        for g in range(num_graphs):
+            atom_mask = batch_segments == g
+            pos_g = positions[atom_mask]  # (N_g, 3)
+            q_g = partial_charges[atom_mask]  # (N_g,)
+            cell_g = cell[g]  # (3, 3)
+            if cell_g.abs().sum() == 0:
+                raise ValueError(
+                    "PME electrostatics requires periodic boundary "
+                    "conditions, but the cell for graph "
+                    f"{g} is all zeros (non-periodic system). "
+                    "Either set pbc=True and provide a cell, or "
+                    "use use_pme=False for non-periodic systems."
+                )
+
+            # SR edges within graph g
+            edge_mask = atom_mask[edge_index[0]]
+            idx_g = edge_index[:, edge_mask]  # (2, E_g)
+            # lengths has shape [E,1] (keepdim=True in prepare_graph);
+            # torchpme expects 1-D distances [E_g].
+            d_g = lengths[edge_mask].squeeze(-1)  # (E_g,)
+
+            # Renumber to local indices 0..N_g-1
+            offset = atom_mask.nonzero(as_tuple=False)[0, 0]
+            local_idx = idx_g - offset  # (2, E_g)
+
+            # charges: (N_g, 1); output: (N_g, 1)
+            potentials_g = self.calculator.forward(
+                charges=q_g.unsqueeze(1),
+                cell=cell_g,
+                positions=pos_g,
+                neighbor_indices=local_idx.T,  # (E_g, 2)
+                neighbor_distances=d_g,
+            )
+
+            # E_i = 0.5 * ke * q_i * phi_i
+            e_g = 0.5 * self.ke * q_g.unsqueeze(1) * potentials_g
+            atomic_e[atom_mask] = e_g
+
+        return atomic_e
+
+    def reset_output_convention(self, output_convention):
+        pass  # interface compatibility
 
 
 class DispersionInteraction(nn.Module):

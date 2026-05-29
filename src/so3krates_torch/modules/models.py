@@ -20,6 +20,7 @@ from so3krates_torch.blocks.physical_potentials import (
     ZBLRepulsion,
     ElectrostaticInteraction,
     DispersionInteraction,
+    PMEElectrostaticInteraction,
 )
 from so3krates_torch.tools import scatter
 from so3krates_torch.tools import utils
@@ -208,7 +209,7 @@ class So3krates(torch.nn.Module):
         self.atomic_energy_output_block = AtomicEnergyOutputHead(
             num_features=self.num_features,
             energy_regression_dim=self.energy_regression_dim,
-            final_output_features=1,  # TODO: remove hardcoded value
+            final_output_features=1,  # scalar energy per atom
             layers=self.final_mlp_layers,
             bias=True,
             non_linearity=self.energy_activation_fn,
@@ -430,6 +431,7 @@ class So3krates(torch.nn.Module):
         hessian: torch.Tensor,
         edge_forces: torch.Tensor,
         inv_features: Optional[torch.Tensor],
+        ev_features: Optional[torch.Tensor],
         att_scores: Optional[torch.Tensor],
         training: bool = False,
     ) -> Dict[str, Optional[torch.Tensor]]:
@@ -441,6 +443,7 @@ class So3krates(torch.nn.Module):
             "hessian": hessian,
             "edge_forces": edge_forces,
             "inv_features": inv_features,
+            "ev_features": ev_features,
             "att_scores": att_scores,
         }
 
@@ -457,6 +460,7 @@ class So3krates(torch.nn.Module):
         compute_atomic_stresses: bool = False,
         lammps_mliap: bool = False,
         return_descriptors: bool = False,
+        return_eqv_descriptors: bool = False,
         return_att: bool = False,
     ) -> Dict[str, Optional[torch.Tensor]]:
         self.batch_segments = data["batch"]
@@ -513,6 +517,8 @@ class So3krates(torch.nn.Module):
             compute_hessian=compute_hessian,
             compute_edge_forces=compute_edge_forces,
         )
+        if lammps_mliap:
+            del self.ctx
         return self._create_output_dict(
             total_energy=total_energy,
             forces=forces,
@@ -522,6 +528,7 @@ class So3krates(torch.nn.Module):
             edge_forces=edge_forces,
             att_scores=att_scores if return_att else None,
             inv_features=inv_features if return_descriptors else None,
+            ev_features=(ev_features if return_eqv_descriptors else None),
             training=training,
         )
 
@@ -537,6 +544,9 @@ class SO3LR(So3krates):
         dispersion_energy_cutoff_lr_damping: float = None,
         r_max_lr: float = 12.0,
         neighborlist_format_lr: str = "sparse",
+        use_pme: bool = False,
+        pme_smearing: float = None,
+        pme_mesh_spacing: float = None,
         *args,
         **kwargs,
     ):
@@ -569,7 +579,7 @@ class SO3LR(So3krates):
         # to jax back and forth ... its ugly and wasteful, i know.
 
         # Electrostatics
-        if self.electrostatic_energy_bool:
+        if self.electrostatic_energy_bool and not use_pme:
             self.use_lr = True
         self.partial_charges_output_block = PartialChargesOutputHead(
             num_features=self.num_features,
@@ -580,6 +590,16 @@ class SO3LR(So3krates):
         self.electrostatic_potential = ElectrostaticInteraction(
             neighborlist_format_lr=self.neighborlist_format_lr
         )
+        self.use_pme = use_pme
+        if use_pme:
+            _smearing = pme_smearing or self.r_max / 5.0
+            _mesh_spacing = pme_mesh_spacing or _smearing / 2.0
+            self.pme_smearing = _smearing
+            self.pme_mesh_spacing = _mesh_spacing
+            self.pme_electrostatic_potential = PMEElectrostaticInteraction(
+                smearing=_smearing,
+                mesh_spacing=_mesh_spacing,
+            )
 
         # Dispersion
         if self.dispersion_energy_bool:
@@ -672,12 +692,16 @@ class SO3LR(So3krates):
         compute_hessian: bool = False,
         compute_edge_forces: bool = False,
         batch: Optional[torch.tensor] = None,
+        vectors_all: Optional[torch.Tensor] = None,
     ):
         return utils.get_outputs(
             energy=energy,
             positions=positions,
             displacement=displacement,
-            vectors=vectors,
+            # In LAMMPS+LR mode, vectors_all is the single leaf
+            # tensor covering all pairs. Computing edge forces
+            # w.r.t. it yields combined SR+LR pair forces.
+            vectors=(vectors_all if vectors_all is not None else vectors),
             cell=cell,
             training=training,
             compute_force=compute_force,
@@ -700,6 +724,7 @@ class SO3LR(So3krates):
         dipole: torch.Tensor,
         hirshfeld_ratios: torch.Tensor,
         inv_features: torch.Tensor,
+        ev_features: torch.Tensor,
         att_scores: torch.Tensor,
         node_energy: Optional[torch.Tensor] = None,
         training: bool = False,
@@ -717,6 +742,7 @@ class SO3LR(So3krates):
             "dipole": dipole,
             "hirshfeld_ratios": hirshfeld_ratios,
             "inv_features": inv_features,
+            "ev_features": ev_features,
             "att_scores": att_scores,
         }
 
@@ -731,6 +757,7 @@ class SO3LR(So3krates):
         compute_hessian: bool = False,
         compute_edge_forces: bool = False,
         return_descriptors: bool = False,
+        return_eqv_descriptors: bool = False,
         compute_atomic_stresses: bool = False,
         lammps_mliap: bool = False,
         return_att: bool = False,
@@ -793,15 +820,29 @@ class SO3LR(So3krates):
                 batch_segments=self.batch_segments,
                 num_graphs=self.num_graphs,
             )
-            electrostatic_energies = self.electrostatic_potential(
-                partial_charges=partial_charges,
-                senders_lr=self.senders_lr,
-                receivers_lr=self.receivers_lr,
-                lengths_lr=self.lengths_lr,
-                num_nodes=inv_features.shape[0],
-                cutoff_lr=self.r_max_lr,
-                electrostatic_energy_scale=self.electrostatic_energy_scale,
-            )
+            if getattr(self, "use_pme", False):
+                electrostatic_energies = self.pme_electrostatic_potential(
+                    partial_charges=partial_charges,
+                    positions=self.positions,
+                    cell=self.cell,
+                    edge_index=data["edge_index"],
+                    lengths=self.lengths,
+                    batch_segments=self.batch_segments,
+                    num_graphs=self.num_graphs,
+                    num_nodes=inv_features.shape[0],
+                )
+            else:
+                electrostatic_energies = self.electrostatic_potential(
+                    partial_charges=partial_charges,
+                    senders_lr=self.senders_lr,
+                    receivers_lr=self.receivers_lr,
+                    lengths_lr=self.lengths_lr,
+                    num_nodes=inv_features.shape[0],
+                    cutoff_lr=self.r_max_lr,
+                    electrostatic_energy_scale=(
+                        self.electrostatic_energy_scale
+                    ),
+                )
         dispersion_energies = None
         if self.dispersion_energy_bool:
             hirshfeld_ratios = self.hirshfeld_output_block(
@@ -859,7 +900,13 @@ class SO3LR(So3krates):
             compute_hessian=compute_hessian,
             compute_edge_forces=compute_edge_forces,
             batch=data["batch"],
+            # In LAMMPS+LR mode, vectors_all is the single leaf tensor
+            # for all pairs. Edge forces computed w.r.t. it give combined
+            # SR+LR pair forces in one autograd call.
+            vectors_all=self.ctx.vectors_all,
         )
+        if lammps_mliap:
+            del self.ctx
 
         return self._create_output_dict(
             total_energy=total_energy,
@@ -877,6 +924,7 @@ class SO3LR(So3krates):
                 hirshfeld_ratios if self.dispersion_energy_bool else None
             ),
             inv_features=inv_features if return_descriptors else None,
+            ev_features=(ev_features if return_eqv_descriptors else None),
             att_scores=att_scores if return_att else None,
             node_energy=atomic_energies,
             training=training,
@@ -895,7 +943,7 @@ class MultiHeadSO3LR(SO3LR):
         self.atomic_energy_output_block = MultiAtomicEnergyOutputHead(
             num_features=self.num_features,
             energy_regression_dim=self.energy_regression_dim,
-            final_output_features=1,  # TODO: remove hardcoded value
+            final_output_features=1,  # scalar energy per atom
             layers=self.final_mlp_layers,
             bias=True,
             non_linearity=self.energy_activation_fn,
@@ -925,12 +973,13 @@ class MultiHeadSO3LR(SO3LR):
         compute_hessian: bool = False,
         compute_edge_forces: bool = False,
         batch: Optional[torch.tensor] = None,
+        vectors_all: Optional[torch.Tensor] = None,
     ):
         forces, virials, stress, hessian, edge_forces = utils.get_outputs(
             energy=energy,
             positions=positions,
             displacement=displacement,
-            vectors=vectors,
+            vectors=(vectors_all if vectors_all is not None else vectors),
             cell=cell,
             training=training,
             compute_force=compute_force,
@@ -1008,6 +1057,7 @@ class MultiHeadSO3LR(SO3LR):
         dipole: torch.Tensor,
         hirshfeld_ratios: torch.Tensor,
         inv_features: torch.Tensor,
+        ev_features: torch.Tensor,
         att_scores: torch.Tensor,
         node_energy: Optional[torch.Tensor] = None,
         training: bool = False,
@@ -1028,6 +1078,7 @@ class MultiHeadSO3LR(SO3LR):
             "dipole": dipole,
             "hirshfeld_ratios": hirshfeld_ratios,
             "inv_features": inv_features,
+            "ev_features": ev_features,
             "att_scores": att_scores,
         }
         if self.select_heads:

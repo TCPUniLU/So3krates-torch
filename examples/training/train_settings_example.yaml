@@ -14,7 +14,7 @@ ARCHITECTURE:
   degrees: [1,2,3,4]
   dispersion_energy_bool: true
   dispersion_energy_scale: 1.2
-  dispersion_energy_cutoff_lr_damping: 2.0
+  dispersion_energy_cutoff_lr_damping: 2.0  # required when dispersion_energy_bool: true
   electrostatic_energy_bool: true
   electrostatic_energy_scale: 4.0
   energy_activation_fn: silu
@@ -37,6 +37,14 @@ ARCHITECTURE:
   use_spin_embed: true
   zbl_repulsion_bool: true
   neighborlist_format_lr: sparse
+  use_pme: false  # true = PME electrostatics for periodic systems (requires torch-pme)
+  # pme_smearing: 1.2       # Ewald splitting (Å); default = r_max / 5
+  # pme_mesh_spacing: 0.6   # FFT grid spacing (Å); default = smearing / 2
+  # Run: torchkrates-tune-pme --data train.xyz --r_max 6.0 to tune smearing/mesh_spacing.
+  # Combined mode: use_pme: true + dispersion_energy_bool: true gives PME electrostatics
+  # + real-space vdW-QDO dispersion (C6+C8+C10). r_max_lr and
+  # dispersion_energy_cutoff_lr_damping are still required for dispersion.
+  # Dispersion converges as 1/r_max_lr^3; real-space is accurate without PME.
   compute_avg_num_neighbors: True
 
 TRAINING:
@@ -46,21 +54,30 @@ TRAINING:
   lr: 0.001
   optimizer: adam
   amsgrad: True
-  scheduler: exponential_decay 
+  # betas: [0.9, 0.999]          # Adam/AdamW first and second moment coefficients
+  # eps: 1.e-8                    # numerical stability term for Adam/AdamW
+  scheduler: exponential_decay
   lr_scheduler_gamma: 0.85
   energy_weight: 0.
   forces_weight: 1000.
+  # charges_weight: 0.   # partial charge MSE loss; requires REF_charges per-atom array in training data
+  # hirshfeld_weight: 0. # Hirshfeld ratio MSE loss; requires REF_hirsh_ratios per-atom array
   eval_interval: 1
   num_epochs: 5
   path_to_train_data: ./path/to/train/data
   valid_ratio: 0.1
   clip_grad: 10.0
-  neighbors_lr_cutoff: 100.
   patience: 50
   # lazy_loading: false       # on-the-fly preprocessing from raw HDF5 (default: false)
   # num_workers: 4            # DataLoader worker processes (only with lazy_loading)
   # prefetch_factor: 2        # batches prefetched per worker (only with lazy_loading)
   # num_neighbor_samples: 1000  # structures sampled for avg_num_neighbors estimate
+  # --- Per-config-type loss weight multipliers ---
+  # Structures are tagged with atoms.info["config_type"] in the data file.
+  # Each type's loss contribution is scaled by its weight (default: 1.0).
+  # config_type_weights:
+  #   Default: 1.0
+  #   dissociation: 2.0    # upweight dissociation structures 2x in the loss
   # --- Data replay (for fine-tuning) ---
   # replay_datasets:            # paths to replay datasets (XYZ, raw/preprocessed HDF5)
   #   - /path/to/pretrain_A.xyz
@@ -69,6 +86,9 @@ TRAINING:
   # replay_total: 5000            # total number of replay structures to sample
   # replay_oversample_finetune: true   # repeat fine-tune data to match replay size (default: true)
   # replay_resample_per_epoch: false   # re-draw replay subset each epoch (default: false)
+  # --- LoRA+ optimizer (use with finetune_choice: lora / dora / vera) ---
+  # use_lora_plus: false           # apply a separate LR to LoRA B matrices
+  # lora_B_lr: 0.01                # B-matrix LR (e.g. 10x the base lr)
 
 
 MISC:

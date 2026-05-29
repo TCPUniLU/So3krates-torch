@@ -13,6 +13,8 @@ class GeneralConfig(BaseModel):
         "float32", "float64", "float16", "bfloat16"
     ] = "float64"
     seed: int = 100
+    # inference-only: stress is computed during evaluation but has no
+    # loss weight and is never used as a training target
     compute_stress: bool = False
 
 
@@ -51,6 +53,10 @@ class ArchitectureConfig(BaseModel):
     dispersion_energy_scale: float = 1.2
     dispersion_energy_cutoff_lr_damping: Optional[float] = None
     neighborlist_format_lr: str = "sparse"
+    # PME electrostatics
+    use_pme: bool = False
+    pme_smearing: Optional[float] = None
+    pme_mesh_spacing: Optional[float] = None
     compute_avg_num_neighbors: bool = True
     # Multi-head
     convert_to_multihead: bool = False
@@ -59,18 +65,34 @@ class ArchitectureConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_long_range(self):
+        electrostatics_needs_lr = (
+            self.electrostatic_energy_bool and not self.use_pme
+        )
+        dispersion_needs_lr = self.dispersion_energy_bool
         if (
-            self.electrostatic_energy_bool or self.dispersion_energy_bool
+            electrostatics_needs_lr or dispersion_needs_lr
         ) and self.r_max_lr is None:
             raise ValueError(
                 "Long-range cutoff 'r_max_lr' must be specified "
                 "when electrostatic_energy_bool or "
-                "dispersion_energy_bool is True. "
+                "dispersion_energy_bool is True (and the "
+                "corresponding PME flag is False). "
                 f"Current: r_max_lr={self.r_max_lr}, "
                 f"electrostatic_energy_bool="
                 f"{self.electrostatic_energy_bool}, "
+                f"use_pme={self.use_pme}, "
                 f"dispersion_energy_bool="
                 f"{self.dispersion_energy_bool}"
+            )
+        if (
+            self.dispersion_energy_bool
+            and self.dispersion_energy_cutoff_lr_damping is None
+        ):
+            raise ValueError(
+                "dispersion_energy_cutoff_lr_damping must be "
+                "specified when dispersion_energy_bool is True. "
+                f"Got dispersion_energy_cutoff_lr_damping="
+                f"{self.dispersion_energy_cutoff_lr_damping}"
             )
         if self.convert_to_multihead and (self.num_output_heads is None):
             raise ValueError(
@@ -100,7 +122,6 @@ class TrainingConfig(BaseModel):
     eval_interval: int = 1
     valid_ratio: float = 0.1
     clip_grad: float = 10.0
-    neighbors_lr_cutoff: float = 100.0
     patience: int = 50
     early_stopping_min_delta: float = 0.0
     early_stopping_warmup: int = 0
@@ -124,7 +145,8 @@ class TrainingConfig(BaseModel):
     replay_total: Optional[int] = None
     replay_oversample_finetune: bool = True
     replay_resample_per_epoch: bool = False
-
+    # Per-config-type loss weight multipliers
+    config_type_weights: Optional[Dict[str, float]] = None
     @model_validator(mode="after")
     def validate_pretrained(self):
         if (

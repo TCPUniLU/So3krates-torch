@@ -84,14 +84,32 @@ def weighted_mean_squared_error_hirshfeld(
     # Repeat per-graph weights to per-atom level.
     configs_weight = torch.repeat_interleave(
         ref.weight, ref.ptr[1:] - ref.ptr[:-1]
-    ).unsqueeze(-1)
-    configs_forces_weight = torch.repeat_interleave(
+    )
+    configs_hirshfeld_weight = torch.repeat_interleave(
         ref.hirshfeld_ratios_weight, ref.ptr[1:] - ref.ptr[:-1]
-    ).unsqueeze(-1)
+    )
     raw_loss = (
         configs_weight
-        * configs_forces_weight
+        * configs_hirshfeld_weight
         * torch.square(ref["hirshfeld_ratios"] - pred["hirshfeld_ratios"])
+    )
+    return reduce_loss(raw_loss, ddp)
+
+
+def weighted_mean_squared_error_charges(
+    ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
+) -> torch.Tensor:
+    # Repeat per-graph weights to per-atom level.
+    configs_weight = torch.repeat_interleave(
+        ref.weight, ref.ptr[1:] - ref.ptr[:-1]
+    )
+    configs_charges_weight = torch.repeat_interleave(
+        ref.charges_weight, ref.ptr[1:] - ref.ptr[:-1]
+    )
+    raw_loss = (
+        configs_weight
+        * configs_charges_weight
+        * torch.square(ref["charges"] - pred["partial_charges"])
     )
     return reduce_loss(raw_loss, ddp)
 
@@ -245,5 +263,92 @@ class WeightedEnergyForcesDipoleHirshfeldLoss(torch.nn.Module):
             f"{self.__class__.__name__}(energy_weight={self.energy_weight:.3f}, "
             f"forces_weight={self.forces_weight:.3f}, "
             f"dipole_weight={self.dipole_weight:.3f}, "
+            f"hirshfeld_weight={self.hirshfeld_weight:.3f})"
+        )
+
+
+class WeightedEnergyForcesChargesLoss(torch.nn.Module):
+    def __init__(
+        self, energy_weight=1.0, forces_weight=1.0, charges_weight=1.0
+    ) -> None:
+        super().__init__()
+        self.register_buffer(
+            "energy_weight",
+            torch.tensor(energy_weight, dtype=torch.get_default_dtype()),
+        )
+        self.register_buffer(
+            "forces_weight",
+            torch.tensor(forces_weight, dtype=torch.get_default_dtype()),
+        )
+        self.register_buffer(
+            "charges_weight",
+            torch.tensor(charges_weight, dtype=torch.get_default_dtype()),
+        )
+
+    def forward(
+        self, ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
+    ) -> torch.Tensor:
+        loss_energy = weighted_mean_squared_error_energy(ref, pred, ddp)
+        loss_forces = mean_squared_error_forces(ref, pred, ddp)
+        loss_charges = weighted_mean_squared_error_charges(ref, pred, ddp)
+        return (
+            self.energy_weight * loss_energy
+            + self.forces_weight * loss_forces
+            + self.charges_weight * loss_charges
+        )
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}(energy_weight={self.energy_weight:.3f}, "
+            f"forces_weight={self.forces_weight:.3f}, "
+            f"charges_weight={self.charges_weight:.3f})"
+        )
+
+
+class WeightedEnergyForcesChargesHirshfeldLoss(torch.nn.Module):
+    def __init__(
+        self,
+        energy_weight=1.0,
+        forces_weight=1.0,
+        charges_weight=1.0,
+        hirshfeld_weight=1.0,
+    ) -> None:
+        super().__init__()
+        self.register_buffer(
+            "energy_weight",
+            torch.tensor(energy_weight, dtype=torch.get_default_dtype()),
+        )
+        self.register_buffer(
+            "forces_weight",
+            torch.tensor(forces_weight, dtype=torch.get_default_dtype()),
+        )
+        self.register_buffer(
+            "charges_weight",
+            torch.tensor(charges_weight, dtype=torch.get_default_dtype()),
+        )
+        self.register_buffer(
+            "hirshfeld_weight",
+            torch.tensor(hirshfeld_weight, dtype=torch.get_default_dtype()),
+        )
+
+    def forward(
+        self, ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
+    ) -> torch.Tensor:
+        loss_energy = weighted_mean_squared_error_energy(ref, pred, ddp)
+        loss_forces = mean_squared_error_forces(ref, pred, ddp)
+        loss_charges = weighted_mean_squared_error_charges(ref, pred, ddp)
+        loss_hirshfeld = weighted_mean_squared_error_hirshfeld(ref, pred, ddp)
+        return (
+            self.energy_weight * loss_energy
+            + self.forces_weight * loss_forces
+            + self.charges_weight * loss_charges
+            + self.hirshfeld_weight * loss_hirshfeld
+        )
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}(energy_weight={self.energy_weight:.3f}, "
+            f"forces_weight={self.forces_weight:.3f}, "
+            f"charges_weight={self.charges_weight:.3f}, "
             f"hirshfeld_weight={self.hirshfeld_weight:.3f})"
         )

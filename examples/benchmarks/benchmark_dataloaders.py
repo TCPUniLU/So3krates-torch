@@ -109,9 +109,13 @@ def run_benchmark(
     if mode == "eager":
         loader, n_frames = _build_eager_loader(data_path, r_max, batch_size)
     elif mode == "lazy":
-        loader, n_frames = _build_xyz_loader(data_path, r_max, batch_size, lazy=False)
+        loader, n_frames = _build_xyz_loader(
+            data_path, r_max, batch_size, lazy=False
+        )
     elif mode == "lazy-file":
-        loader, n_frames = _build_xyz_loader(data_path, r_max, batch_size, lazy=True)
+        loader, n_frames = _build_xyz_loader(
+            data_path, r_max, batch_size, lazy=True
+        )
     elif mode in ("cached-cold", "cached-warm"):
         cache = DiskCache(
             cache_dir=cache_dir,
@@ -166,7 +170,9 @@ def run_benchmark(
 def check_correctness(data_path: str, r_max: float, batch_size: int) -> None:
     print("\n[correctness] comparing eager vs lazy...", flush=True)
     eager_loader, _ = _build_eager_loader(data_path, r_max, batch_size)
-    lazy_loader, _ = _build_xyz_loader(data_path, r_max, batch_size, lazy=False)
+    lazy_loader, _ = _build_xyz_loader(
+        data_path, r_max, batch_size, lazy=False
+    )
 
     for i, (b_e, b_l) in enumerate(zip(eager_loader, lazy_loader)):
         for attr in ("positions", "energy", "forces", "atomic_numbers"):

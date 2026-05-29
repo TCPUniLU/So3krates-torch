@@ -22,6 +22,7 @@ Implementation of the So3krates + SO3LR model in pytorch.
 6. Data preprocessing: `torchkrates-preprocess`
 7. HDF5 file merging: `torchkrates-merge`
 8. LAMMPS model export: `torchkrates-create-lammps-model`
+9. PME parameter tuning: `torchkrates-tune-pme`
 
 
 > [!IMPORTANT]
@@ -126,9 +127,10 @@ torchkrates-create-lammps-model model.pt --elements Si O
 | `--elements` | Element symbols present in the simulation (must match LAMMPS `pair_coeff` type order) |
 | `--head` | Head name for multi-head models (interactive selection if omitted) |
 | `--dtype` | `float32` or `float64` (default: `float64`) |
-
-> [!NOTE]
-> LAMMPS export only supports **short-range** models. Models with `electrostatic_energy_bool=True` or `dispersion_energy_bool=True` are rejected — retrain without long-range potentials for LAMMPS use.
+| `--r-max-lr` | Override the long-range cutoff radius (Å). Only applicable to LR models. |
+| `--electrostatic-energy-scale` | Override the electrostatic energy scaling factor. |
+| `--dispersion-energy-scale` | Override the dispersion energy scaling factor. |
+| `--dispersion-energy-cutoff-lr-damping` | Override the dispersion long-range damping cutoff. |
 
 ---
 
@@ -211,6 +213,39 @@ torchkrates-metric \
   --output_args energy forces
 ```
 
+### `torchkrates-tune-pme` — PME Parameter Tuning
+
+Find optimal PME parameters (`pme_smearing`, `pme_mesh_spacing`) for a given dataset and SR cutoff. Runs `torchpme.tuning.tune_pme()` on a representative sample of training structures and reports the median values. Requires `torch-pme` and `matscipy` to be installed.
+
+```bash
+torchkrates-tune-pme \
+    --data_path train_data.h5 \
+    --r_max 6.0 \
+    --n_samples 50 \
+    --update_config config.yaml
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--data_path` | *required* | Training dataset (`.xyz`, `.extxyz`, `.h5`/`.hdf5`) |
+| `--r_max` | *required* | SR cutoff radius in Å — must match the model's `r_max` |
+| `--n_samples` | `50` | Maximum number of periodic structures to use for tuning |
+| `--accuracy` | `1e-3` | Target accuracy for the PME error bound |
+| `--charges_key` | `None` | Key in `atoms.arrays` for partial charges (default: unit charges) |
+| `--device` | `cpu` | Device for torch tensors |
+| `--dtype` | `float64` | `float32` or `float64` |
+| `--update_config` | `None` | If given, write `pme_smearing` and `pme_mesh_spacing` to this YAML config |
+
+Example output:
+```
+PME tuning results (median over structures):
+  Electrostatics:
+    pme_smearing:     1.1842 Å
+    pme_mesh_spacing: 0.5921 Å
+```
+
+---
+
 ### `torchkrates-jax2torch` / `torchkrates-torch2jax` — Weight Conversion
 
 Convert model weights between the PyTorch and JAX (mlff) implementations. Requires `jax`, `flax`, and [`mlff`](https://github.com/thorben-frank/mlff/tree/v1.0-lrs-gems) to be installed.
@@ -242,13 +277,14 @@ These settings define the SO3LR neural network architecture.
 | `num_layers` | `int` | `3` | Number of stacked Euclidean transformer layers. |
 | `num_radial_basis_fn` | `int` | `32` | Number of radial basis functions used to expand interatomic distances. |
 | `energy_regression_dim` | `int` | `128` | Hidden dimension of the MLP in the atomic energy output head. |
+| `input_convention` | `str` | `"positions"` | Convention for atomic positions in the data. Options: `positions` (Cartesian coordinates). |
 
 #### Cutoffs and Basis Functions
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `r_max` | `float` | `4.5` | Short-range cutoff radius in Angstrom. Atoms beyond this distance do not interact through the neural network. |
-| `r_max_lr` | `float` | `None` | Long-range cutoff for electrostatics and dispersion. Required when `electrostatic_energy_bool` or `dispersion_energy_bool` is enabled. |
+| `r_max_lr` | `float` | `None` | Long-range cutoff for electrostatics and dispersion. Required when `electrostatic_energy_bool: true` (unless `use_pme: true`) or `dispersion_energy_bool: true`. |
 | `radial_basis_fn` | `str` | `"bernstein"` | Radial basis function type. Options: `bernstein`, `gaussian`, `bessel`. |
 | `cutoff_fn` | `str` | `"cosine"` | Envelope function that smoothly decays interactions to zero at the cutoff. Options: `cosine`, `phys`, `polynomial`, `exponential`. |
 | `trainable_rbf` | `bool` | `False` | Whether radial basis function parameters are trainable. |
@@ -291,10 +327,42 @@ These enable the physics-based long-range interactions that distinguish SO3LR fr
 | `zbl_repulsion_bool` | `bool` | `True` | Enable the ZBL repulsion potential for short-range nuclear repulsion. |
 | `electrostatic_energy_bool` | `bool` | `True` | Enable electrostatic interactions via learned partial charges. Requires `r_max_lr` to be set. |
 | `electrostatic_energy_scale` | `float` | `4.0` | Scaling factor for the electrostatic energy contribution. |
-| `dispersion_energy_bool` | `bool` | `True` | Enable van der Waals dispersion interactions via learned Hirshfeld ratios. Requires `r_max_lr` to be set. |
+| `dispersion_energy_bool` | `bool` | `True` | Enable van der Waals dispersion interactions via learned Hirshfeld ratios. Requires `r_max_lr`. |
 | `dispersion_energy_scale` | `float` | `1.2` | Scaling factor for the dispersion energy contribution. |
-| `dispersion_energy_cutoff_lr_damping` | `float` | `None` | Damping cutoff for dispersion interactions. |
+| `dispersion_energy_cutoff_lr_damping` | `float` | `None` | Damping cutoff (Å) for the TS dispersion damping function. Required when `dispersion_energy_bool: true`. |
 | `neighborlist_format_lr` | `str` | `"sparse"` | Storage format for the long-range neighbor list. |
+| `use_pme` | `bool` | `False` | Enable PME electrostatics for periodic systems. See [PME Electrostatics](#pme-electrostatics-particle-mesh-ewald). |
+| `pme_smearing` | `float` | `r_max / 5` | Ewald splitting width (Å) for PME electrostatics. |
+| `pme_mesh_spacing` | `float` | `smearing / 2` | FFT grid spacing (Å) for PME electrostatics. |
+
+#### PME Electrostatics (Particle Mesh Ewald)
+
+For periodic systems, the direct-space Coulomb sum is conditionally convergent and a cutoff scheme introduces systematic errors that worsen with smaller boxes. PME splits the 1/r sum into a real-space part (using the SR neighbor list) and a reciprocal-space FFT part that captures the long-range tail exactly. When `use_pme: true`, `r_max_lr` is no longer required for electrostatics.
+
+**Requires `torch-pme>=0.4` to be installed.** Use `torchkrates-tune-pme` to find optimal parameter values for your dataset.
+
+**Limitations:**
+- PME requires **periodic boundary conditions** (`pbc=True` on all axes). Calling a PME model on a non-periodic system raises a `ValueError`.
+- The PME sum assumes **charge neutrality** (total charge ≈ 0). Non-neutral systems produce a conditionally-convergent result that depends on the background charge convention.
+- PME models are **incompatible with the LAMMPS ML-IAP interface** (LAMMPS passes edge vectors, not absolute positions). Use the ASE calculator for PME production runs.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `use_pme` | `bool` | `False` | Enable PME electrostatics. Replaces the direct cutoff scheme (`ElectrostaticInteraction`) with `PMEElectrostaticInteraction`. When `True`, `r_max_lr` is not required for the electrostatic contribution. |
+| `pme_smearing` | `float` | `r_max / 5` | Ewald splitting width in Å. Controls the split between real- and reciprocal-space contributions. Smaller values shift more work to the mesh but reduce real-space accuracy. Run `torchkrates-tune-pme` to find the optimal value. |
+| `pme_mesh_spacing` | `float` | `smearing / 2` | FFT grid spacing in Å. Finer grids improve reciprocal-space accuracy at higher computational cost. |
+
+Example config with PME enabled:
+```yaml
+ARCHITECTURE:
+  r_max: 6.0
+  # r_max_lr can be omitted when use_pme is true (not needed for electrostatics)
+  use_pme: true
+  pme_smearing: 1.18       # from torchkrates-tune-pme
+  pme_mesh_spacing: 0.59
+  electrostatic_energy_bool: true
+  electrostatic_energy_scale: 4.0
+```
 
 #### Multi-Head Ensemble
 
@@ -369,6 +437,8 @@ TRAINING:
 | `lr` | `float` | *required* | Initial learning rate. |
 | `weight_decay` | `float` | `0.0` | L2 regularization weight. Applied to all parameters. |
 | `amsgrad` | `bool` | `False` | Use the AMSGrad variant of Adam, which keeps a running maximum of the second moment to prevent learning rate from increasing. |
+| `betas` | `list[float]` | `[0.9, 0.999]` | Adam/AdamW beta coefficients for the first and second moment estimates. |
+| `eps` | `float` | `1e-8` | Term added to the denominator for numerical stability in Adam/AdamW. |
 
 #### Learning Rate Scheduler
 
@@ -450,6 +520,8 @@ These apply when `finetune_choice` is one of `lora`, `dora`, `vera`, or their `+
 | `lora_alpha` | `float` | `8.0` | Scaling factor. The effective adaptation is scaled by `alpha / rank`. |
 | `lora_freeze_A` | `bool` | `False` | Freeze the A (down-projection) matrices and only train B. Reduces trainable parameters by half. |
 | `dora_scaling_to_one` | `bool` | `True` | Initialize DoRA magnitude vectors to normalize columns to unit norm. |
+| `use_lora_plus` | `bool` | `False` | Use LoRA+ optimizer: apply a separate (higher) learning rate to the B matrices. |
+| `lora_B_lr` | `float` | `None` | Learning rate for the B matrices when `use_lora_plus` is enabled. Typically set to a multiple of the base `lr`. |
 
 #### Data Replay
 

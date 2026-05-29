@@ -19,6 +19,8 @@ from so3krates_torch.tools.utils import (
 from so3krates_torch.tools.utils import create_dataloader_from_list
 from torchmetrics import Metric
 
+logger = logging.getLogger(__name__)
+
 
 def evaluate_model(
     atoms_list: list,
@@ -26,7 +28,7 @@ def evaluate_model(
     batch_size: int,
     device: str,
     model_type: str,
-    r_max_lr: float = 12.0,
+    r_max_lr: Optional[float] = None,
     multi_species: bool = False,
     multihead_model: bool = False,
     dispersion_energy_cutoff_lr_damping: Optional[float] = None,
@@ -35,6 +37,10 @@ def evaluate_model(
     compute_dipole: bool = False,
     compute_partial_charges: bool = False,
     return_att: bool = False,
+    return_inv_descriptors: bool = False,
+    return_eqv_descriptors: bool = False,
+    return_mean_inv_descriptors: bool = False,
+    return_mean_eqv_descriptors: bool = False,
     dtype: str = "float64",
     key_spec: Optional[KeySpecification] = None,
 ) -> dict[str, Union[np.ndarray, List[np.ndarray]]]:
@@ -92,6 +98,15 @@ def evaluate_model(
     ], f"Unknown model type: {model_type}"
     key_spec = KeySpecification() if key_spec is None else key_spec
 
+    # Resolve r_max_lr and damping from model when not explicitly provided.
+    # PME models (use_lr=False) resolve to None → no LR neighbor list built.
+    if r_max_lr is None:
+        r_max_lr = getattr(model, "r_max_lr", None)
+    if dispersion_energy_cutoff_lr_damping is None:
+        dispersion_energy_cutoff_lr_damping = getattr(
+            model, "dispersion_energy_cutoff_lr_damping", None
+        )
+
     data_loader = create_dataloader_from_list(
         atoms_list=atoms_list,
         batch_size=batch_size,
@@ -116,20 +131,41 @@ def evaluate_model(
         partial_charges_list = []
     if return_att:
         att_scores_list = []
+    inv_descriptors_list = []
+    eqv_descriptors_list = []
+    mean_inv_list: list = []
+    mean_eqv_list: list = []
 
     if model_type == "so3lr":
-        model.r_max_lr = r_max_lr
-        model.dispersion_energy_cutoff_lr_damping = (
-            dispersion_energy_cutoff_lr_damping
-        )
+        if r_max_lr is not None:
+            model.r_max_lr = r_max_lr
+        if dispersion_energy_cutoff_lr_damping is not None:
+            model.dispersion_energy_cutoff_lr_damping = (
+                dispersion_energy_cutoff_lr_damping
+            )
     model = model.eval()
 
-    for batch in data_loader:
+    n_batches = len(data_loader)
+    n_structures = len(atoms_list)
+    log_every = max(1, n_batches // 10)
+    logger.info(
+        "evaluate_model: %d structures / %d batches",
+        n_structures,
+        n_batches,
+    )
+    t0 = time.perf_counter()
+    for batch_idx, batch in enumerate(data_loader):
         batch = batch.to(device)
         output = model(
             batch.to_dict(),
             compute_stress=compute_stress,
             return_att=return_att,
+            return_descriptors=(
+                return_inv_descriptors or return_mean_inv_descriptors
+            ),
+            return_eqv_descriptors=(
+                return_eqv_descriptors or return_mean_eqv_descriptors
+            ),
         )
         energies = torch_tools.to_numpy(output["energy"])
 
@@ -186,6 +222,34 @@ def evaluate_model(
                     new_att_dict["receivers"] = receivers
                 att_scores_list.append(new_att_dict)
 
+        if return_inv_descriptors:
+            inv_desc = np.split(
+                torch_tools.to_numpy(output["inv_features"]),
+                indices_or_sections=batch.ptr[1:],
+                axis=0,
+            )[:-1]
+            inv_descriptors_list += [d for d in inv_desc]
+
+        if return_eqv_descriptors:
+            eqv_desc = np.split(
+                torch_tools.to_numpy(output["ev_features"]),
+                indices_or_sections=batch.ptr[1:],
+                axis=0,
+            )[:-1]
+            eqv_descriptors_list += [d for d in eqv_desc]
+
+        if return_mean_inv_descriptors:
+            inv_arr = torch_tools.to_numpy(output["inv_features"])
+            ptr = batch.ptr.cpu().numpy()
+            for i in range(len(ptr) - 1):
+                mean_inv_list.append(inv_arr[ptr[i] : ptr[i + 1]].mean(axis=0))
+
+        if return_mean_eqv_descriptors:
+            eqv_arr = torch_tools.to_numpy(output["ev_features"])
+            ptr = batch.ptr.cpu().numpy()
+            for i in range(len(ptr) - 1):
+                mean_eqv_list.append(eqv_arr[ptr[i] : ptr[i + 1]].mean(axis=0))
+
         forces = np.split(
             torch_tools.to_numpy(output["forces"]),
             indices_or_sections=batch.ptr[1:],
@@ -193,6 +257,16 @@ def evaluate_model(
         )[:-1]
         forces = [force for force in forces]
         forces_list += forces
+
+        if (batch_idx + 1) % log_every == 0 or batch_idx == n_batches - 1:
+            elapsed = time.perf_counter() - t0
+            rate = (batch_idx + 1) / elapsed
+            logger.info(
+                "  batch %d/%d  (%.1f batches/s)",
+                batch_idx + 1,
+                n_batches,
+                rate,
+            )
 
     if multi_species or multihead_model:
         energies = energies_list
@@ -231,6 +305,18 @@ def evaluate_model(
             partial_charges if compute_partial_charges else None
         ),
         "att_scores": (att_scores_list if return_att else None),
+        "inv_descriptors": (
+            inv_descriptors_list if return_inv_descriptors else None
+        ),
+        "eqv_descriptors": (
+            eqv_descriptors_list if return_eqv_descriptors else None
+        ),
+        "mean_inv_descriptors": (
+            np.stack(mean_inv_list) if return_mean_inv_descriptors else None
+        ),
+        "mean_eqv_descriptors": (
+            np.stack(mean_eqv_list) if return_mean_eqv_descriptors else None
+        ),
     }
 
     return results
@@ -245,7 +331,7 @@ def ensemble_prediction(
     batch_size: int = 1,
     multi_species: bool = False,
     multihead_model: bool = False,
-    r_max_lr: float = 12.0,
+    r_max_lr: Optional[float] = None,
     dispersion_energy_cutoff_lr_damping: Optional[float] = None,
     compute_stress: bool = False,
     compute_hirshfeld: bool = False,
@@ -316,8 +402,18 @@ def ensemble_prediction(
     if compute_partial_charges:
         all_partial_charges = []
     key_spec = KeySpecification() if key_spec is None else key_spec
-    i = 0
-    for model in models:
+
+    # Resolve from representative model when not explicitly provided.
+    if r_max_lr is None:
+        r_max_lr = getattr(models[0], "r_max_lr", None)
+    if dispersion_energy_cutoff_lr_damping is None:
+        dispersion_energy_cutoff_lr_damping = getattr(
+            models[0], "dispersion_energy_cutoff_lr_damping", None
+        )
+
+    n_models = len(models)
+    for i, model in enumerate(models):
+        logger.info("ensemble_prediction: model %d/%d", i + 1, n_models)
         results = evaluate_model(
             atoms_list=atoms_list,
             model=model,
@@ -344,7 +440,6 @@ def ensemble_prediction(
             all_dipoles.append(results["dipoles"])
         if compute_partial_charges:
             all_partial_charges.append(results["partial_charges"])
-        i += 1
 
     if not multi_species and not multihead_model:
         # Stack for fixed-size molecules
@@ -442,6 +537,13 @@ class ModelEval(Metric):
             "delta_hirshfeld_ratios_per_atom", default=[], dist_reduce_fx="cat"
         )
 
+        self.add_state(
+            "charges_computed",
+            default=torch.tensor(0.0),
+            dist_reduce_fx="sum",
+        )
+        self.add_state("delta_charges", default=[], dist_reduce_fx="cat")
+
     def update(self, batch, output):  # pylint: disable=arguments-differ
         if self.loss_fn is not None:
             loss = self.loss_fn(pred=output, ref=batch)
@@ -486,6 +588,15 @@ class ModelEval(Metric):
             self.hirshfeld_ratios.append(batch.hirshfeld_ratios)
             self.delta_hirshfeld_ratios.append(
                 batch.hirshfeld_ratios - output["hirshfeld_ratios"]
+            )
+
+        if (
+            output.get("partial_charges") is not None
+            and batch.charges is not None
+        ):
+            self.charges_computed += 1.0
+            self.delta_charges.append(
+                batch.charges - output["partial_charges"]
             )
 
     def convert(
@@ -544,6 +655,12 @@ class ModelEval(Metric):
             aux["mae_hirshfeld_ratios"] = compute_mae(delta_hirshfeld_ratios)
             aux["rmse_hirshfeld_ratios"] = compute_rmse(delta_hirshfeld_ratios)
             aux["q95_hirshfeld_ratios"] = compute_q95(delta_hirshfeld_ratios)
+
+        if self.charges_computed:
+            delta_charges = self.convert(self.delta_charges)
+            aux["mae_charges"] = compute_mae(delta_charges)
+            aux["rmse_charges"] = compute_rmse(delta_charges)
+            aux["q95_charges"] = compute_q95(delta_charges)
 
         if self.loss_fn is not None:
             return aux["loss"], aux
@@ -663,7 +780,7 @@ def test_ensemble(
     total_charge_key: str = "charge",
     total_spin_key: str = "spin",
     head_key: str = "head",
-    r_max_lr: float = 12.0,
+    r_max_lr: Optional[float] = None,
     log: bool = False,
 ) -> Tuple[dict, dict]:
     """

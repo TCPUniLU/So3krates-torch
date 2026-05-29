@@ -252,6 +252,7 @@ def compute_multihead_forces_stress(
 
     # virials shape: [num_heads, batch, 3, 3]
     # cell shape : [batch, 3, 3]
+    stress = None
     if compute_stress and virials is not None:
         cell = cell.view(-1, 3, 3)
         volume = torch.linalg.det(cell).abs().unsqueeze(-1)
@@ -659,8 +660,6 @@ def save_results_hdf5(results, filename, is_ensemble: bool = False):
                 dset.attrs["is_none"] = True
 
 
-# TODO: Add support for multi-head outputs
-# TODO: Add support from more output types
 def save_results_xyz(input_data, results, filename, prefix: str = "SO3"):
     """Save results to an XYZ file."""
     scalar_keys = [
@@ -720,6 +719,7 @@ def create_configs_from_list(
     atoms_list: list,
     key_specification=None,
     head_name: str = None,
+    config_type_weights: dict = None,
 ):
     from so3krates_torch.data.utils import (
         KeySpecification,
@@ -733,6 +733,7 @@ def create_configs_from_list(
             atoms,
             key_specification=key_specification,
             head_name=head_name,
+            config_type_weights=config_type_weights,
         )
         for atoms in atoms_list
     ]
@@ -770,11 +771,13 @@ def create_data_from_list(
     all_heads: list = None,
     key_specification=None,
     z_table: AtomicNumberTable = None,
+    config_type_weights: dict = None,
 ):
     configs = create_configs_from_list(
         atoms_list,
         key_specification=key_specification,
         head_name=head_name,
+        config_type_weights=config_type_weights,
     )
     return create_data_from_configs(
         configs,
@@ -796,6 +799,7 @@ def create_dataloader_from_list(
     z_table: AtomicNumberTable = None,
     head_name: str = None,
     sampler=None,
+    config_type_weights: dict = None,
 ):
     data_loader = DataLoader(
         dataset=create_data_from_list(
@@ -805,6 +809,7 @@ def create_dataloader_from_list(
             key_specification=key_specification,
             z_table=z_table,
             head_name=head_name,
+            config_type_weights=config_type_weights,
         ),
         batch_size=batch_size,
         shuffle=(shuffle if sampler is None else False),

@@ -19,12 +19,12 @@ import importlib.resources as resources
 
 def get_model_dtype(model: torch.nn.Module) -> torch.dtype:
     """Get the dtype of the model"""
-    mode_dtype = next(model.parameters()).dtype
-    if mode_dtype == torch.float64:
+    model_dtype = next(model.parameters()).dtype
+    if model_dtype == torch.float64:
         return "float64"
-    if mode_dtype == torch.float32:
+    if model_dtype == torch.float32:
         return "float32"
-    raise ValueError(f"Unknown dtype {mode_dtype}")
+    raise ValueError(f"Unknown dtype {model_dtype}")
 
 
 class TorchkratesCalculator(Calculator):
@@ -144,9 +144,11 @@ class TorchkratesCalculator(Calculator):
 
         if self.model_type == "so3lr":
             for model in self.models:
-                model.dispersion_energy_cutoff_lr_damping = (
-                    dispersion_energy_cutoff_lr_damping
-                )
+                if dispersion_energy_cutoff_lr_damping is not None:
+                    model.dispersion_energy_cutoff_lr_damping = (
+                        dispersion_energy_cutoff_lr_damping
+                    )
+                # else: keep the value saved in the model checkpoint
 
         for model in self.models:
             model.to(device)
@@ -310,7 +312,7 @@ class TorchkratesCalculator(Calculator):
                 self._clone_batch(batch).to_dict(),
                 compute_hessian=True,
                 compute_stress=False,
-                training=self.use_compile,
+                training=False,
             )["hessian"]
             for model in self.models
         ]
@@ -329,8 +331,8 @@ class TorchkratesCalculator(Calculator):
         descriptors = [
             model.get_representation(batch.to_dict()) for model in self.models
         ]
-        invariants = [inv.detach().cpu().numpy() for (ev, inv) in descriptors]
-        equivariants = [ev.detach().cpu().numpy() for (ev, inv) in descriptors]
+        invariants = [inv.detach().cpu().numpy() for (inv, ev) in descriptors]
+        equivariants = [ev.detach().cpu().numpy() for (inv, ev) in descriptors]
 
         if invariants_only:
             return {

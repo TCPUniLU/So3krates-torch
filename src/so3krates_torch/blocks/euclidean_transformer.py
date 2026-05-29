@@ -728,14 +728,6 @@ class EuclideanAttentionBlockLORA(EuclideanAttentionBlock):
             lora_B,
         )
 
-        # This is the original implementation which creates a large intermediate tensor
-
-        # return (
-        #    torch.matmul(
-        #        features.transpose(0, 1), W + self.scaling * torch.matmul(lora_A, lora_B)
-        #    ).transpose(0, 1)
-        # )
-
     def fuse_lora_weights(self):
         if self.weights_fused:
             return
