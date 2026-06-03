@@ -341,7 +341,7 @@ def train(
                 valid_loss = valid_loss_head  # consider only the last head for the checkpoint
                 if rank == 0:
                     avg_epoch_time = sum(epoch_times) / len(epoch_times)
-                    remaining = max_num_epochs - epoch
+                    remaining = max_num_epochs - epoch - 1
                     eta_sec = avg_epoch_time * remaining
                     eta_h = int(eta_sec // 3600)
                     eta_m = int((eta_sec % 3600) // 60)
