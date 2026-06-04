@@ -96,7 +96,8 @@ def main():
         help="One or more XYZ files or directories of XYZ files.",
     )
     parser.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         default=None,
         metavar="PATH",
         help=(
@@ -142,14 +143,18 @@ def main():
             parser.error(f"--map value must be OLD=NEW, got: {entry!r}")
         old, new = entry.split("=", 1)
         if not old or not new:
-            parser.error(f"--map value must be non-empty OLD=NEW, got: {entry!r}")
+            parser.error(
+                f"--map value must be non-empty OLD=NEW, got: {entry!r}"
+            )
         custom[old.strip()] = new.strip()
 
     mappings = {} if args.no_defaults else dict(DEFAULT_MAPPINGS)
     mappings.update(custom)
 
     if not mappings:
-        parser.error("No mappings to apply. Provide --map or remove --no-defaults.")
+        parser.error(
+            "No mappings to apply. Provide --map or remove --no-defaults."
+        )
 
     print("Mappings:")
     for old, new in mappings.items():

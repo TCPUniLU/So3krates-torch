@@ -160,12 +160,9 @@ def plot_distributions(data: dict, output: str | None, bins: int = 80):
 
         mean, std = vals.mean(), vals.std()
         ax.axvline(mean, color="tomato", lw=1.5, label=f"mean={mean:.3g}")
+        ax.axvline(mean - std, color="tomato", lw=1, ls="--")
         ax.axvline(
-            mean - std, color="tomato", lw=1, ls="--"
-        )
-        ax.axvline(
-            mean + std, color="tomato", lw=1, ls="--",
-            label=f"σ={std:.3g}"
+            mean + std, color="tomato", lw=1, ls="--", label=f"σ={std:.3g}"
         )
         ax.legend(fontsize=8)
 
@@ -227,15 +224,19 @@ def main():
     )
     parser.add_argument("hdf5", help="Path to raw or preprocessed HDF5 file")
     parser.add_argument(
-        "-o", "--output", default=None,
-        help="Save figure to this path instead of displaying it"
+        "-o",
+        "--output",
+        default=None,
+        help="Save figure to this path instead of displaying it",
     )
     parser.add_argument(
         "--bins", type=int, default=80, help="Number of histogram bins"
     )
     parser.add_argument(
-        "--outlier-k", type=float, default=1.5,
-        help="IQR multiplier for Hirshfeld outlier fence (default 1.5)"
+        "--outlier-k",
+        type=float,
+        default=1.5,
+        help="IQR multiplier for Hirshfeld outlier fence (default 1.5)",
     )
     args = parser.parse_args()
 
