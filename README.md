@@ -110,13 +110,10 @@ torchkrates-merge --inputs a.h5 b.h5 --output merged.h5 \
 
 ### `torchkrates-create-lammps-model` — LAMMPS Model Export
 
-> [!NOTE]
-> More details and how to use the model in LAMMPS are coming.
+> [!IMPORTANT]
+> GPU-accelerated LAMMPS (Kokkos) must be built against the same CUDA and PyTorch version as the converted model.
 
-> [!IMPORTANT]  
-> Only works with torch==2.6.0 for CUDA 12.6.0 on Meluxina!
-
-Convert a trained SO3LR model to a TorchScript model compatible with the LAMMPS ML-IAP interface.
+Convert a trained SO3LR model to a format compatible with the LAMMPS ML-IAP interface.
 
 ```bash
 torchkrates-create-lammps-model model.pt --elements Si O
@@ -132,6 +129,38 @@ torchkrates-create-lammps-model model.pt --elements Si O
 | `--electrostatic-energy-scale` | Override the electrostatic energy scaling factor. |
 | `--dispersion-energy-scale` | Override the dispersion energy scaling factor. |
 | `--dispersion-energy-cutoff-lr-damping` | Override the dispersion long-range damping cutoff. |
+
+#### Output file
+
+The converted model is saved as `<model_path>-mliap_lammps.pt` in the same directory as the input.
+
+#### LAMMPS input script — pair style and pair_coeff
+
+```lammps
+pair_style mliap unified so3lr /path/to/model-mliap_lammps.pt
+pair_coeff * * C H O
+```
+
+The `pair_style` line specifies the converted model file. The `pair_coeff` line maps LAMMPS atom types to elements: it must list exactly one element symbol per atom type defined in the data file, in the same order as the `Masses` block.
+
+> [!IMPORTANT]
+> Specifying the wrong number of elements — e.g. `C H N O` when the data file only has 3 atom types (C, H, O) — silently misassigns atom types and produces wrong energies and forces without any error message.
+
+#### Running LAMMPS with GPU (Kokkos)
+
+For compilation and general guidance, see the [NVIDIA blog post on AI-driven MD simulations](https://developer.nvidia.com/blog/enabling-scalable-ai-driven-molecular-dynamics-simulations/).
+
+Example launch command for Kokkos GPU:
+
+```bash
+mpirun -np $num_gpus /path/to/lammps/build_cuda/lmp \
+    -k on g $num_gpus \
+    -sf kk \
+    -pk kokkos newton on neigh half \
+    -in prod.in
+```
+
+where `$num_gpus` is the number of GPU processes and `/path/to/lammps/build_cuda/lmp` is the Kokkos-enabled LAMMPS executable. The model auto-detects the GPU device on the first timestep.
 
 ---
 

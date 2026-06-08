@@ -9,9 +9,9 @@ class GeneralConfig(BaseModel):
     checkpoints_dir: str = "./checkpoints"
     model_dir: str = "./model"
     log_dir: str = "./logs"
-    default_dtype: Literal[
-        "float32", "float64", "float16", "bfloat16"
-    ] = "float64"
+    default_dtype: Literal["float32", "float64", "float16", "bfloat16"] = (
+        "float64"
+    )
     seed: int = 100
     # inference-only: stress is computed during evaluation but has no
     # loss weight and is never used as a training target
