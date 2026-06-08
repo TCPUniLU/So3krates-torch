@@ -1,8 +1,5 @@
 # So3krates-torch
 
-> [!IMPORTANT]
-> The code is work in progress! There may be breaking changes!
-
 Implementation of the So3krates + SO3LR model in pytorch.
 
 #### Installation
