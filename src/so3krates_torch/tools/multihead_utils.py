@@ -107,12 +107,14 @@ def reduce_mh_model_to_sh(
             else mh_bias[head_idx]
         )
         # Use .data to replace in-place
-        sh_model.atomic_energy_output_block.layers[layer].weight.data = (
-            mh_weight.to(dtype=getattr(torch, dtype), device=device)
+        sh_model.atomic_energy_output_block.layers[
+            layer
+        ].weight.data = mh_weight.to(
+            dtype=getattr(torch, dtype), device=device
         )
-        sh_model.atomic_energy_output_block.layers[layer].bias.data = (
-            mh_bias.to(dtype=getattr(torch, dtype), device=device)
-        )
+        sh_model.atomic_energy_output_block.layers[
+            layer
+        ].bias.data = mh_bias.to(dtype=getattr(torch, dtype), device=device)
     # Final layer
     mh_weight = mh_model_state_dict[
         f"atomic_energy_output_block.final_layer_weights"
