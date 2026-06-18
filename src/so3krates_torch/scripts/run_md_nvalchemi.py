@@ -418,6 +418,19 @@ def main() -> None:
 
     # Build one AtomicData per system; initialise forces/energy/stress to
     # zeros so compute() can write back in-place (filled at BEFORE_COMPUTE).
+    if args.ensemble == "npt":
+        non_periodic = [
+            i for i, a in enumerate(frames) if not a.get_pbc().any()
+        ]
+        if non_periodic:
+            sys.exit(
+                f"Error: NPT requires a periodic cell, but structure(s) at "
+                f"index {non_periodic} have pbc=False.\n"
+                "Ensure your structure file uses extended-XYZ format with a "
+                "'Lattice=' header, or use a POSCAR/CIF file so ASE reads "
+                "the cell and sets pbc=True."
+            )
+
     data_list = []
     for atoms in frames:
         data = AtomicData.from_atoms(atoms, device=args.device, dtype=dtype)
