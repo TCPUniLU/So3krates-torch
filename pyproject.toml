@@ -58,6 +58,7 @@ pme = ["torch-pme>=0.4"]
 slurm = ["python-hostlist"]
 jax = ["jax", "flax", "ml-collections"]
 vis = ["matplotlib>=3.5.0", "pandas>=1.5.0"]
+nvalchemi = ["nvalchemi", "nvalchemiops"]
 
 [project.urls]
 homepage = "https://github.com/tohenkes/So3krates-torch"
@@ -87,3 +88,4 @@ torchkrates-preprocess = "so3krates_torch.cli.run_preprocess:main"
 torchkrates-create-lammps-model = "so3krates_torch.cli.create_lammps_model:main"
 torchkrates-merge = "so3krates_torch.cli.run_merge:main"
 torchkrates-tune-pme = "so3krates_torch.cli.run_tune_pme:main"
+torchkrates-md-nvalchemi = "so3krates_torch.scripts.run_md_nvalchemi:main"

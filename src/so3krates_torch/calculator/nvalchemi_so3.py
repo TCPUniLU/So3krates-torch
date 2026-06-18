@@ -15,16 +15,18 @@ Usage::
     calc = SO3LRCalculator(device="cuda", dtype=torch.float64)
     model = NVAlchemiSO3LR(calc.models[0])
 
-    # Build AtomicData from an ASE Atoms object
-    data = AtomicData.from_ase(atoms, device="cuda")
+    # Build a (multi-graph) Batch from one or more ASE Atoms objects
+    data = AtomicData.from_atoms(atoms, device="cuda", dtype=torch.float64)
+    batch = Batch.from_data_list([data])
 
     integrator = NVTLangevin(
         model=model,
-        dt=0.5e-3,          # ps
+        dt=0.5,             # fs
         temperature=300.0,  # K
-        friction=1e-2,      # 1/ps
+        friction=1e-2,      # 1/fs
+        n_steps=10_000,
     )
-    integrator.run(data, n_steps=10_000)
+    batch = integrator.run(batch)
 """
 
 from __future__ import annotations
@@ -55,10 +57,44 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
     model:
         An instantiated So3krates or SO3LR ``nn.Module``.  Must expose
         ``r_max`` (and optionally ``r_max_lr`` for long-range models).
+    electrostatics:
+        Long-range electrostatics backend.
+
+        - ``"model"`` (default): the model computes its own electrostatics
+          (real-space erf-Coulomb when ``use_pme=False`` or the model's
+          torch-pme when ``use_pme=True``).
+        - ``"nvalchemi"``: the model emits partial charges only (no internal
+          electrostatic energy) so that NVAlchemi's native PME can supply the
+          long-range Coulomb energy.  Requires the model to be configured with
+          ``electrostatic_energy_bool=False`` and ``output_partial_charges=True``
+          (use :func:`build_nvalchemi_pme_model`, which sets this up and
+          composes the PME step).
     """
 
-    def __init__(self, model: nn.Module) -> None:
+    def __init__(
+        self, model: nn.Module, electrostatics: str = "model"
+    ) -> None:
         super().__init__()
+        if electrostatics not in ("model", "nvalchemi"):
+            raise ValueError(
+                "electrostatics must be 'model' or 'nvalchemi', got "
+                f"{electrostatics!r}"
+            )
+        self.electrostatics = electrostatics
+        if electrostatics == "nvalchemi":
+            if getattr(model, "electrostatic_energy_bool", False):
+                raise ValueError(
+                    "electrostatics='nvalchemi' requires the model's own "
+                    "electrostatics to be disabled "
+                    "(electrostatic_energy_bool=False) to avoid "
+                    "double-counting; use build_nvalchemi_pme_model()."
+                )
+            if not getattr(model, "output_partial_charges", False):
+                raise ValueError(
+                    "electrostatics='nvalchemi' requires the model to emit "
+                    "charges (output_partial_charges=True); use "
+                    "build_nvalchemi_pme_model()."
+                )
         self.model = model
         self._cached_dtype: torch.dtype = next(model.parameters()).dtype
 
@@ -82,9 +118,13 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
         node_emb = node_emb.to(device=model_device)
         self.register_buffer("_node_emb", node_emb, persistent=False)
 
+        outputs = {"energy", "forces", "stress"}
+        if electrostatics == "nvalchemi":
+            # Partial charges are wired into the downstream PME step.
+            outputs.add("charges")
         self.model_config = ModelConfig(
-            outputs=frozenset({"energy", "forces", "stress"}),
-            active_outputs={"energy", "forces", "stress"},
+            outputs=frozenset(outputs),
+            active_outputs=set(outputs),
             autograd_outputs=frozenset({"forces", "stress"}),
             autograd_inputs=frozenset({"positions"}),
             required_inputs=frozenset(),
@@ -212,12 +252,16 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
         raw_output: dict[str, Any],
         data: AtomicData | Batch,
     ) -> dict[str, Any]:
-        return {
+        out = {
             # nvalchemi expects [B, 1]; LoggingHook squeezes to [B]
             "energy": raw_output["energy"].unsqueeze(-1),
             "forces": raw_output["forces"],
             "stress": raw_output["stress"],  # [B, 3, 3]
         }
+        if self.electrostatics == "nvalchemi":
+            # Per-atom charges [N], wired into the PME step downstream.
+            out["charges"] = raw_output["partial_charges"].reshape(-1)
+        return out
 
     # ------------------------------------------------------------------
     # Forward
@@ -229,3 +273,81 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
         model_inputs = self.adapt_input(data, **kwargs)
         raw = self.model(model_inputs, compute_force=True, compute_stress=True)
         return self.adapt_output(raw, data)
+
+
+# Standard Coulomb constant in eV·Å/e² — matches the model's `ke`
+# (so3krates_torch.blocks.physical_potentials).
+_KE_EV_ANG = 14.399645351950548
+
+
+def build_nvalchemi_pme_model(
+    model: nn.Module,
+    *,
+    mesh_spacing: float = 1.0,
+    spline_order: int = 4,
+    accuracy: float = 1e-6,
+    coulomb_constant: float = _KE_EV_ANG,
+    hybrid_forces: bool = True,
+):
+    """Compose an SO3LR model with NVAlchemi-native PME electrostatics.
+
+    The model's *own* electrostatic energy is disabled and it is switched to
+    emit partial charges; NVAlchemi's GPU-native PME (full Ewald) then supplies
+    the long-range Coulomb energy from those charges.  ZBL repulsion and the
+    (real-space) dispersion term are unchanged.
+
+    The returned object is a NVAlchemi ``PipelineModelWrapper`` that runs the
+    short-range model first, wires its ``charges`` output into the PME step,
+    and sums the energy/forces/stress of both.
+
+    .. warning::
+        This MUTATES ``model`` in place (sets ``electrostatic_energy_bool=False``
+        and ``output_partial_charges=True``).  It is a *different* electrostatics
+        backend than the model's own erf-Coulomb / torch-pme term and does not
+        reproduce them numerically — only use it deliberately.
+
+    Parameters
+    ----------
+    model:
+        An SO3LR model exposing ``r_max_lr`` (the PME real-space cutoff).
+    mesh_spacing, spline_order, accuracy, coulomb_constant, hybrid_forces:
+        Forwarded to :class:`nvalchemi.models.pme.PMEModelWrapper`.  The
+        default ``coulomb_constant`` matches the model's ``ke``.
+    """
+    from nvalchemi.models.pme import PMEModelWrapper
+    from nvalchemi.models.pipeline import (
+        PipelineGroup,
+        PipelineModelWrapper,
+        PipelineStep,
+    )
+
+    if getattr(model, "r_max_lr", None) is None:
+        raise ValueError(
+            "build_nvalchemi_pme_model requires a long-range cutoff "
+            "(model.r_max_lr); short-range-only models have no electrostatics."
+        )
+
+    model.electrostatic_energy_bool = False
+    model.output_partial_charges = True
+
+    sr = NVAlchemiSO3LR(model, electrostatics="nvalchemi")
+    pme = PMEModelWrapper(
+        cutoff=float(model.r_max_lr),
+        mesh_spacing=mesh_spacing,
+        spline_order=spline_order,
+        accuracy=accuracy,
+        coulomb_constant=coulomb_constant,
+        hybrid_forces=hybrid_forces,
+    )
+    group = PipelineGroup(
+        steps=[PipelineStep(sr, wire={"charges": "charges"}), pme],
+        use_autograd=False,
+    )
+    pipeline = PipelineModelWrapper(
+        [group], additive_keys={"energy", "forces", "stress"}
+    )
+    # The pipeline unions sub-model active_outputs (which includes the SR
+    # step's "charges"); narrow it to the MD-relevant outputs so integrators
+    # only request energy/forces/stress.
+    pipeline.model_config.active_outputs = {"energy", "forces", "stress"}
+    return pipeline

@@ -44,7 +44,10 @@ from nvalchemi.dynamics.integrators.npt import NPT
 from nvalchemi.dynamics.integrators.nvt_langevin import NVTLangevin
 from nvalchemi.hooks.neighbor_list import NeighborListHook
 
-from so3krates_torch.calculator.nvalchemi_so3 import NVAlchemiSO3LR
+from so3krates_torch.calculator.nvalchemi_so3 import (
+    NVAlchemiSO3LR,
+    build_nvalchemi_pme_model,
+)
 
 # ---------------------------------------------------------------------------
 # Unit conversion constants
@@ -67,6 +70,12 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--atoms", required=True, help="Input structure (ASE-readable)"
+    )
+    p.add_argument(
+        "--index",
+        default="-1",
+        help="ASE frame selection; e.g. '-1' (last frame, default) or ':' "
+        "to run every frame as an independent system in one batch.",
     )
     p.add_argument(
         "--ensemble",
@@ -147,6 +156,25 @@ def _parse_args() -> argparse.Namespace:
         default="isotropic",
         help="NPT pressure coupling mode (default: isotropic)",
     )
+    p.add_argument(
+        "--electrostatics",
+        choices=["model", "nvalchemi", "none"],
+        default="model",
+        # "model"     -> the model's own electrostatics: real-space
+        #                erf-Coulomb (use_pme=False) or torch-pme
+        #                (use_pme=True), per how the model was configured.
+        # "nvalchemi" -> NVAlchemi-native GPU PME (full Ewald) from the
+        #                model's partial charges.
+        # "none"      -> long-range electrostatics disabled.
+        help="Long-range electrostatics backend (default: the model's own)",
+    )
+    p.add_argument(
+        "--pme-mesh-spacing",
+        type=float,
+        default=1.0,
+        help="NVAlchemi PME target mesh spacing [Å] "
+        "(--electrostatics nvalchemi only; default: 1.0)",
+    )
     return p.parse_args()
 
 
@@ -155,13 +183,34 @@ def _parse_args() -> argparse.Namespace:
 # ---------------------------------------------------------------------------
 
 
-def load_model(path: str, device: str, dtype: torch.dtype) -> NVAlchemiSO3LR:
+def load_model(
+    path: str,
+    device: str,
+    dtype: torch.dtype,
+    electrostatics: str = "model",
+    pme_mesh_spacing: float = 1.0,
+):
+    """Load a trained model and wrap it for NVAlchemi MD.
+
+    Returns a NVAlchemi ``BaseModelMixin`` — either a bare ``NVAlchemiSO3LR``
+    (``electrostatics`` in {"model", "none"}) or a ``PipelineModelWrapper``
+    composing the short-range model with NVAlchemi-native PME
+    (``electrostatics="nvalchemi"``).
+    """
     raw = torch.load(path, map_location=device, weights_only=False)
     if isinstance(raw, dict) and "model" in raw:
         raw = raw["model"]
-    wrapper = NVAlchemiSO3LR(raw).to(device=device, dtype=dtype)
-    wrapper.eval()
-    return wrapper
+
+    if electrostatics == "nvalchemi":
+        model = build_nvalchemi_pme_model(raw, mesh_spacing=pme_mesh_spacing)
+    else:
+        if electrostatics == "none":
+            raw.electrostatic_energy_bool = False
+        model = NVAlchemiSO3LR(raw, electrostatics="model")
+
+    model = model.to(device=device, dtype=dtype)
+    model.eval()
+    return model
 
 
 # ---------------------------------------------------------------------------
@@ -169,15 +218,15 @@ def load_model(path: str, device: str, dtype: torch.dtype) -> NVAlchemiSO3LR:
 # ---------------------------------------------------------------------------
 
 _HDR_NVT = (
-    f"{'step':>8}  {'time/ps':>8}  {'energy/eV':>12}"
+    f"{'step':>8}  {'sys':>4}  {'time/ps':>8}  {'energy/eV':>12}"
     f"  {'T/K':>8}  {'elapsed/s':>10}  {'ms/step':>8}"
 )
 _HDR_NPT = (
-    f"{'step':>8}  {'time/ps':>8}  {'energy/eV':>12}  {'T/K':>8}"
+    f"{'step':>8}  {'sys':>4}  {'time/ps':>8}  {'energy/eV':>12}  {'T/K':>8}"
     f"  {'vol/Å³':>10}  {'dens/gcc':>9}  {'elapsed/s':>10}  {'ms/step':>8}"
 )
-_DIV_NVT = "-" * 72
-_DIV_NPT = "-" * 90
+_DIV_NVT = "-" * 78
+_DIV_NPT = "-" * 96
 
 
 class _PrintHook:
@@ -211,42 +260,43 @@ class _PrintHook:
         batch = ctx.batch
         step = int(ctx.step_count)
         time_ps = step * self._dt_fs * 1e-3
-        energy = float(batch.energy.squeeze())
         elapsed = time.perf_counter() - self._start[0]
         ms = elapsed / max(step, 1) * 1000
+        B = int(batch.num_graphs)
 
-        temp = float(
-            temperature_per_graph(
-                batch.velocities,
-                batch.atomic_masses,
-                batch.batch_idx,
-                batch.num_graphs,
-                batch.num_nodes_per_graph,
-            )[0]
-        )
+        # Per-graph quantities (one row per system in the batch).
+        energy = batch.energy.reshape(-1)  # [B]
+        temps = temperature_per_graph(
+            batch.velocities,
+            batch.atomic_masses,
+            batch.batch_idx,
+            batch.num_graphs,
+            batch.num_nodes_per_graph,
+        )  # [B]
 
         if self._npt:
             cell = batch.cell
-            vol = float(torch.abs(torch.linalg.det(cell))[0])
-            mass = torch.zeros(
-                batch.num_graphs,
-                dtype=cell.dtype,
-                device=cell.device,
-            )
+            vols = torch.abs(torch.linalg.det(cell))  # [B]
+            mass = torch.zeros(B, dtype=cell.dtype, device=cell.device)
             mass.index_add_(0, batch.batch_idx, batch.atomic_masses)
-            dens = float(mass[0] / vol * AMU_TO_G_PER_CM3)
-            row = (
-                f"{step:>8d}  {time_ps:>8.3f}  {energy:>12.4f}"
-                f"  {temp:>8.2f}  {vol:>10.2f}  {dens:>9.4f}"
-                f"  {elapsed:>10.1f}  {ms:>8.1f}"
-            )
-        else:
-            row = (
-                f"{step:>8d}  {time_ps:>8.3f}  {energy:>12.4f}"
-                f"  {temp:>8.2f}  {elapsed:>10.1f}  {ms:>8.1f}"
-            )
+            denss = mass / vols * AMU_TO_G_PER_CM3  # [B]
 
-        print(row, flush=True)
+        for g in range(B):
+            e = float(energy[g])
+            t = float(temps[g])
+            if self._npt:
+                row = (
+                    f"{step:>8d}  {g:>4d}  {time_ps:>8.3f}  {e:>12.4f}"
+                    f"  {t:>8.2f}  {float(vols[g]):>10.2f}"
+                    f"  {float(denss[g]):>9.4f}"
+                    f"  {elapsed:>10.1f}  {ms:>8.1f}"
+                )
+            else:
+                row = (
+                    f"{step:>8d}  {g:>4d}  {time_ps:>8.3f}  {e:>12.4f}"
+                    f"  {t:>8.2f}  {elapsed:>10.1f}  {ms:>8.1f}"
+                )
+            print(row, flush=True)
 
 
 def _make_hooks(
@@ -310,31 +360,46 @@ def main() -> None:
     dtype = torch.float64 if args.dtype == "float64" else torch.float32
 
     print(f"Loading model from {args.model} …")
-    model = load_model(args.model, args.device, dtype)
+    model = load_model(
+        args.model,
+        args.device,
+        dtype,
+        electrostatics=args.electrostatics,
+        pme_mesh_spacing=args.pme_mesh_spacing,
+    )
+    cutoff = model.model_config.neighbor_config.cutoff
     print(
-        f"  r_max={model.r_sr:.2f} Å"
-        + (f"  r_max_lr={model.r_lr:.2f} Å" if model.has_lr else "")
+        f"  electrostatics={args.electrostatics}  "
+        f"neighbor cutoff={cutoff:.2f} Å"
     )
 
-    print(f"Reading structure from {args.atoms} …")
-    atoms = ase_read(args.atoms)
+    print(f"Reading structure(s) from {args.atoms} (index={args.index}) …")
+    frames = ase_read(args.atoms, index=args.index)
+    if not isinstance(frames, list):  # single-frame selection
+        frames = [frames]
     print(
-        f"  {len(atoms)} atoms  cell={'periodic' if any(atoms.pbc) else 'cluster'}"
+        f"  {len(frames)} system(s), "
+        f"{sum(len(a) for a in frames)} atoms total"
     )
 
-    data = AtomicData.from_atoms(atoms, device=args.device, dtype=dtype)
-    # Initialise forces, energy, and stress to zeros so compute() can
-    # write back to the batch in-place; real values fill at BEFORE_COMPUTE.
-    data = data.model_copy(
-        update={
-            "forces": torch.zeros(
-                len(atoms), 3, dtype=dtype, device=args.device
-            ),
-            "energy": torch.zeros(1, 1, dtype=dtype, device=args.device),
-            "stress": torch.zeros(1, 3, 3, dtype=dtype, device=args.device),
-        }
-    )
-    batch = Batch.from_data_list([data])
+    # Build one AtomicData per system; initialise forces/energy/stress to
+    # zeros so compute() can write back in-place (filled at BEFORE_COMPUTE).
+    data_list = []
+    for atoms in frames:
+        data = AtomicData.from_atoms(atoms, device=args.device, dtype=dtype)
+        data = data.model_copy(
+            update={
+                "forces": torch.zeros(
+                    len(atoms), 3, dtype=dtype, device=args.device
+                ),
+                "energy": torch.zeros(1, 1, dtype=dtype, device=args.device),
+                "stress": torch.zeros(
+                    1, 3, 3, dtype=dtype, device=args.device
+                ),
+            }
+        )
+        data_list.append(data)
+    batch = Batch.from_data_list(data_list)
 
     # start_time_ref is a mutable list so the closure in _make_hooks can
     # share the value that is set just before integrator.run().

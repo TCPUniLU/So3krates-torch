@@ -31,8 +31,18 @@ def _small_nacl():
     return bulk("NaCl", crystalstructure="rocksalt", a=5.6402)
 
 
-def _make_so3lr(use_pme: bool = False) -> SO3LR:
-    """Minimal SO3LR model (short-range only or with PME) for testing."""
+def _make_so3lr(
+    use_pme: bool = False,
+    electrostatics_bool: bool = None,
+    output_partial_charges: bool = False,
+) -> SO3LR:
+    """Minimal SO3LR model for testing.
+
+    ``electrostatics_bool`` defaults to ``use_pme`` (so a short-range-only
+    model has electrostatics off); pass it explicitly to enable the
+    real-space erf-Coulomb electrostatics with ``use_pme=False``.
+    """
+    es = use_pme if electrostatics_bool is None else electrostatics_bool
     model = SO3LR(
         r_max=4.5,
         r_max_lr=6.0,
@@ -47,18 +57,13 @@ def _make_so3lr(use_pme: bool = False) -> SO3LR:
         use_pme=use_pme,
         pme_smearing=1.0 if use_pme else None,
         pme_mesh_spacing=0.5 if use_pme else None,
-        electrostatic_energy_bool=use_pme,
+        electrostatic_energy_bool=es,
+        output_partial_charges=output_partial_charges,
         dispersion_energy_bool=False,
         zbl_repulsion_bool=False,
     ).to(dtype=DTYPE, device=DEVICE)
     model.eval()
     return model
-
-
-def _make_batch(atoms) -> Batch:
-    """Create a nvalchemi Batch (with neighbor list) from ASE Atoms."""
-    data = AtomicData.from_atoms(atoms, device=str(DEVICE), dtype=DTYPE)
-    return Batch.from_data_list([data])
 
 
 # ---------------------------------------------------------------------------
@@ -149,13 +154,168 @@ def test_energy_matches_ase_calc():
     ), f"Energy mismatch: wrapper={e_wrap:.6f} eV, ASE={e_ref:.6f} eV"
 
 
+def test_batched_md_independence():
+    """A multi-graph batch yields per-system results identical to running
+    each system alone (graphs are independent — no cross-graph edges)."""
+    a1 = bulk("NaCl", crystalstructure="rocksalt", a=5.6402)
+    a2 = bulk("NaCl", crystalstructure="rocksalt", a=5.8000)
+    model = _make_so3lr()
+    wrapper = NVAlchemiSO3LR(model)
+
+    batch = _make_batch_with_nl_multi(wrapper, [a1, a2])
+    out = wrapper(batch)
+
+    assert out["energy"].shape == (2, 1)
+    assert out["forces"].shape == (len(a1) + len(a2), 3)
+    assert torch.isfinite(out["energy"]).all()
+    assert torch.isfinite(out["forces"]).all()
+
+    # Reference: each system run on its own.
+    e_refs, f_refs = [], []
+    for atoms in (a1, a2):
+        single = wrapper(_make_batch_with_nl(wrapper, atoms))
+        e_refs.append(single["energy"])
+        f_refs.append(single["forces"])
+
+    assert torch.allclose(out["energy"][0], e_refs[0][0], atol=1e-6)
+    assert torch.allclose(out["energy"][1], e_refs[1][0], atol=1e-6)
+    assert torch.allclose(out["forces"][: len(a1)], f_refs[0], atol=1e-6)
+    assert torch.allclose(out["forces"][len(a1) :], f_refs[1], atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Electrostatics: real-space (model) and NVAlchemi-native PME
+# ---------------------------------------------------------------------------
+
+
+def test_model_emits_charges_without_electrostatic_energy():
+    """output_partial_charges=True yields charges even when the model's own
+    electrostatic energy term is disabled."""
+    model = _make_so3lr(electrostatics_bool=False, output_partial_charges=True)
+    wrapper = NVAlchemiSO3LR(model)  # plain "model" path
+    d = wrapper.adapt_input(_make_batch_with_nl(wrapper, _small_nacl()))
+    out = wrapper.model(d, compute_force=True)
+    assert out["partial_charges"] is not None
+    assert out["partial_charges"].reshape(-1).shape[0] == 2
+    assert torch.isfinite(out["partial_charges"]).all()
+
+
+def test_real_space_electrostatics_through_wrapper():
+    """The model's real-space (non-PME) electrostatics runs through the
+    wrapper and matches the ASE calculator path."""
+    pytest.importorskip("matscipy", reason="matscipy needed for neighbor list")
+    atoms = _small_nacl()
+    model = _make_so3lr(use_pme=False, electrostatics_bool=True)
+
+    calc = TorchkratesCalculator(
+        models=[model],
+        device=str(DEVICE),
+        dtype=DTYPE,
+        r_max=model.r_max,
+        r_max_lr=model.r_max_lr,
+    )
+    atoms.calc = calc
+    e_ref = atoms.get_potential_energy()
+
+    wrapper = NVAlchemiSO3LR(model)
+    d = wrapper.adapt_input(_make_batch_with_nl(wrapper, atoms))
+    out = wrapper.model(d, compute_force=True)
+    e_wrap = out["energy"].item()
+    assert torch.isfinite(out["energy"]).all()
+    assert (
+        abs(e_wrap - e_ref) < 1e-4
+    ), f"Energy mismatch: wrapper={e_wrap:.6f} eV, ASE={e_ref:.6f} eV"
+
+
+def test_native_pme_wrapper_requires_charges_and_no_electrostatics():
+    """The 'nvalchemi' electrostatics mode validates its preconditions."""
+    # electrostatics still enabled on the model -> error
+    with pytest.raises(ValueError, match="electrostatic_energy_bool"):
+        NVAlchemiSO3LR(
+            _make_so3lr(electrostatics_bool=True), electrostatics="nvalchemi"
+        )
+    # charges not emitted -> error
+    with pytest.raises(ValueError, match="output_partial_charges"):
+        NVAlchemiSO3LR(
+            _make_so3lr(electrostatics_bool=False), electrostatics="nvalchemi"
+        )
+
+
+def test_build_nvalchemi_pme_model_emits_charges():
+    """build_nvalchemi_pme_model composes a pipeline; the SR step emits
+    charges and the model's own electrostatics are disabled."""
+    from so3krates_torch.calculator.nvalchemi_so3 import (
+        build_nvalchemi_pme_model,
+    )
+
+    model = _make_so3lr(electrostatics_bool=True)
+    pipe = build_nvalchemi_pme_model(model)
+    assert model.electrostatic_energy_bool is False
+    assert model.output_partial_charges is True
+    assert pipe.model_config.active_outputs == {"energy", "forces", "stress"}
+
+    sr = NVAlchemiSO3LR(model, electrostatics="nvalchemi")
+    out = sr(_make_batch_with_nl(sr, _small_nacl()))
+    assert "charges" in out
+    assert out["charges"].shape == (2,)
+
+
+def test_native_pme_md_runs_on_cpu():
+    """A short NVT run with NVAlchemi-native PME completes and stays finite
+    (single + batched)."""
+    from nvalchemi.dynamics.base import DynamicsStage
+    from nvalchemi.dynamics.integrators.nvt_langevin import NVTLangevin
+    from nvalchemi.hooks.neighbor_list import NeighborListHook
+
+    from so3krates_torch.calculator.nvalchemi_so3 import (
+        build_nvalchemi_pme_model,
+    )
+
+    pipe = build_nvalchemi_pme_model(_make_so3lr(electrostatics_bool=True))
+
+    def _data(atoms):
+        n = len(atoms)
+        return AtomicData.from_atoms(
+            atoms, device=str(DEVICE), dtype=DTYPE
+        ).model_copy(
+            update={
+                "forces": torch.zeros(n, 3, dtype=DTYPE),
+                "energy": torch.zeros(1, 1, dtype=DTYPE),
+                "stress": torch.zeros(1, 3, 3, dtype=DTYPE),
+            }
+        )
+
+    a1 = bulk("NaCl", crystalstructure="rocksalt", a=5.6402)
+    a2 = bulk("NaCl", crystalstructure="rocksalt", a=5.8000)
+    batch = Batch.from_data_list([_data(a1), _data(a2)])
+
+    hooks = [
+        NeighborListHook(
+            config=pipe.model_config.neighbor_config,
+            skin=0.5,
+            stage=DynamicsStage.BEFORE_COMPUTE,
+        )
+    ]
+    integ = NVTLangevin(
+        model=pipe,
+        dt=0.5,
+        temperature=300.0,
+        friction=1e-2,
+        n_steps=1,
+        hooks=hooks,
+    )
+    out = integ.run(batch)
+    assert out.energy.reshape(-1).shape[0] == 2
+    assert torch.isfinite(out.energy).all()
+
+
 # ---------------------------------------------------------------------------
 # Helper: build AtomicData with neighbor list set, then batch
 # ---------------------------------------------------------------------------
 
 
-def _make_batch_with_nl(wrapper: NVAlchemiSO3LR, atoms) -> Batch:
-    """Build a nvalchemi Batch that includes a pre-built neighbor list."""
+def _make_data_with_nl(wrapper: NVAlchemiSO3LR, atoms) -> AtomicData:
+    """Build a single nvalchemi AtomicData with a pre-built neighbor list."""
     import numpy as np
     from nvalchemiops.torch.neighbors.cell_list import cell_list
 
@@ -173,15 +333,26 @@ def _make_batch_with_nl(wrapper: NVAlchemiSO3LR, atoms) -> Batch:
     )
     # nm: [E, 2] COO pairs, nm_shifts: [E, 3] integer image offsets
 
-    # Build AtomicData with neighbor list set at construction time so the
-    # 'edges' segmented group exists when Batch.from_data_list is called.
+    # Set the neighbor list at construction time so the 'edges' segmented
+    # group exists when Batch.from_data_list is called.
     data = AtomicData.from_atoms(atoms, device=str(DEVICE), dtype=DTYPE)
     # cell_list returns nm as [2, E] (sender/receiver rows);
     # AtomicData.neighbor_list expects [E, 2].
-    data = data.model_copy(
+    return data.model_copy(
         update={
             "neighbor_list": nm.long().T,  # [E, 2]
             "neighbor_list_shifts": nm_shifts.float(),  # [E, 3]
         }
     )
-    return Batch.from_data_list([data])
+
+
+def _make_batch_with_nl(wrapper: NVAlchemiSO3LR, atoms) -> Batch:
+    """Build a single-graph nvalchemi Batch with a pre-built neighbor list."""
+    return Batch.from_data_list([_make_data_with_nl(wrapper, atoms)])
+
+
+def _make_batch_with_nl_multi(wrapper: NVAlchemiSO3LR, atoms_list) -> Batch:
+    """Build a multi-graph Batch (one entry per Atoms) with neighbor lists."""
+    return Batch.from_data_list(
+        [_make_data_with_nl(wrapper, atoms) for atoms in atoms_list]
+    )
