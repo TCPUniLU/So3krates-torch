@@ -39,6 +39,7 @@ from ase.io import read as ase_read
 from nvalchemi.data.atomic_data import AtomicData
 from nvalchemi.data.batch import Batch
 from nvalchemi.dynamics.base import DynamicsStage
+from nvalchemi.dynamics import initialize_velocities
 from nvalchemi.dynamics.hooks.logging import LoggingHook, temperature_per_graph
 from nvalchemi.dynamics.integrators.npt import NPT
 from nvalchemi.dynamics.integrators.nvt_langevin import NVTLangevin
@@ -197,6 +198,24 @@ def _parse_args() -> argparse.Namespace:
         help="NVAlchemi PME target accuracy for auto parameter estimation "
         "(--electrostatics nvalchemi only; default: 1e-6)",
     )
+    p.add_argument(
+        "--skip-vel-init",
+        action="store_true",
+        help="Skip Maxwell-Boltzmann velocity initialization. Use when the "
+        "input structure already has velocities (e.g. from a restart file). "
+        "Default: initialize velocities from MB at --temperature.",
+    )
+    p.add_argument(
+        "--compile",
+        action="store_true",
+        help="Compile the inner model with torch.compile(dynamic=True). "
+        "Adds ~30-60 s first-step overhead, then typically 2-4× speedup "
+        "for large systems. Remaining intended graph-breaks: "
+        "torch.autograd.grad (forces/stress) and the model's own "
+        "torch-pme per-graph loop when use_pme=True. "
+        "The default erf-Coulomb path and NVAlchemi-native PME "
+        "(--electrostatics nvalchemi) are unaffected.",
+    )
     return p.parse_args()
 
 
@@ -214,6 +233,7 @@ def load_model(
     pme_alpha: float = None,
     pme_spline_order: int = 4,
     pme_accuracy: float = 1e-6,
+    compile_model: bool = False,
 ):
     """Load a trained model and wrap it for NVAlchemi MD.
 
@@ -225,6 +245,11 @@ def load_model(
     raw = torch.load(path, map_location=device, weights_only=False)
     if isinstance(raw, dict) and "model" in raw:
         raw = raw["model"]
+
+    if compile_model:
+        # Compile the inner So3krates/SO3LR forward pass before NVAlchemi
+        # wrapping.  dynamic=True handles varying neighbor-list sizes.
+        raw = torch.compile(raw, dynamic=True)
 
     if electrostatics == "nvalchemi":
         model = build_nvalchemi_pme_model(
@@ -400,11 +425,13 @@ def main() -> None:
         pme_alpha=args.pme_alpha,
         pme_spline_order=args.pme_spline_order,
         pme_accuracy=args.pme_accuracy,
+        compile_model=args.compile,
     )
     cutoff = model.model_config.neighbor_config.cutoff
+    compile_note = "  compiled=yes (first step slow)" if args.compile else ""
     print(
         f"  electrostatics={args.electrostatics}  "
-        f"neighbor cutoff={cutoff:.2f} Å"
+        f"neighbor cutoff={cutoff:.2f} Å{compile_note}"
     )
 
     print(f"Reading structure(s) from {args.atoms} (index={args.index}) …")
@@ -445,8 +472,29 @@ def main() -> None:
                 ),
             }
         )
+        # Zero-initialize velocities so Batch.from_data_list can aggregate
+        # them even if the input file has no velocity data.
+        data.use_default_velocities()
         data_list.append(data)
     batch = Batch.from_data_list(data_list)
+
+    if not args.skip_vel_init:
+        T_init = torch.full(
+            (batch.num_graphs,),
+            args.temperature,
+            dtype=dtype,
+            device=args.device,
+        )
+        initialize_velocities(
+            velocities=batch.velocities,
+            masses=batch.atomic_masses,
+            temperature=T_init,
+            batch_idx=batch.batch_idx.int(),
+        )
+        print(
+            f"  Velocities initialized from MB distribution "
+            f"at {args.temperature} K (use --skip-vel-init to disable)"
+        )
 
     # start_time_ref is a mutable list so the closure in _make_hooks can
     # share the value that is set just before integrator.run().
