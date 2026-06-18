@@ -175,6 +175,28 @@ def _parse_args() -> argparse.Namespace:
         help="NVAlchemi PME target mesh spacing [Å] "
         "(--electrostatics nvalchemi only; default: 1.0)",
     )
+    p.add_argument(
+        "--pme-alpha",
+        type=float,
+        default=None,
+        help="NVAlchemi PME Ewald splitting / smearing [1/Å] "
+        "(--electrostatics nvalchemi only; default: auto-estimated from "
+        "--pme-accuracy)",
+    )
+    p.add_argument(
+        "--pme-spline-order",
+        type=int,
+        default=4,
+        help="NVAlchemi PME B-spline interpolation order "
+        "(--electrostatics nvalchemi only; default: 4)",
+    )
+    p.add_argument(
+        "--pme-accuracy",
+        type=float,
+        default=1e-6,
+        help="NVAlchemi PME target accuracy for auto parameter estimation "
+        "(--electrostatics nvalchemi only; default: 1e-6)",
+    )
     return p.parse_args()
 
 
@@ -189,6 +211,9 @@ def load_model(
     dtype: torch.dtype,
     electrostatics: str = "model",
     pme_mesh_spacing: float = 1.0,
+    pme_alpha: float = None,
+    pme_spline_order: int = 4,
+    pme_accuracy: float = 1e-6,
 ):
     """Load a trained model and wrap it for NVAlchemi MD.
 
@@ -202,7 +227,13 @@ def load_model(
         raw = raw["model"]
 
     if electrostatics == "nvalchemi":
-        model = build_nvalchemi_pme_model(raw, mesh_spacing=pme_mesh_spacing)
+        model = build_nvalchemi_pme_model(
+            raw,
+            mesh_spacing=pme_mesh_spacing,
+            alpha=pme_alpha,
+            spline_order=pme_spline_order,
+            accuracy=pme_accuracy,
+        )
     else:
         if electrostatics == "none":
             raw.electrostatic_energy_bool = False
@@ -366,6 +397,9 @@ def main() -> None:
         dtype,
         electrostatics=args.electrostatics,
         pme_mesh_spacing=args.pme_mesh_spacing,
+        pme_alpha=args.pme_alpha,
+        pme_spline_order=args.pme_spline_order,
+        pme_accuracy=args.pme_accuracy,
     )
     cutoff = model.model_config.neighbor_config.cutoff
     print(

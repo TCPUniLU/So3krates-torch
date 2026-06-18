@@ -284,6 +284,7 @@ def build_nvalchemi_pme_model(
     model: nn.Module,
     *,
     mesh_spacing: float = 1.0,
+    alpha: float = None,
     spline_order: int = 4,
     accuracy: float = 1e-6,
     coulomb_constant: float = _KE_EV_ANG,
@@ -310,6 +311,10 @@ def build_nvalchemi_pme_model(
     ----------
     model:
         An SO3LR model exposing ``r_max_lr`` (the PME real-space cutoff).
+    alpha:
+        Ewald splitting parameter (inverse Å) — NVAlchemi's analogue of the
+        Gaussian smearing.  ``None`` (default) auto-estimates it from
+        ``accuracy`` via the Kolafa-Perram formula each time the cell changes.
     mesh_spacing, spline_order, accuracy, coulomb_constant, hybrid_forces:
         Forwarded to :class:`nvalchemi.models.pme.PMEModelWrapper`.  The
         default ``coulomb_constant`` matches the model's ``ke``.
@@ -334,6 +339,7 @@ def build_nvalchemi_pme_model(
     pme = PMEModelWrapper(
         cutoff=float(model.r_max_lr),
         mesh_spacing=mesh_spacing,
+        alpha=alpha,
         spline_order=spline_order,
         accuracy=accuracy,
         coulomb_constant=coulomb_constant,
