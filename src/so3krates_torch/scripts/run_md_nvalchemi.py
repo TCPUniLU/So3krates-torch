@@ -216,6 +216,27 @@ def _parse_args() -> argparse.Namespace:
         "The default erf-Coulomb path and NVAlchemi-native PME "
         "(--electrostatics nvalchemi) are unaffected.",
     )
+    p.add_argument(
+        "--electrostatic-energy-scale",
+        type=float,
+        default=None,
+        help="Override the electrostatic energy scale factor stored in the "
+        "model (e.g. 4.0). Default: use the value saved with the model.",
+    )
+    p.add_argument(
+        "--dispersion-energy-scale",
+        type=float,
+        default=None,
+        help="Override the dispersion energy scale factor stored in the "
+        "model (e.g. 1.2). Default: use the value saved with the model.",
+    )
+    p.add_argument(
+        "--dispersion-energy-cutoff-lr-damping",
+        type=float,
+        default=None,
+        help="Override the dispersion LR cutoff damping (Å) stored in the "
+        "model (e.g. 2.0). Default: use the value saved with the model.",
+    )
     return p.parse_args()
 
 
@@ -234,6 +255,9 @@ def load_model(
     pme_spline_order: int = 4,
     pme_accuracy: float = 1e-6,
     compile_model: bool = False,
+    electrostatic_energy_scale: float = None,
+    dispersion_energy_scale: float = None,
+    dispersion_energy_cutoff_lr_damping: float = None,
 ):
     """Load a trained model and wrap it for NVAlchemi MD.
 
@@ -245,6 +269,20 @@ def load_model(
     raw = torch.load(path, map_location=device, weights_only=False)
     if isinstance(raw, dict) and "model" in raw:
         raw = raw["model"]
+
+    # Apply scale overrides BEFORE torch.compile so Inductor sees the
+    # final float values (it bakes Python-float attributes as constants).
+    if electrostatic_energy_scale is not None:
+        raw.electrostatic_energy_scale = electrostatic_energy_scale
+    if dispersion_energy_scale is not None:
+        raw.dispersion_energy_scale = dispersion_energy_scale
+    if dispersion_energy_cutoff_lr_damping is not None:
+        raw.dispersion_energy_cutoff_lr_damping = (
+            dispersion_energy_cutoff_lr_damping
+        )
+
+    # Print a diagnostic so there's no ambiguity about what is active.
+    _print_model_diagnostics(raw)
 
     if compile_model:
         # Compile the inner So3krates/SO3LR forward pass before NVAlchemi
@@ -267,6 +305,35 @@ def load_model(
     model = model.to(device=device, dtype=dtype)
     model.eval()
     return model
+
+
+def _print_model_diagnostics(raw) -> None:
+    """Print which long-range terms are active and their scale factors."""
+    r_sr = getattr(raw, "r_max", None)
+    r_lr = getattr(raw, "r_max_lr", None)
+    elec_bool = getattr(raw, "electrostatic_energy_bool", False)
+    elec_scale = getattr(raw, "electrostatic_energy_scale", None)
+    disp_bool = getattr(raw, "dispersion_energy_bool", False)
+    disp_scale = getattr(raw, "dispersion_energy_scale", None)
+    disp_damp = getattr(raw, "dispersion_energy_cutoff_lr_damping", None)
+    zbl_bool = getattr(raw, "zbl_repulsion_bool", False)
+
+    def _yn(b):
+        return "yes" if b else "NO"
+
+    print(
+        f"  SR cutoff: {r_sr} Å   LR cutoff: {r_lr} Å\n"
+        f"  ZBL repulsion:  {_yn(zbl_bool)}\n"
+        f"  Electrostatics: {_yn(elec_bool)}"
+        + (f"  scale={elec_scale}" if elec_bool else "")
+        + "\n"
+        f"  Dispersion:     {_yn(disp_bool)}"
+        + (
+            f"  scale={disp_scale}  lr_damping={disp_damp}"
+            if disp_bool
+            else ""
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +368,8 @@ class _PrintHook:
         self._npt = ensemble == "npt"
         self._start = start_time_ref
         self._header_done = False
+        # start_time_ref[1] is set to the elapsed time at step-0 completion
+        # (compile + first forward overhead) so ms/step excludes it.
 
     def _header(self) -> None:
         div = _DIV_NPT if self._npt else _DIV_NVT
@@ -310,14 +379,21 @@ class _PrintHook:
         self._header_done = True
 
     def __call__(self, ctx, stage) -> None:  # noqa: ARG002
+        batch = ctx.batch
+        step = int(ctx.step_count)
+        elapsed = time.perf_counter() - self._start[0]
+
+        # Step 0 includes compilation overhead — record it and skip the row.
+        if step == 0:
+            self._start[1] = elapsed
+            return
+
         if not self._header_done:
             self._header()
 
-        batch = ctx.batch
-        step = int(ctx.step_count)
         time_ps = step * self._dt_fs * 1e-3
-        elapsed = time.perf_counter() - self._start[0]
-        ms = elapsed / max(step, 1) * 1000
+        md_elapsed = elapsed - self._start[1]
+        ms = md_elapsed / step * 1000
         B = int(batch.num_graphs)
 
         # Per-graph quantities (one row per system in the batch).
@@ -345,12 +421,12 @@ class _PrintHook:
                     f"{step:>8d}  {g:>4d}  {time_ps:>8.3f}  {e:>12.4f}"
                     f"  {t:>8.2f}  {float(vols[g]):>10.2f}"
                     f"  {float(denss[g]):>9.4f}"
-                    f"  {elapsed:>10.1f}  {ms:>8.1f}"
+                    f"  {md_elapsed:>10.1f}  {ms:>8.1f}"
                 )
             else:
                 row = (
                     f"{step:>8d}  {g:>4d}  {time_ps:>8.3f}  {e:>12.4f}"
-                    f"  {t:>8.2f}  {elapsed:>10.1f}  {ms:>8.1f}"
+                    f"  {t:>8.2f}  {md_elapsed:>10.1f}  {ms:>8.1f}"
                 )
             print(row, flush=True)
 
@@ -388,8 +464,11 @@ def _make_hooks(
         return time.perf_counter() - start_time_ref[0]
 
     def _s_per_step(ctx) -> float:
-        step = max(ctx.step_count, 1)
-        return _elapsed(ctx) / step
+        step = int(ctx.step_count)
+        if step == 0:
+            return 0.0
+        md_elapsed = _elapsed(ctx) - start_time_ref[1]
+        return md_elapsed / step
 
     log_hook = LoggingHook(
         backend="csv",
@@ -426,6 +505,11 @@ def main() -> None:
         pme_spline_order=args.pme_spline_order,
         pme_accuracy=args.pme_accuracy,
         compile_model=args.compile,
+        electrostatic_energy_scale=args.electrostatic_energy_scale,
+        dispersion_energy_scale=args.dispersion_energy_scale,
+        dispersion_energy_cutoff_lr_damping=(
+            args.dispersion_energy_cutoff_lr_damping
+        ),
     )
     cutoff = model.model_config.neighbor_config.cutoff
     compile_note = "  compiled=yes (first step slow)" if args.compile else ""
@@ -498,7 +582,9 @@ def main() -> None:
 
     # start_time_ref is a mutable list so the closure in _make_hooks can
     # share the value that is set just before integrator.run().
-    start_time_ref: list[float] = [0.0]
+    # [start_wall_time, step0_overhead] — second element set by _PrintHook
+    # after step 0 so that ms/step excludes compilation overhead.
+    start_time_ref: list[float] = [0.0, 0.0]
     hooks = _make_hooks(
         model,
         args.skin,
@@ -542,10 +628,13 @@ def main() -> None:
     start_time_ref[0] = time.perf_counter()
     batch = integrator.run(batch)
     total = time.perf_counter() - start_time_ref[0]
+    md_total = total - start_time_ref[1]
 
     print(
-        f"\nDone in {total:.1f} s  "
-        f"({total / args.steps * 1000:.2f} ms/step).\n"
+        f"\nDone in {total:.1f} s total  "
+        f"({start_time_ref[1]:.1f} s compile/step-0 overhead, "
+        f"{md_total:.1f} s MD, "
+        f"{md_total / args.steps * 1000:.2f} ms/step).\n"
         f"Log written to {args.log_file}"
     )
 
