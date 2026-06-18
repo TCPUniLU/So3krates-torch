@@ -19,12 +19,12 @@ import importlib.resources as resources
 
 def get_model_dtype(model: torch.nn.Module) -> torch.dtype:
     """Get the dtype of the model"""
-    mode_dtype = next(model.parameters()).dtype
-    if mode_dtype == torch.float64:
+    model_dtype = next(model.parameters()).dtype
+    if model_dtype == torch.float64:
         return "float64"
-    if mode_dtype == torch.float32:
+    if model_dtype == torch.float32:
         return "float32"
-    raise ValueError(f"Unknown dtype {mode_dtype}")
+    raise ValueError(f"Unknown dtype {model_dtype}")
 
 
 class TorchkratesCalculator(Calculator):
@@ -312,7 +312,7 @@ class TorchkratesCalculator(Calculator):
                 self._clone_batch(batch).to_dict(),
                 compute_hessian=True,
                 compute_stress=False,
-                training=self.use_compile,
+                training=False,
             )["hessian"]
             for model in self.models
         ]

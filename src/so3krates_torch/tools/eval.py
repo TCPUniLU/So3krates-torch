@@ -537,6 +537,13 @@ class ModelEval(Metric):
             "delta_hirshfeld_ratios_per_atom", default=[], dist_reduce_fx="cat"
         )
 
+        self.add_state(
+            "charges_computed",
+            default=torch.tensor(0.0),
+            dist_reduce_fx="sum",
+        )
+        self.add_state("delta_charges", default=[], dist_reduce_fx="cat")
+
     def update(self, batch, output):  # pylint: disable=arguments-differ
         if self.loss_fn is not None:
             loss = self.loss_fn(pred=output, ref=batch)
@@ -581,6 +588,15 @@ class ModelEval(Metric):
             self.hirshfeld_ratios.append(batch.hirshfeld_ratios)
             self.delta_hirshfeld_ratios.append(
                 batch.hirshfeld_ratios - output["hirshfeld_ratios"]
+            )
+
+        if (
+            output.get("partial_charges") is not None
+            and batch.charges is not None
+        ):
+            self.charges_computed += 1.0
+            self.delta_charges.append(
+                batch.charges - output["partial_charges"]
             )
 
     def convert(
@@ -639,6 +655,12 @@ class ModelEval(Metric):
             aux["mae_hirshfeld_ratios"] = compute_mae(delta_hirshfeld_ratios)
             aux["rmse_hirshfeld_ratios"] = compute_rmse(delta_hirshfeld_ratios)
             aux["q95_hirshfeld_ratios"] = compute_q95(delta_hirshfeld_ratios)
+
+        if self.charges_computed:
+            delta_charges = self.convert(self.delta_charges)
+            aux["mae_charges"] = compute_mae(delta_charges)
+            aux["rmse_charges"] = compute_rmse(delta_charges)
+            aux["q95_charges"] = compute_q95(delta_charges)
 
         if self.loss_fn is not None:
             return aux["loss"], aux

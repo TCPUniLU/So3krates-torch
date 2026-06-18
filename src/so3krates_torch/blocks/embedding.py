@@ -148,6 +148,8 @@ class ChargeSpinEmbedding(torch.nn.Module):
             torch.Tensor: The charge-spin embedding for the input.
         """
         q = self.Wq(elements_one_hot)
+        # psi // inf gives 0 for psi>=0, -1 for psi<0 — binary sign
+        # index into the 2-row Wk/Wv parameter matrices
         idx = (psi // torch.inf).type(torch.int)
         # Expand graph-level idx to atom-level using batch_segments
         idx_per_atom = idx[batch_segments]

@@ -12,6 +12,7 @@ Implementation of the So3krates + SO3LR model in pytorch.
 3. move to the clone repository
 4. `pip install -r requirements.txt`
 5. `pip install .`
+6. (Optional) PME electrostatics support: `pip install ".[pme]"` (installs `torch-pme>=0.4`)
 
 #### Implemented features:
 1. ASE calculator for MD (including pre-trained SO3LR)
@@ -109,13 +110,10 @@ torchkrates-merge --inputs a.h5 b.h5 --output merged.h5 \
 
 ### `torchkrates-create-lammps-model` — LAMMPS Model Export
 
-> [!NOTE]
-> More details and how to use the model in LAMMPS are coming.
+> [!IMPORTANT]
+> GPU-accelerated LAMMPS (Kokkos) must be built against the same CUDA and PyTorch version as the converted model.
 
-> [!IMPORTANT]  
-> Only works with torch==2.6.0 for CUDA 12.6.0 on Meluxina!
-
-Convert a trained SO3LR model to a TorchScript model compatible with the LAMMPS ML-IAP interface.
+Convert a trained SO3LR model to a format compatible with the LAMMPS ML-IAP interface.
 
 ```bash
 torchkrates-create-lammps-model model.pt --elements Si O
@@ -131,6 +129,38 @@ torchkrates-create-lammps-model model.pt --elements Si O
 | `--electrostatic-energy-scale` | Override the electrostatic energy scaling factor. |
 | `--dispersion-energy-scale` | Override the dispersion energy scaling factor. |
 | `--dispersion-energy-cutoff-lr-damping` | Override the dispersion long-range damping cutoff. |
+
+#### Output file
+
+The converted model is saved as `<model_path>-mliap_lammps.pt` in the same directory as the input.
+
+#### LAMMPS input script — pair style and pair_coeff
+
+```lammps
+pair_style mliap unified so3lr /path/to/model-mliap_lammps.pt
+pair_coeff * * C H O
+```
+
+The `pair_style` line specifies the converted model file. The `pair_coeff` line maps LAMMPS atom types to elements: it must list exactly one element symbol per atom type defined in the data file, in the same order as the `Masses` block.
+
+> [!IMPORTANT]
+> Specifying the wrong number of elements — e.g. `C H N O` when the data file only has 3 atom types (C, H, O) — silently misassigns atom types and produces wrong energies and forces without any error message.
+
+#### Running LAMMPS with GPU (Kokkos)
+
+For compilation and general guidance, see the [NVIDIA blog post on AI-driven MD simulations](https://developer.nvidia.com/blog/enabling-scalable-ai-driven-molecular-dynamics-simulations/).
+
+Example launch command for Kokkos GPU:
+
+```bash
+mpirun -np $num_gpus /path/to/lammps/build_cuda/lmp \
+    -k on g $num_gpus \
+    -sf kk \
+    -pk kokkos newton on neigh half \
+    -in prod.in
+```
+
+where `$num_gpus` is the number of GPU processes and `/path/to/lammps/build_cuda/lmp` is the Kokkos-enabled LAMMPS executable. The model auto-detects the GPU device on the first timestep.
 
 ---
 
@@ -284,7 +314,7 @@ These settings define the SO3LR neural network architecture.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `r_max` | `float` | `4.5` | Short-range cutoff radius in Angstrom. Atoms beyond this distance do not interact through the neural network. |
-| `r_max_lr` | `float` | `None` | Long-range cutoff for electrostatics and dispersion. Required when `electrostatic_energy_bool: true` (unless `use_pme: true`) or `dispersion_energy_bool: true` (unless `use_pme_dispersion: true`). |
+| `r_max_lr` | `float` | `None` | Long-range cutoff for electrostatics and dispersion. Required when `electrostatic_energy_bool: true` (unless `use_pme: true`) or `dispersion_energy_bool: true`. |
 | `radial_basis_fn` | `str` | `"bernstein"` | Radial basis function type. Options: `bernstein`, `gaussian`, `bessel`. |
 | `cutoff_fn` | `str` | `"cosine"` | Envelope function that smoothly decays interactions to zero at the cutoff. Options: `cosine`, `phys`, `polynomial`, `exponential`. |
 | `trainable_rbf` | `bool` | `False` | Whether radial basis function parameters are trainable. |
@@ -327,22 +357,24 @@ These enable the physics-based long-range interactions that distinguish SO3LR fr
 | `zbl_repulsion_bool` | `bool` | `True` | Enable the ZBL repulsion potential for short-range nuclear repulsion. |
 | `electrostatic_energy_bool` | `bool` | `True` | Enable electrostatic interactions via learned partial charges. Requires `r_max_lr` to be set. |
 | `electrostatic_energy_scale` | `float` | `4.0` | Scaling factor for the electrostatic energy contribution. |
-| `dispersion_energy_bool` | `bool` | `True` | Enable van der Waals dispersion interactions via learned Hirshfeld ratios. Requires `r_max_lr` unless `use_pme_dispersion: true`. |
+| `dispersion_energy_bool` | `bool` | `True` | Enable van der Waals dispersion interactions via learned Hirshfeld ratios. Requires `r_max_lr`. |
 | `dispersion_energy_scale` | `float` | `1.2` | Scaling factor for the dispersion energy contribution. |
-| `dispersion_energy_cutoff_lr_damping` | `float` | `None` | Damping cutoff (Å) for the TS dispersion damping function. Required when `dispersion_energy_bool: true` and `use_pme_dispersion: false`. |
+| `dispersion_energy_cutoff_lr_damping` | `float` | `None` | Damping cutoff (Å) for the TS dispersion damping function. Required when `dispersion_energy_bool: true`. |
 | `neighborlist_format_lr` | `str` | `"sparse"` | Storage format for the long-range neighbor list. |
 | `use_pme` | `bool` | `False` | Enable PME electrostatics for periodic systems. See [PME Electrostatics](#pme-electrostatics-particle-mesh-ewald). |
 | `pme_smearing` | `float` | `r_max / 5` | Ewald splitting width (Å) for PME electrostatics. |
 | `pme_mesh_spacing` | `float` | `smearing / 2` | FFT grid spacing (Å) for PME electrostatics. |
-| `use_pme_dispersion` | `bool` | `False` | Enable PME C6 dispersion for periodic systems. See [PME Dispersion](#pme-dispersion-particle-mesh-ewald). |
-| `pme_smearing_dispersion` | `float` | `r_max / 5` | Ewald splitting width (Å) for PME dispersion. |
-| `pme_mesh_spacing_dispersion` | `float` | `smearing / 2` | FFT grid spacing (Å) for PME dispersion. |
 
 #### PME Electrostatics (Particle Mesh Ewald)
 
 For periodic systems, the direct-space Coulomb sum is conditionally convergent and a cutoff scheme introduces systematic errors that worsen with smaller boxes. PME splits the 1/r sum into a real-space part (using the SR neighbor list) and a reciprocal-space FFT part that captures the long-range tail exactly. When `use_pme: true`, `r_max_lr` is no longer required for electrostatics.
 
 **Requires `torch-pme>=0.4` to be installed.** Use `torchkrates-tune-pme` to find optimal parameter values for your dataset.
+
+**Limitations:**
+- PME requires **periodic boundary conditions** (`pbc=True` on all axes). Calling a PME model on a non-periodic system raises a `ValueError`.
+- The PME sum assumes **charge neutrality** (total charge ≈ 0). Non-neutral systems produce a conditionally-convergent result that depends on the background charge convention.
+- PME models are **incompatible with the LAMMPS ML-IAP interface** (LAMMPS passes edge vectors, not absolute positions). Use the ASE calculator for PME production runs.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -354,40 +386,12 @@ Example config with PME enabled:
 ```yaml
 ARCHITECTURE:
   r_max: 6.0
-  # r_max_lr can be omitted when both use_pme and use_pme_dispersion are true
+  # r_max_lr can be omitted when use_pme is true (not needed for electrostatics)
   use_pme: true
   pme_smearing: 1.18       # from torchkrates-tune-pme
   pme_mesh_spacing: 0.59
   electrostatic_energy_bool: true
   electrostatic_energy_scale: 4.0
-```
-
-#### PME Dispersion (Particle Mesh Ewald)
-
-For periodic systems the direct 1/r⁶ dispersion sum has the same conditional-convergence problem as Coulomb. `use_pme_dispersion: true` replaces the TS damped sum over the LR neighbor list with a full PME sum using the geometric mean C6 combination rule: `C6_ij = sqrt(C6_i · C6_j)`. When `use_pme_dispersion: true`, `r_max_lr` is no longer required for dispersion, and `dispersion_energy_cutoff_lr_damping` is not needed.
-
-**Requires `torch-pme>=0.4` to be installed.** Use `torchkrates-tune-pme --mode dispersion` to find optimal parameters.
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `use_pme_dispersion` | `bool` | `False` | Enable PME C6 dispersion. Replaces the TS damped LR sum with `PMEDispersionInteraction`. `r_max_lr` and `dispersion_energy_cutoff_lr_damping` are not required when `True`. |
-| `pme_smearing_dispersion` | `float` | `r_max / 5` | Ewald splitting width in Å for the dispersion PME. |
-| `pme_mesh_spacing_dispersion` | `float` | `smearing / 2` | FFT grid spacing in Å for the dispersion PME. |
-
-Example config with full PME (no LR neighbor list needed):
-```yaml
-ARCHITECTURE:
-  r_max: 6.0
-  # r_max_lr not required — both potentials use PME
-  use_pme: true
-  pme_smearing: 1.18
-  pme_mesh_spacing: 0.59
-  electrostatic_energy_bool: true
-  use_pme_dispersion: true
-  pme_smearing_dispersion: 1.18   # from torchkrates-tune-pme --mode dispersion
-  pme_mesh_spacing_dispersion: 0.59
-  dispersion_energy_bool: true
-  # dispersion_energy_cutoff_lr_damping: not needed with use_pme_dispersion
 ```
 
 #### Multi-Head Ensemble
@@ -577,46 +581,6 @@ TRAINING:
 ```
 
 This samples 3500 structures from `pretrain_A.xyz` and 1500 from `pretrain_B.h5`, then combines them with the fine-tuning data (oversampled to ~5000) for a total of ~10000 training structures per epoch.
-
-
-#### Elastic Weight Consolidation (EWC / reEWC)
-
-EWC is a regularisation technique that prevents catastrophic forgetting during fine-tuning. It adds a penalty to the loss that keeps model parameters close to their pretrained values, weighted by their importance on the pretraining task. Importance is estimated via the diagonal of the Fisher Information Matrix (FIM), computed once on a subset of the pretraining data before training begins.
-
-**reEWC** — the variant proposed in [An efficient forgetting-aware fine-tuning framework for pretrained universal MLIPs](https://www.nature.com/articles/s41524-025-01895-w) — combines EWC with data replay. To use reEWC, enable both EWC (below) and the replay settings above simultaneously.
-
-The EWC penalty added to each gradient step is:
-
-$$\mathcal{L}_\text{EWC} = \mathcal{L}_\text{FT} + \frac{\lambda}{2} \sum_i F_i \left(\theta_i - \theta^*_i\right)^2$$
-
-where $F_i$ is the diagonal FIM entry for parameter $i$, $\theta^*_i$ is its pretrained value, and $\lambda$ controls the regularisation strength.
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `use_ewc` | `bool` | `False` | Enable EWC regularisation. |
-| `ewc_lambda` | `float` | `1e6` | Regularisation strength λ. The paper reports λ = 10⁶ for eV/atom energy and eV/Å force losses; So3krates uses comparable loss scales so this is a reasonable starting point, but should be validated empirically. |
-| `ewc_fisher_data` | `str` | `None` | Path to a subset of the **pretraining** dataset for Fisher estimation (XYZ, raw HDF5, or preprocessed HDF5). Must **not** be the fine-tuning training or validation set — EWC protects parameters important for old knowledge, so Fisher must be computed on pretraining data. Can point to the same file as `replay_datasets`. Required when `use_ewc: true`. |
-| `ewc_num_fisher_samples` | `int` | `1000` | Number of individual **structures** (not batches) to use for Fisher estimation. Batches of size `batch_size` are drawn until this count is reached. |
-
-**Example (reEWC — EWC + replay):**
-
-```yaml
-TRAINING:
-  path_to_train_data: finetune.xyz
-  finetune_choice: naive
-  # EWC
-  use_ewc: true
-  ewc_lambda: 1.e6
-  ewc_fisher_data: /data/pretrain_subset.xyz
-  ewc_num_fisher_samples: 1000
-  # Replay (makes this reEWC)
-  replay_datasets:
-    - /data/pretrain_subset.xyz
-  replay_fractions: [1.0]
-  replay_total: 1000
-```
-
-> **Note on computational cost:** EWC alone adds negligible overhead (one-time Fisher pass before training, a cheap quadratic penalty per step). reEWC doubles the per-epoch data volume due to the replay component.
 
 
 ### General Settings (`GENERAL`)

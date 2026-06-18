@@ -129,11 +129,15 @@ def mock_batch_for_loss():
         ),
         dipole=torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
         hirshfeld_ratios=torch.ones(7),
+        charges=torch.tensor(
+            [-0.3, 0.1, 0.2, -0.2, 0.1, 0.0, 0.1]
+        ),  # sum≈0 per graph
         weight=torch.tensor([1.0, 2.0]),  # Per-graph
         energy_weight=torch.tensor([1.0, 1.5]),
         forces_weight=torch.tensor([10.0, 20.0]),
         dipole_weight=torch.tensor([[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]]),
         hirshfeld_ratios_weight=torch.tensor([1.0, 2.0]),
+        charges_weight=torch.tensor([1.0, 2.0]),
     )
 
     return batch

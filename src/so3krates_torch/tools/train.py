@@ -33,7 +33,6 @@ from so3krates_torch.tools.utils import (
 )
 from so3krates_torch.tools.eval import ModelEval
 from so3krates_torch.tools.finetune import preserve_grad_state
-from so3krates_torch.tools.ewc import EWC
 
 
 @dataclasses.dataclass
@@ -136,7 +135,7 @@ def valid_err_log(
         error_f = eval_metrics["mae_f"] * 1e3
         error_hirshfeld_ratios = eval_metrics["mae_hirshfeld_ratios"]
         logging.info(
-            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_hirshfeld_ratios={error_hirshfeld_ratios:8.2f}",
+            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_hirshfeld_ratios={error_hirshfeld_ratios:8.4f}",
         )
     elif log_errors == "EnergyForceDipoleHirshfeldMAE":
         error_e = eval_metrics["mae_e_per_atom"] * 1e3
@@ -144,7 +143,22 @@ def valid_err_log(
         error_dipole = eval_metrics["mae_dipole"] * 1e3
         error_hirshfeld_ratios = eval_metrics["mae_hirshfeld_ratios"]
         logging.info(
-            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_dipole={error_dipole:8.2f} mDebye, MAE_hirshfeld_ratios={error_hirshfeld_ratios:8.2f}",
+            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_dipole={error_dipole:8.2f} mDebye, MAE_hirshfeld_ratios={error_hirshfeld_ratios:8.4f}",
+        )
+    elif log_errors == "EnergyForceChargesMAE":
+        error_e = eval_metrics["mae_e_per_atom"] * 1e3
+        error_f = eval_metrics["mae_f"] * 1e3
+        error_charges = eval_metrics["mae_charges"]
+        logging.info(
+            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_charges={error_charges:8.4f} e",
+        )
+    elif log_errors == "EnergyForceChargesHirshfeldMAE":
+        error_e = eval_metrics["mae_e_per_atom"] * 1e3
+        error_f = eval_metrics["mae_f"] * 1e3
+        error_charges = eval_metrics["mae_charges"]
+        error_hirshfeld_ratios = eval_metrics["mae_hirshfeld_ratios"]
+        logging.info(
+            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_charges={error_charges:8.4f} e, MAE_hirshfeld_ratios={error_hirshfeld_ratios:8.4f}",
         )
 
 
@@ -179,7 +193,6 @@ def train(
     early_stopping_min_delta: float = 0.0,
     early_stopping_warmup: int = 0,
     replay_builder=None,
-    ewc: Optional[EWC] = None,
 ):
     lowest_loss = np.inf
     valid_loss = np.inf
@@ -274,7 +287,6 @@ def train(
             distributed=distributed,
             distributed_model=distributed_model,
             rank=rank,
-            ewc=ewc,
         )
         if distributed:
             torch.distributed.barrier()
@@ -420,7 +432,6 @@ def train_one_epoch(
     distributed: bool,
     distributed_model: Optional[DistributedDataParallel] = None,
     rank: Optional[int] = 0,
-    ewc: Optional[EWC] = None,
 ) -> None:
     model_to_train = model if distributed_model is None else distributed_model
 
@@ -436,7 +447,6 @@ def train_one_epoch(
             device=device,
             distributed=distributed,
             rank=rank,
-            ewc=ewc,
         )
         if not np.isfinite(opt_metrics["loss"]):
             raise RuntimeError(
@@ -460,7 +470,6 @@ def train_one_epoch(
                 output_args=output_args,
                 max_grad_norm=max_grad_norm,
                 device=device,
-                ewc=ewc,
             )
             if not np.isfinite(opt_metrics["loss"]):
                 raise RuntimeError(
@@ -485,7 +494,6 @@ def take_step(
     output_args: Dict[str, bool],
     max_grad_norm: Optional[float],
     device: torch.device,
-    ewc: Optional[EWC] = None,
 ) -> Tuple[float, Dict[str, Any]]:
     start_time = time.time()
     batch = batch.to(device)
@@ -503,8 +511,6 @@ def take_step(
             compute_stress=output_args["stress"],
         )
         loss = loss_fn(pred=output, ref=batch)
-        if ewc is not None:
-            loss = loss + ewc.penalty(model)
         loss.backward()
         if max_grad_norm is not None:
             grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -541,7 +547,6 @@ def take_step_lbfgs(
     device: torch.device,
     distributed: bool,
     rank: int,
-    ewc: Optional[EWC] = None,
 ) -> Tuple[float, Dict[str, Any]]:
     start_time = time.time()
     logging.debug(
@@ -591,11 +596,6 @@ def take_step_lbfgs(
 
             batch_loss.backward()
             total_loss += batch_loss
-
-        if ewc is not None:
-            ewc_loss = ewc.penalty(model)
-            ewc_loss.backward()
-            total_loss = total_loss + ewc_loss
 
         if max_grad_norm is not None:
             grad_norm = torch.nn.utils.clip_grad_norm_(

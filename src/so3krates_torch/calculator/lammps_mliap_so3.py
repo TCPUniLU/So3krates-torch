@@ -1,8 +1,6 @@
 import logging
 import os
-import sys
 import time
-import warnings
 from contextlib import contextmanager
 from typing import Dict, List, Tuple
 
@@ -180,17 +178,15 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
         self.num_elements = model.num_elements
         self.use_lr = self.model.use_lr
         if getattr(model, "use_pme", False):
-            warnings.warn(
+            raise RuntimeError(
                 "This model uses PME electrostatics (use_pme=True), which is "
                 "not supported in LAMMPS mode. The LAMMPS path passes zero "
-                "positions and cell to the model, so PME will silently produce "
-                "wrong results. Use the ASE calculator for PME.",
-                UserWarning,
-                stacklevel=2,
+                "positions and cell to the model, so PME would produce "
+                "wrong results. Use the ASE calculator for PME models."
             )
         if self.use_lr:
-            # Request neighbor list at r_max_lr so we get all
-            # pairs needed for long-range interactions.
+            # rcutfac is the LAMMPS half-cutoff (rcut = 2*rcutfac).
+            # Request the LR cutoff so all long-range pairs are included.
             self.rcutfac = 0.5 * float(model.r_max_lr)
             self.r_max_sr = float(model.r_max)
         else:
@@ -362,8 +358,7 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
         if self.step == self.config.profile_end_step:
             logging.info(f"Stopping CUDA profiler at step {self.step}")
             torch.cuda.profiler.stop()
-            logging.info("Profiling complete. Exiting.")
-            sys.exit()
+            self.config.debug_profile = False
 
     def compute_descriptors(self, data):
         pass

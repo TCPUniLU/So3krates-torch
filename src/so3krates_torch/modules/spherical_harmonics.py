@@ -79,10 +79,13 @@ class RealSphericalHarmonics(nn.Module):
                 out[:, idx + 3] = c4d * y * (7 * z**3 - 3 * z)  # Y_4^-1
                 out[:, idx + 4] = c4e * (35 * z**4 - 30 * z**2 + 3)  # Y_40
                 out[:, idx + 5] = c4d * x * (7 * z**3 - 3 * z)  # Y_41
-                out[:, idx + 6] = c4f * (x**2 - y**2) * (7 * z**2 - 1)  # Y_42
+                out[:, idx + 6] = (
+                    c4f * (x**2 - y**2) * (7 * z**2 - 1)
+                )  # Y_42
                 out[:, idx + 7] = c4b * x * (x**2 - 3 * y**2) * z  # Y_43
                 out[:, idx + 8] = c4g * (
-                    x**2 * (x**2 - 3 * y**2) - y**2 * (3 * x**2 - y**2)
+                    x**2 * (x**2 - 3 * y**2)
+                    - y**2 * (3 * x**2 - y**2)
                 )  # Y_44
                 idx += 9
 

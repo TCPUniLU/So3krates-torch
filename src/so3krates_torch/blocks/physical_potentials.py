@@ -337,15 +337,12 @@ def vdw_qdo_disp_damp(
     C10 = 245 / 8 / gamma**2 * C6
     p = gamma_scale * 2 * 2.54 * alpha_ij ** (1 / 7)
 
-    # Compute potential
-    R6 = torch.pow(R, 6)
-    R8 = torch.pow(R, 8)
-    R10 = torch.pow(R, 10)
-    p6 = torch.pow(p, 6)
-    p8 = torch.pow(p, 8)
-    p10 = torch.pow(p, 10)
-
-    V3 = -C6 / (R6 + p6) - C8 / (R8 + p8) - C10 / (R10 + p10)
+    # Compute potential — inline to avoid 6 simultaneous [N_pairs] tensors
+    V3 = (
+        -C6 / (R**6 + p**6)
+        - C8 / (R**8 + p**8)
+        - C10 / (R**10 + p**10)
+    )
 
     hartree_factor = torch.tensor(HARTREE, dtype=input_dtype, device=device)
     return c * V3 * hartree_factor
@@ -728,6 +725,14 @@ class PMEElectrostaticInteraction(nn.Module):
             pos_g = positions[atom_mask]  # (N_g, 3)
             q_g = partial_charges[atom_mask]  # (N_g,)
             cell_g = cell[g]  # (3, 3)
+            if cell_g.abs().sum() == 0:
+                raise ValueError(
+                    "PME electrostatics requires periodic boundary "
+                    "conditions, but the cell for graph "
+                    f"{g} is all zeros (non-periodic system). "
+                    "Either set pbc=True and provide a cell, or "
+                    "use use_pme=False for non-periodic systems."
+                )
 
             # SR edges within graph g
             edge_mask = atom_mask[edge_index[0]]

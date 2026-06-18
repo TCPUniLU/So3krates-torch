@@ -438,3 +438,40 @@ def test_pme_electrostatics_plus_vdw_dispersion():
     assert torch.allclose(
         out2["energy"], energy.detach()
     ), "Energy is not deterministic across two identical forward passes"
+
+
+# ============================================================
+# Test 5: LAMMPS + PME raises RuntimeError
+# ============================================================
+
+
+def test_lammps_pme_raises():
+    """Constructing LAMMPS_MLIAP_SO3 with a PME model must raise RuntimeError.
+
+    LAMMPS passes edge vectors (not absolute positions) to the model, so PME
+    — which needs absolute positions for the reciprocal-space FFT — cannot
+    produce correct results. The constructor must refuse the combination.
+    """
+    from so3krates_torch.calculator.lammps_mliap_so3 import LAMMPS_MLIAP_SO3
+    from so3krates_torch.modules.models import SO3LR
+
+    model = SO3LR(
+        r_max=5.0,
+        num_radial_basis_fn=8,
+        degrees=[1, 2],
+        num_features=16,
+        num_heads=2,
+        num_layers=1,
+        num_elements=118,
+        avg_num_neighbors=10.0,
+        energy_regression_dim=16,
+        use_pme=True,
+        electrostatic_energy_bool=True,
+        dispersion_energy_bool=False,
+        zbl_repulsion_bool=False,
+    )
+
+    # Na + Cl atomic numbers
+    atomic_numbers = [11, 17]
+    with pytest.raises(RuntimeError, match="PME"):
+        LAMMPS_MLIAP_SO3(model, atomic_numbers=atomic_numbers)

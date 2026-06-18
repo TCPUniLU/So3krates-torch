@@ -252,6 +252,7 @@ def compute_multihead_forces_stress(
 
     # virials shape: [num_heads, batch, 3, 3]
     # cell shape : [batch, 3, 3]
+    stress = None
     if compute_stress and virials is not None:
         cell = cell.view(-1, 3, 3)
         volume = torch.linalg.det(cell).abs().unsqueeze(-1)
