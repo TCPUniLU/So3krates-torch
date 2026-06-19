@@ -215,7 +215,9 @@ def test_stress_sign_matches_nvalchemi_virial_convention():
     nv_stress = out["stress"][0].detach().cpu().numpy()
 
     # Sanity: stress must actually be non-trivial, else the sign test is vacuous
-    assert abs(ase_stress_3x3).max() > 1e-8, "ASE stress is ~zero; test vacuous"
+    assert (
+        abs(ase_stress_3x3).max() > 1e-8
+    ), "ASE stress is ~zero; test vacuous"
 
     # The adapter must flip the sign relative to the ASE convention.
     assert torch.allclose(
