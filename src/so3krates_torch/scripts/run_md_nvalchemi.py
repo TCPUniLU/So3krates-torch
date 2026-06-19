@@ -55,6 +55,34 @@ from so3krates_torch.calculator.nvalchemi_so3 import (
 # ---------------------------------------------------------------------------
 AMU_TO_G_PER_CM3 = 1.66054  # (amu/Å³) → g/cm³
 BAR_TO_EV_PER_A3 = 6.2415e-7  # bar → eV/Å³
+KB_EV_PER_K = 8.617333262e-5  # Boltzmann constant [eV/K]
+
+
+def _pressure_bar_per_graph(batch) -> torch.Tensor:
+    """Instantaneous scalar pressure per graph ``[B]`` in bar.
+
+    ``P = (2/3) KE / V + (1/3) tr(σ)`` where ``σ = batch.stress`` is the
+    NVAlchemi Cauchy stress (virial / V, in eV/Å³, the sign convention the
+    adapter already emits).  The kinetic term equals ``N kB T / V`` exactly,
+    because ``temperature_per_graph`` defines T with 3N degrees of freedom.
+
+    This matches the total pressure LAMMPS reports (``thermo press``), so the
+    two engines can be compared directly at the same configuration.
+    """
+    cell = batch.cell
+    vols = torch.abs(torch.linalg.det(cell))  # [B] Å³
+    temps = temperature_per_graph(
+        batch.velocities,
+        batch.atomic_masses,
+        batch.batch_idx,
+        batch.num_graphs,
+        batch.num_nodes_per_graph,
+    )  # [B] K
+    n_atoms = batch.num_nodes_per_graph.to(vols.dtype)  # [B]
+    p_kin = n_atoms * KB_EV_PER_K * temps / vols  # [B] eV/Å³
+    # batch.stress is the Cauchy stress σ = virial/V (eV/Å³); P_vir = tr(σ)/3.
+    p_vir = batch.stress.diagonal(dim1=-2, dim2=-1).sum(-1) / 3.0  # [B] eV/Å³
+    return (p_kin + p_vir) / BAR_TO_EV_PER_A3  # [B] bar
 
 
 # ---------------------------------------------------------------------------
@@ -357,10 +385,11 @@ _HDR_NVT = (
 )
 _HDR_NPT = (
     f"{'step':>8}  {'sys':>4}  {'time/ps':>8}  {'energy/eV':>12}  {'T/K':>8}"
-    f"  {'vol/Å³':>10}  {'dens/gcc':>9}  {'elapsed/s':>10}  {'ms/step':>8}"
+    f"  {'vol/Å³':>10}  {'dens/gcc':>9}  {'press/bar':>12}"
+    f"  {'elapsed/s':>10}  {'ms/step':>8}"
 )
 _DIV_NVT = "-" * 78
-_DIV_NPT = "-" * 96
+_DIV_NPT = "-" * 110
 
 
 class _PrintHook:
@@ -423,6 +452,7 @@ class _PrintHook:
             mass = torch.zeros(B, dtype=cell.dtype, device=cell.device)
             mass.index_add_(0, batch.batch_idx, batch.atomic_masses)
             denss = mass / vols * AMU_TO_G_PER_CM3  # [B]
+            press = _pressure_bar_per_graph(batch)  # [B] bar
 
         for g in range(B):
             e = float(energy[g])
@@ -431,7 +461,7 @@ class _PrintHook:
                 row = (
                     f"{step:>8d}  {g:>4d}  {time_ps:>8.3f}  {e:>12.4f}"
                     f"  {t:>8.2f}  {float(vols[g]):>10.2f}"
-                    f"  {float(denss[g]):>9.4f}"
+                    f"  {float(denss[g]):>9.4f}  {float(press[g]):>12.1f}"
                     f"  {md_elapsed:>10.1f}  {ms:>8.1f}"
                 )
             else:
@@ -471,6 +501,9 @@ def _make_hooks(
         mass.index_add_(0, ctx.batch.batch_idx, ctx.batch.atomic_masses)
         return mass / vol * AMU_TO_G_PER_CM3  # [B] g/cm³
 
+    def _pressure(ctx):
+        return _pressure_bar_per_graph(ctx.batch)  # [B] bar
+
     def _elapsed(ctx) -> float:
         return time.perf_counter() - start_time_ref[0]
 
@@ -488,6 +521,7 @@ def _make_hooks(
         custom_scalars={
             "volume_A3": _volume,
             "density_g_cm3": _density,
+            "pressure_bar": _pressure,
             "elapsed_s": _elapsed,
             "s_per_step": _s_per_step,
         },
