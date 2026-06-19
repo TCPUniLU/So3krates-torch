@@ -142,14 +142,16 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--barostat-time",
         type=float,
-        default=2000.0,
-        help="NPT barostat time constant [fs] (default: 2000 fs)",
+        default=None,
+        help="NPT barostat time constant [fs] "
+        "(default: 1000 * dt, matching the LAMMPS pdamp convention)",
     )
     p.add_argument(
         "--thermostat-time",
         type=float,
-        default=500.0,
-        help="NPT thermostat time constant [fs] (default: 500 fs)",
+        default=None,
+        help="NPT thermostat time constant [fs] "
+        "(default: 100 * dt, matching the LAMMPS tdamp convention)",
     )
     p.add_argument(
         "--pressure-coupling",
@@ -237,7 +239,16 @@ def _parse_args() -> argparse.Namespace:
         help="Override the dispersion LR cutoff damping (Å) stored in the "
         "model (e.g. 2.0). Default: use the value saved with the model.",
     )
-    return p.parse_args()
+    args = p.parse_args()
+
+    # Resolve NPT coupling time constants as multiples of the timestep,
+    # mirroring the LAMMPS convention (tdamp ~ 100 steps, pdamp ~ 1000 steps).
+    if args.thermostat_time is None:
+        args.thermostat_time = 100.0 * args.dt
+    if args.barostat_time is None:
+        args.barostat_time = 1000.0 * args.dt
+
+    return args
 
 
 # ---------------------------------------------------------------------------
@@ -621,7 +632,13 @@ def main() -> None:
     print(
         f"\nRunning {args.ensemble.upper()}: {args.steps} steps  "
         f"T={args.temperature} K  dt={args.dt} fs"
-        + (f"  P={args.pressure} bar" if args.ensemble == "npt" else "")
+        + (
+            f"  P={args.pressure} bar  "
+            f"tdamp={args.thermostat_time:g} fs ({args.thermostat_time / args.dt:g} steps)  "
+            f"pdamp={args.barostat_time:g} fs ({args.barostat_time / args.dt:g} steps)"
+            if args.ensemble == "npt"
+            else ""
+        )
     )
     print(f"Logging every {args.log_freq} steps → {args.log_file}\n")
 

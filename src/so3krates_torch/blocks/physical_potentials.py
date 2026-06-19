@@ -338,11 +338,7 @@ def vdw_qdo_disp_damp(
     p = gamma_scale * 2 * 2.54 * alpha_ij ** (1 / 7)
 
     # Compute potential — inline to avoid 6 simultaneous [N_pairs] tensors
-    V3 = (
-        -C6 / (R**6 + p**6)
-        - C8 / (R**8 + p**8)
-        - C10 / (R**10 + p**10)
-    )
+    V3 = -C6 / (R**6 + p**6) - C8 / (R**8 + p**8) - C10 / (R**10 + p**10)
 
     hartree_factor = torch.tensor(HARTREE, dtype=input_dtype, device=device)
     return c * V3 * hartree_factor
