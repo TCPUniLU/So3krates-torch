@@ -183,6 +183,53 @@ def test_batched_md_independence():
     assert torch.allclose(out["forces"][len(a1) :], f_refs[1], atol=1e-6)
 
 
+def test_stress_sign_matches_nvalchemi_virial_convention():
+    """The wrapper's `stress` must be the NEGATIVE of the ASE-convention
+    stress.
+
+    The model emits ASE-convention stress (+dE/de / V), which the ASE
+    calculator surfaces verbatim.  NVAlchemi's NPT treats the `stress` key as
+    Cauchy W/V with virial W = -dE/de (the opposite sign), so the adapter
+    negates it.  A regression here silently drives the barostat the wrong way
+    (density falls instead of rising), so it is asserted explicitly.
+    """
+    pytest.importorskip("matscipy", reason="matscipy needed for neighbor list")
+    from ase.stress import voigt_6_to_full_3x3_stress
+
+    atoms = _small_nacl()
+    model = _make_so3lr(use_pme=False, electrostatics_bool=True)
+
+    calc = TorchkratesCalculator(
+        models=[model],
+        device=str(DEVICE),
+        dtype=DTYPE,
+        r_max=model.r_max,
+        r_max_lr=model.r_max_lr,
+        compute_stress=True,
+    )
+    atoms.calc = calc
+    ase_stress_3x3 = voigt_6_to_full_3x3_stress(atoms.get_stress())
+
+    wrapper = NVAlchemiSO3LR(model)
+    out = wrapper(_make_batch_with_nl(wrapper, atoms))
+    nv_stress = out["stress"][0].detach().cpu().numpy()
+
+    # Sanity: stress must actually be non-trivial, else the sign test is vacuous
+    assert abs(ase_stress_3x3).max() > 1e-8, "ASE stress is ~zero; test vacuous"
+
+    # The adapter must flip the sign relative to the ASE convention.
+    assert torch.allclose(
+        torch.tensor(nv_stress),
+        torch.tensor(-ase_stress_3x3),
+        atol=1e-8,
+        rtol=1e-6,
+    ), (
+        "NVAlchemi wrapper stress is not -(ASE stress); barostat sign bug.\n"
+        f"  wrapper stress:\n{nv_stress}\n"
+        f"  -(ASE stress):\n{-ase_stress_3x3}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Electrostatics: real-space (model) and NVAlchemi-native PME
 # ---------------------------------------------------------------------------

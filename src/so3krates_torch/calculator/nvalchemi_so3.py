@@ -256,7 +256,13 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
             # nvalchemi expects [B, 1]; LoggingHook squeezes to [B]
             "energy": raw_output["energy"].unsqueeze(-1),
             "forces": raw_output["forces"],
-            "stress": raw_output["stress"],  # [B, 3, 3]
+            # The model emits ASE-convention stress (+dE/de / V), passed
+            # straight into ASE's results elsewhere.  NVAlchemi's NPT treats
+            # the `stress` key as Cauchy stress W/V with virial W = -dE/de
+            # (npt.py:306-308, npt_nph.py:185), i.e. the opposite sign.
+            # Negate to match — otherwise the barostat drives the cell the
+            # wrong way (density falls instead of rising).
+            "stress": -raw_output["stress"],  # [B, 3, 3]
         }
         if self.electrostatics == "nvalchemi":
             # Per-atom charges [N], wired into the PME step downstream.
