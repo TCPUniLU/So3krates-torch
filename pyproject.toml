@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "So3krates-torch"
-version = "0.2.0"
+version = "0.2.1"
 description = "PyTorch implementation of So3krates neural network potential for atomistic simulations"
 readme = "README.md"
 requires-python = ">=3.10"
