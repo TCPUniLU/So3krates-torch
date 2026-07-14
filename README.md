@@ -4,6 +4,14 @@ Implementation of the So3krates + SO3LR model in pytorch.
 
 #### Installation
 
+**From PyPI:**
+
+1. activate your environment
+2. `pip install so3krates-torch`
+3. (Optional) PME electrostatics support: `pip install "so3krates-torch[pme]"` (installs `torch-pme>=0.4`)
+
+**From source (development):**
+
 1. activate your environment
 2. clone this repository
 3. move to the clone repository
