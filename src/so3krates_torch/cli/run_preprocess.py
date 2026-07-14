@@ -205,6 +205,8 @@ def create_keyspec_from_args(args) -> KeySpecification:
         keydict["dipole_key"] = args.dipole_key
     if args.charges_key:
         keydict["charges_key"] = args.charges_key
+    if args.hirshfeld_ratios_key:
+        keydict["hirshfeld_ratios_key"] = args.hirshfeld_ratios_key
     if args.total_charge_key:
         keydict["total_charge_key"] = args.total_charge_key
     if args.total_spin_key:
@@ -273,6 +275,12 @@ def main():
         type=str,
         default=None,
         help="Key for charges (default: REF_charges)",
+    )
+    parser.add_argument(
+        "--hirshfeld-ratios-key",
+        type=str,
+        default=None,
+        help="Key for Hirshfeld ratios (default: REF_hirsh_ratios)",
     )
     parser.add_argument(
         "--total-charge-key",
