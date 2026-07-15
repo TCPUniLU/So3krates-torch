@@ -45,6 +45,7 @@ class TorchkratesCalculator(Calculator):
         key_specification: Optional[KeySpecification] = None,
         model_type="so3lr",
         fullgraph=True,
+        compile: bool = False,
         **kwargs,
     ):
         Calculator.__init__(self, **kwargs)
@@ -189,6 +190,12 @@ class TorchkratesCalculator(Calculator):
         for model in self.models:
             for param in model.parameters():
                 param.requires_grad = False
+
+        if compile:
+            self.models = [
+                torch.compile(model, dynamic=True, fullgraph=fullgraph)
+                for model in self.models
+            ]
 
     def _create_result_tensors(
         self, model_type: str, num_models: int, num_atoms: int

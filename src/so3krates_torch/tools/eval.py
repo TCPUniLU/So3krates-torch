@@ -43,6 +43,7 @@ def evaluate_model(
     return_mean_eqv_descriptors: bool = False,
     dtype: str = "float64",
     key_spec: Optional[KeySpecification] = None,
+    compile: bool = False,
 ) -> dict[str, Union[np.ndarray, List[np.ndarray]]]:
     """
     Evaluate a model on a list of ASE atoms objects.
@@ -69,6 +70,9 @@ def evaluate_model(
                                                  charges. Defaults to False.
         dtype (str, optional): Data type for model computations.
                               Defaults to "float64".
+        compile (bool, optional): Whether to compile the model with
+                                 `torch.compile` before evaluation.
+                                 Defaults to False.
 
     Returns:
         dict[str, Union[np.ndarray, List[np.ndarray]]]: Dictionary containing
@@ -144,6 +148,8 @@ def evaluate_model(
                 dispersion_energy_cutoff_lr_damping
             )
     model = model.eval()
+    if compile:
+        model = torch.compile(model, dynamic=True)
 
     n_batches = len(data_loader)
     n_structures = len(atoms_list)
@@ -338,6 +344,7 @@ def ensemble_prediction(
     compute_dipole: bool = False,
     compute_partial_charges: bool = False,
     key_spec: Optional[KeySpecification] = None,
+    compile: bool = False,
 ) -> np.array:
     """
     Generate ensemble predictions for a list of ASE atoms objects using
@@ -369,6 +376,9 @@ def ensemble_prediction(
                                         Defaults to False.
         compute_partial_charges (bool, optional): Whether to compute partial
                                                  charges. Defaults to False.
+        compile (bool, optional): Whether to compile each model with
+                                 `torch.compile` before evaluation.
+                                 Defaults to False.
 
     Returns:
         dict: Dictionary containing ensemble predictions with the following
@@ -429,6 +439,7 @@ def ensemble_prediction(
             compute_partial_charges=compute_partial_charges,
             dtype=dtype,
             key_spec=key_spec,
+            compile=compile,
         )
         all_forces.append(results["forces"])
         all_energies.append(results["energies"])
