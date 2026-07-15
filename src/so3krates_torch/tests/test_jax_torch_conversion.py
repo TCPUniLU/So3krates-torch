@@ -25,6 +25,7 @@ from so3krates_torch.scripts.v1_stagewise_parity import (
     torch_to_jax,
 )
 from so3krates_torch.tools.jax_torch_conversion import flatten_params
+from so3krates_torch.tools.model_parity import check_model_parity
 
 # Regression tests for `so3krates_torch.tools.jax_torch_conversion`.
 #
@@ -103,3 +104,17 @@ def test_energy_offset_scales_not_injected_when_not_learned():
 
     assert "params/observables_0/energy_offset" not in flat_params
     assert "params/observables_0/atomic_scales" not in flat_params
+
+
+def test_model_parity_matches_for_v1_pair():
+    """check_model_parity must report PASS for the v1 JAX/torch pair,
+    which is independently known to match (see the parity script)."""
+    model_jax, flax_params, cfg = build_jax_v1(JAX_V1_CONFIG)
+    torch_model = jax_to_torch(cfg, flax_params, V1_TORCH_SETTINGS)
+    assert check_model_parity(
+        cfg,
+        flax_params,
+        torch_model,
+        r_max=V1_TORCH_SETTINGS["r_max"],
+        r_max_lr=V1_TORCH_SETTINGS["r_max_lr"],
+    )
