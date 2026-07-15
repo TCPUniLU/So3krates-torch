@@ -280,6 +280,29 @@ PME tuning results (median over structures):
 
 Convert model weights between the PyTorch and JAX (mlff) implementations. Requires `jax`, `flax`, and [`mlff`](https://github.com/thorben-frank/mlff/tree/v1.0-lrs-gems) to be installed.
 
+**JAX to PyTorch:**
+
+```bash
+torchkrates-jax2torch \
+    --path_to_params params.pkl \
+    --path_to_hyperparams hyperparameters.json \
+    --save_model_path so3lr_torch.model
+```
+
+This writes a loadable torch `SO3LR` model (via `torch.save`) to `--save_model_path`.
+
+**PyTorch to JAX:**
+
+```bash
+torchkrates-torch2jax \
+    --path_to_state_dict checkpoint.pt \
+    --path_to_hyperparams config.yaml \
+    --save_settings_path ./jax_settings \
+    --save_params_path ./jax_params
+```
+
+This writes `hyperparameters.json` and `params.pkl` into the two given directories, matching mlff's expected JAX checkpoint layout.
+
 ---
 
 ## Training Configuration
