@@ -116,9 +116,9 @@ V1_TORCH_SETTINGS = dict(
     c6_ratios_bool=False,
     use_simple_hirshfeld=False,
     # This v1.0 mlff checkout's `energy_dense_final` Dense layer does NOT
-    # set `use_bias=False` (unlike what
-    # `get_model_settings_flax_to_torch` assumes -- see `jax_to_torch`
-    # below), so the matching torch model must keep a bias here too.
+    # set `use_bias=False`, so the matching torch model must keep a bias
+    # here too (get_model_settings_flax_to_torch now detects this
+    # correctly from the checkpoint instead of assuming either way).
     final_layer_bias=True,
     device="cpu",
     dtype=torch.float64,
