@@ -382,24 +382,7 @@ def jax_to_torch(
         trainable_rbf=trainable_rbf,
         dtype=dtype,
     )
-    # get_model_settings_flax_to_torch hard-codes final_layer_bias=False
-    # with the comment "JAX energy Dense always has use_bias=False" --
-    # that assumption is FALSE for this v1.0 checkout (flax `nn.Dense`
-    # defaults to `use_bias=True` and `energy_dense_final` never
-    # overrides it). Detect the real answer from the params tree the
-    # same way `get_flax_to_torch_mapping` itself already does a few
-    # lines below, instead of trusting the hard-coded value.
-    torch_settings["final_layer_bias"] = (
-        "params/observables_0/energy_dense_final/bias" in flat_params
-    )
-
     torch_model = SO3LR(**torch_settings)
-    # get_model_settings_flax_to_torch always forces electrostatic/
-    # dispersion bools True (see its own comment); restore the real
-    # config values afterwards, exactly like convert_flax_to_torch does.
-    torch_model.electrostatic_energy_bool = cfg.model.electrostatic_energy_bool
-    torch_model.dispersion_energy_bool = cfg.model.dispersion_energy_bool
-    torch_model.zbl_repulsion_bool = cfg.model.zbl_repulsion_bool
 
     mapping = get_flax_to_torch_mapping(
         cfg=cfg, trainable_rbf=trainable_rbf, flat_params=flat_params
@@ -448,22 +431,6 @@ _PADDING_ROW_LEAVES = {
     # below rather than failing the whole leaf.
     "params/feature_embeddings_0/Embed_0/embedding",
 }
-_EXTRA_KEY_LEAVES = {
-    # get_torch_to_flax_mapping (jax_torch_conversion.py) maps
-    # atomic_energy_output_block.{energy_shifts,energy_scales.weight} to
-    # params/observables_0/{energy_offset,atomic_scales} *unconditionally*,
-    # whereas get_flax_to_torch_mapping (the reverse direction) only
-    # creates those same leaves `if energy_learn_atomic_type_{shifts,
-    # scales}`. Torch always allocates energy_shifts/energy_scales
-    # tensors (defaulting to zeros/ones) regardless of that flag, so a
-    # jax -> torch -> jax round trip always re-introduces these two keys
-    # even when the source JAX model never had them (learn_*=False, as
-    # in V1_TORCH_SETTINGS/JAX_V1_CONFIG). This is a pre-existing bug in
-    # jax_torch_conversion.py; fixing it is out of scope for this
-    # standalone parity script.
-    "params/observables_0/energy_offset",
-    "params/observables_0/atomic_scales",
-}
 
 
 def _leaf_diff_table(reference: dict, roundtripped: dict, atol: float):
@@ -482,17 +449,8 @@ def _leaf_diff_table(reference: dict, roundtripped: dict, atol: float):
         all_ok = False
 
     for key in sorted(rt_keys - ref_keys):
-        known = key in _EXTRA_KEY_LEAVES
-        rows.append(
-            (
-                key,
-                "EXTRA*" if known else "EXTRA",
-                float("nan"),
-                "known jax_torch_conversion.py bug" if known else "",
-            )
-        )
-        if not known:
-            all_ok = False
+        rows.append((key, "EXTRA", float("nan"), ""))
+        all_ok = False
 
     for key in sorted(ref_keys & rt_keys):
         a = np.asarray(reference[key])
