@@ -44,6 +44,7 @@ def evaluate_model(
     dtype: str = "float64",
     key_spec: Optional[KeySpecification] = None,
     compile: bool = False,
+    fullgraph: Optional[bool] = None,
 ) -> dict[str, Union[np.ndarray, List[np.ndarray]]]:
     """
     Evaluate a model on a list of ASE atoms objects.
@@ -73,6 +74,17 @@ def evaluate_model(
         compile (bool, optional): Whether to compile the model with
                                  `torch.compile` before evaluation.
                                  Defaults to False.
+        fullgraph (bool, optional): Passed to `torch.compile`. Defaults
+                                   to True on CUDA devices and False
+                                   otherwise (CPU compilation of the
+                                   long-range terms currently crashes
+                                   Inductor's C++ backend regardless of
+                                   fullgraph).
+
+    Raises:
+        RuntimeError: If `compile=True` is requested for a long-range
+                     (`use_lr=True`) model on a non-CUDA device — this
+                     combination is not supported (see `fullgraph`).
 
     Returns:
         dict[str, Union[np.ndarray, List[np.ndarray]]]: Dictionary containing
@@ -149,7 +161,22 @@ def evaluate_model(
             )
     model = model.eval()
     if compile:
-        model = torch.compile(model, dynamic=True)
+        is_cuda = str(device).startswith("cuda")
+        if not is_cuda and getattr(model, "use_lr", False):
+            raise RuntimeError(
+                f"torch.compile is not supported on this device "
+                f"({device}) for long-range SO3LR models: PyTorch's "
+                "Inductor CPU backend crashes while compiling the "
+                "ZBL/electrostatics/dispersion scatter-reductions (a "
+                "known upstream Inductor limitation, not something "
+                "so3krates-torch can fix). This has only been confirmed "
+                "working with torch.compile on CUDA. Pass compile=False, "
+                "or run on a CUDA device."
+            )
+        resolved_fullgraph = is_cuda if fullgraph is None else fullgraph
+        model = torch.compile(
+            model, dynamic=True, fullgraph=resolved_fullgraph
+        )
 
     n_batches = len(data_loader)
     n_structures = len(atoms_list)
@@ -162,6 +189,7 @@ def evaluate_model(
     t0 = time.perf_counter()
     for batch_idx, batch in enumerate(data_loader):
         batch = batch.to(device)
+        batch.positions.requires_grad_(True)
         output = model(
             batch.to_dict(),
             compute_stress=compute_stress,
@@ -345,6 +373,7 @@ def ensemble_prediction(
     compute_partial_charges: bool = False,
     key_spec: Optional[KeySpecification] = None,
     compile: bool = False,
+    fullgraph: Optional[bool] = None,
 ) -> np.array:
     """
     Generate ensemble predictions for a list of ASE atoms objects using
@@ -379,6 +408,9 @@ def ensemble_prediction(
         compile (bool, optional): Whether to compile each model with
                                  `torch.compile` before evaluation.
                                  Defaults to False.
+        fullgraph (bool, optional): Passed to `torch.compile` for each
+                                   model. Defaults to True on CUDA
+                                   devices and False otherwise.
 
     Returns:
         dict: Dictionary containing ensemble predictions with the following
@@ -440,6 +472,7 @@ def ensemble_prediction(
             dtype=dtype,
             key_spec=key_spec,
             compile=compile,
+            fullgraph=fullgraph,
         )
         all_forces.append(results["forces"])
         all_energies.append(results["energies"])

@@ -44,7 +44,7 @@ class TorchkratesCalculator(Calculator):
         charges_key="charges",
         key_specification: Optional[KeySpecification] = None,
         model_type="so3lr",
-        fullgraph=True,
+        fullgraph: Optional[bool] = None,
         compile: bool = False,
         **kwargs,
     ):
@@ -191,7 +191,28 @@ class TorchkratesCalculator(Calculator):
             for param in model.parameters():
                 param.requires_grad = False
 
+        if fullgraph is None:
+            # fullgraph=True is only safe on CUDA: on CPU, compiling the
+            # long-range (ZBL/electrostatics/dispersion) scatter-sums
+            # currently crashes Inductor's C++ backend regardless of
+            # fullgraph, so keep the permissive default there.
+            fullgraph = self.device.type == "cuda"
+
         if compile:
+            if self.device.type != "cuda" and any(
+                getattr(model, "use_lr", False) for model in self.models
+            ):
+                raise RuntimeError(
+                    "torch.compile is not supported on this device "
+                    f"({self.device}) for long-range SO3LR models: "
+                    "PyTorch's Inductor CPU backend crashes while "
+                    "compiling the ZBL/electrostatics/dispersion "
+                    "scatter-reductions (a known upstream Inductor "
+                    "limitation, not something so3krates-torch can fix). "
+                    "This has only been confirmed working with "
+                    "torch.compile on CUDA. Pass compile=False, or run "
+                    "on a CUDA device."
+                )
             self.models = [
                 torch.compile(model, dynamic=True, fullgraph=fullgraph)
                 for model in self.models
@@ -280,6 +301,7 @@ class TorchkratesCalculator(Calculator):
         )
         for i, model in enumerate(self.models):
             batch = self._clone_batch(batch_base)
+            batch.positions.requires_grad_(True)
             out = model(
                 batch.to_dict(),
                 compute_stress=self.compute_stress,
@@ -314,15 +336,18 @@ class TorchkratesCalculator(Calculator):
             atoms = self.atoms
 
         batch = self._atoms_to_batch(atoms)
-        hessians = [
-            model(
-                self._clone_batch(batch).to_dict(),
-                compute_hessian=True,
-                compute_stress=False,
-                training=False,
-            )["hessian"]
-            for model in self.models
-        ]
+        hessians = []
+        for model in self.models:
+            batch_clone = self._clone_batch(batch)
+            batch_clone.positions.requires_grad_(True)
+            hessians.append(
+                model(
+                    batch_clone.to_dict(),
+                    compute_hessian=True,
+                    compute_stress=False,
+                    training=False,
+                )["hessian"]
+            )
         hessians = [hessian.detach().cpu().numpy() for hessian in hessians]
         if self.num_models == 1:
             return hessians[0]
@@ -537,6 +562,7 @@ class MultiHeadSO3LRCalculator(TorchkratesCalculator):
         )
         model = self.models[0]
         batch = self._clone_batch(batch_base)
+        batch.positions.requires_grad_(True)
         out = model(
             batch.to_dict(),
             compute_stress=self.compute_stress,

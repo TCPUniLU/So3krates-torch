@@ -9,8 +9,9 @@ callable is first warmed up on a neutral (zero charge/spin) batch and then
 called with a charged/spin-polarized batch on the same callable.
 """
 
+import pytest
 import torch
-from so3krates_torch.modules.models import So3krates
+from so3krates_torch.modules.models import So3krates, SO3LR
 
 
 def _make_model(default_model_config):
@@ -173,3 +174,106 @@ class TestChargeSpinEmbedCompile:
         assert not torch.allclose(
             out_charged["energy"], out_neg["energy"]
         ), "Positive and negative charge gave same energy."
+
+
+def _make_so3lr_model(so3lr_model_config):
+    model = SO3LR(**so3lr_model_config)
+    model.eval()
+    return model
+
+
+class TestSO3LRCompile:
+    """Eager-vs-compiled parity for the full SO3LR long-range path
+    (ZBL repulsion + electrostatics + dispersion).
+
+    `requires_grad_()` on positions/vectors/displacement is unsupported
+    by Dynamo tracing (regardless of backend). `prepare_graph` now
+    guards those calls and callers pre-set `requires_grad_(True)`
+    before invoking the model, so compiled calls never hit the
+    unsupported call. These tests exercise both the guarded (compiled)
+    and default (eager, not pre-set) calling conventions.
+    """
+
+    def test_fullgraph_false_parity(
+        self, so3lr_model_config, make_batch, h2o_atoms
+    ):
+        """fullgraph=False must match eager on whatever device is
+        available (CPU in typical CI, GPU if available). This is the
+        combination already confirmed working end-to-end and it fully
+        exercises the requires_grad_ guard fix for the long-range
+        path, which the base So3krates tests above never touch."""
+        model = _make_so3lr_model(so3lr_model_config)
+        batch = make_batch(h2o_atoms, r_max=5.0, cutoff_lr=10.0)
+        compiled = torch.compile(model, dynamic=True, fullgraph=False)
+
+        out_eager = model(batch.to_dict(), compute_stress=False)
+        out_compiled = compiled(batch.to_dict(), compute_stress=False)
+
+        assert torch.allclose(
+            out_eager["energy"], out_compiled["energy"], atol=1e-8, rtol=1e-6
+        )
+        assert torch.allclose(
+            out_eager["forces"], out_compiled["forces"], atol=1e-8, rtol=1e-6
+        )
+
+    @pytest.mark.skipif(
+        not torch.cuda.is_available(),
+        reason="fullgraph=True SO3LR compilation requires CUDA (the "
+        "CPU Inductor backend crashes on the long-range scatter-sums)",
+    )
+    def test_fullgraph_true_parity_gpu(
+        self, so3lr_model_config, make_batch, h2o_atoms
+    ):
+        """fullgraph=True must succeed and match eager on GPU — the
+        combination this fix targets."""
+        device = torch.device("cuda")
+        model = _make_so3lr_model(so3lr_model_config).to(device)
+        # `make_batch` already resolves to the `device` fixture, which
+        # picks cuda when available (guaranteed here by the skipif).
+        batch = make_batch(h2o_atoms, r_max=5.0, cutoff_lr=10.0)
+        compiled = torch.compile(model, dynamic=True, fullgraph=True)
+
+        out_eager = model(batch.to_dict(), compute_stress=False)
+        out_compiled = compiled(batch.to_dict(), compute_stress=False)
+
+        assert torch.allclose(
+            out_eager["energy"], out_compiled["energy"], atol=1e-8, rtol=1e-6
+        )
+        assert torch.allclose(
+            out_eager["forces"], out_compiled["forces"], atol=1e-8, rtol=1e-6
+        )
+
+    def test_eager_default_path_unaffected(
+        self, so3lr_model_config, make_batch, h2o_atoms
+    ):
+        """Plain eager call with no pre-set requires_grad (today's
+        default calling convention) must still produce forces via
+        autograd exactly as before the guard was added."""
+        model = _make_so3lr_model(so3lr_model_config)
+        batch = make_batch(h2o_atoms, r_max=5.0, cutoff_lr=10.0)
+
+        assert not batch.positions.requires_grad
+        out = model(batch.to_dict(), compute_stress=False)
+
+        assert out["forces"] is not None
+        assert not torch.allclose(
+            out["forces"], torch.zeros_like(out["forces"])
+        )
+
+    def test_pre_set_requires_grad_matches_default(
+        self, so3lr_model_config, make_batch, h2o_atoms
+    ):
+        """Pre-setting requires_grad_(True) before the (eager) model
+        call — the calling convention compiled callers now rely on —
+        must give identical results to the default, not-pre-set
+        convention."""
+        model = _make_so3lr_model(so3lr_model_config)
+        batch_default = make_batch(h2o_atoms, r_max=5.0, cutoff_lr=10.0)
+        batch_preset = make_batch(h2o_atoms, r_max=5.0, cutoff_lr=10.0)
+        batch_preset.positions.requires_grad_(True)
+
+        out_default = model(batch_default.to_dict(), compute_stress=False)
+        out_preset = model(batch_preset.to_dict(), compute_stress=False)
+
+        assert torch.allclose(out_default["energy"], out_preset["energy"])
+        assert torch.allclose(out_default["forces"], out_preset["forces"])

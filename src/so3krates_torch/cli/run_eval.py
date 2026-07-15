@@ -48,6 +48,7 @@ def run_evaluation(
     return_mean_inv_descriptors: bool = False,
     return_mean_eqv_descriptors: bool = False,
     compile: bool = False,
+    fullgraph: Optional[bool] = None,
 ):
     """Load models from `model_path` (single .model or directory of .model),
     read data from `data_path`, run evaluation or ensemble prediction and
@@ -134,6 +135,7 @@ def run_evaluation(
             return_mean_eqv_descriptors=return_mean_eqv_descriptors,
             key_spec=keyspec,
             compile=compile,
+            fullgraph=fullgraph,
         )
     else:
         result = ensemble_prediction(
@@ -152,6 +154,7 @@ def run_evaluation(
             compute_partial_charges=compute_partial_charges,
             key_spec=keyspec,
             compile=compile,
+            fullgraph=fullgraph,
         )
 
     logging.info("Evaluation complete.")
@@ -287,6 +290,16 @@ def main():
         help="Compile the model with torch.compile (dynamic=True) "
         "before evaluation.",
     )
+    argparser.add_argument(
+        "--fullgraph",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Passed to torch.compile when --compile is set. Defaults "
+        "to True on CUDA devices and False otherwise (CPU compilation "
+        "of the long-range terms currently crashes Inductor's C++ "
+        "backend regardless of fullgraph). Use --no-fullgraph/"
+        "--fullgraph to force one way or the other.",
+    )
     args = argparser.parse_args()
     validated = EvalArgs.model_validate(vars(args))
     # turn all args into variables
@@ -325,6 +338,7 @@ def main():
     mean_descriptors_only = validated.mean_descriptors_only
     output_prefix = validated.output_prefix
     compile_model = validated.compile
+    fullgraph = validated.fullgraph
 
     result, is_ensemble = run_evaluation(
         model_path=model_path,
@@ -357,6 +371,7 @@ def main():
         return_mean_inv_descriptors=return_mean_inv_descriptors,
         return_mean_eqv_descriptors=return_mean_eqv_descriptors,
         compile=compile_model,
+        fullgraph=fullgraph,
     )
     extension = os.path.splitext(output_file)[1].lower()
     if mean_descriptors_only:

@@ -40,6 +40,7 @@ class EvalArgs(BaseModel):
     mean_descriptors_only: bool = False
     output_prefix: str = "SO3"
     compile: bool = False
+    fullgraph: Optional[bool] = None
 
 
 class PreprocessArgs(BaseModel):
