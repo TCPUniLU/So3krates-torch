@@ -454,10 +454,12 @@ def get_model_settings_flax_to_torch(
         c6_ratios_bool=getattr(cfg.model, "c6_ratios_bool", False),
         use_simple_hirshfeld=getattr(cfg.model, "use_simple_hirshfeld", False),
         num_theory_levels=num_theory_levels,
-        final_layer_bias=False,  # JAX energy Dense always has use_bias=False
-        electrostatic_energy_bool=True,  # cfg.model.electrostatic_energy_bool, # always true, because its fuckting dumb how they handle the oberservable bools, turned false later
+        final_layer_bias=(
+            "params/observables_0/energy_dense_final/bias" in flat_params
+        ),
+        electrostatic_energy_bool=cfg.model.electrostatic_energy_bool,
         electrostatic_energy_scale=cfg.model.electrostatic_energy_scale,
-        dispersion_energy_bool=True,  # cfg.model.dispersion_energy_bool, # always true, because its fuckting dumb how they handle the oberservable bools, turned false later
+        dispersion_energy_bool=cfg.model.dispersion_energy_bool,
         dispersion_energy_cutoff_lr_damping=cfg.model.dispersion_energy_cutoff_lr_damping,
         dispersion_energy_scale=cfg.model.dispersion_energy_scale,
         qk_non_linearity=cfg.model.qk_non_linearity,
@@ -578,12 +580,6 @@ def convert_flax_to_torch(
 
     if save_torch_settings:
         serializable_settings = torch_model_settings.copy()
-        if cfg.model.electrostatic_energy_bool is False:
-            serializable_settings["electrostatic_energy_bool"] = False
-        if cfg.model.dispersion_energy_bool is False:
-            serializable_settings["dispersion_energy_bool"] = False
-        if cfg.model.zbl_repulsion_bool is False:
-            serializable_settings["zbl_repulsion_bool"] = False
         serializable_settings["dtype"] = str(
             dtype
         )  # Convert torch.dtype to string
@@ -597,16 +593,6 @@ def convert_flax_to_torch(
 
     if so3lr:
         torch_model = SO3LR(**torch_model_settings)
-        torch_model.electrostatic_energy_bool = (
-            cfg.model.electrostatic_energy_bool
-        )
-        torch_model.dispersion_energy_bool = cfg.model.dispersion_energy_bool
-        torch_model.zbl_repulsion_bool = cfg.model.zbl_repulsion_bool
-        if (
-            not cfg.model.electrostatic_energy_bool
-            and not cfg.model.dispersion_energy_bool
-        ):
-            torch_model.use_lr = False
     else:
         torch_model = So3krates(**torch_model_settings)
 
@@ -639,17 +625,14 @@ def convert_flax_to_torch(
     torch_model.load_state_dict(torch_state_dict)
     torch_model.to(device)
 
-    if cfg.model.electrostatic_energy_bool is False:
-        torch_model.electrostatic_energy_bool = False
-    if cfg.model.dispersion_energy_bool is False:
-        torch_model.dispersion_energy_bool = False
-    if cfg.model.zbl_repulsion_bool is False:
-        torch_model.zbl_repulsion_bool = False
-
     return torch_model
 
 
-def get_torch_to_flax_mapping(cfg, trainable_rbf: bool):
+def get_torch_to_flax_mapping(
+    cfg,
+    trainable_rbf: bool,
+    torch_state_dict: Optional[dict] = None,
+):
     """Get mapping from PyTorch parameter names to Flax parameter names"""
     num_layers = cfg.model.num_layers
     layer_norm_1 = cfg.model.layer_normalization_1
@@ -882,15 +865,24 @@ def get_torch_to_flax_mapping(cfg, trainable_rbf: bool):
     mapping[
         "atomic_energy_output_block.final_layer.weight"
     ] = "params/observables_0/energy_dense_final/kernel"
-    mapping[
-        "atomic_energy_output_block.final_layer.bias"
-    ] = "params/observables_0/energy_dense_final/bias"
-    mapping[
-        "atomic_energy_output_block.energy_shifts"
-    ] = "params/observables_0/energy_offset"
-    mapping[
-        "atomic_energy_output_block.energy_scales.weight"
-    ] = "params/observables_0/atomic_scales"
+    # Torch always allocates final_layer.bias regardless of whether the
+    # source JAX checkpoint had use_bias=True — only map it when the torch
+    # state dict actually has the key (mirrors the guard in
+    # get_flax_to_torch_mapping).
+    if torch_state_dict is None or (
+        "atomic_energy_output_block.final_layer.bias" in torch_state_dict
+    ):
+        mapping[
+            "atomic_energy_output_block.final_layer.bias"
+        ] = "params/observables_0/energy_dense_final/bias"
+    if energy_learn_atomic_type_shifts:
+        mapping[
+            "atomic_energy_output_block.energy_shifts"
+        ] = "params/observables_0/energy_offset"
+    if energy_learn_atomic_type_scales:
+        mapping[
+            "atomic_energy_output_block.energy_scales.weight"
+        ] = "params/observables_0/atomic_scales"
 
     params_obs = "params/observables_0/"
     mapping["zbl_repulsion.a1_raw"] = f"{params_obs}zbl_repulsion/a1"
@@ -1159,7 +1151,9 @@ def convert_torch_to_flax(
     cfg.data.energy_shifts = config_dict.ConfigDict(energy_shifts_dict)
 
     # Get the parameter mapping
-    mapping = get_torch_to_flax_mapping(cfg, trainable_rbf)
+    mapping = get_torch_to_flax_mapping(
+        cfg, trainable_rbf, torch_state_dict=torch_state_dict
+    )
 
     # Convert parameters
     flax_params = convert_torch_to_flax_params(
