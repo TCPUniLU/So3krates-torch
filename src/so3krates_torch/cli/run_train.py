@@ -25,7 +25,6 @@ from so3krates_torch.tools.model_setup import (
 )
 from so3krates_torch.tools.data_setup import (
     setup_data_loaders,
-    build_ewc_fisher_loader,
 )
 from so3krates_torch.tools.training_setup import (
     setup_loss_function,
@@ -223,26 +222,6 @@ def run_training(config: dict) -> None:
     # Setup loss function
     loss_fn = setup_loss_function(config)
 
-    # Setup EWC (if enabled)
-    ewc = None
-    if config["TRAINING"].get("use_ewc", False):
-        from so3krates_torch.tools.ewc import EWC
-
-        ewc = EWC(ewc_lambda=config["TRAINING"].get("ewc_lambda", 1e6))
-        fisher_loader = build_ewc_fisher_loader(config)
-        ewc.compute_fisher(
-            model=model,
-            loss_fn=loss_fn,
-            data_loader=fisher_loader,
-            output_args={
-                "forces": True,
-                "virials": config["GENERAL"].get("compute_stress", False),
-                "stress": config["GENERAL"].get("compute_stress", False),
-            },
-            device=device,
-            num_samples=config["TRAINING"].get("ewc_num_fisher_samples", 1000),
-        )
-
     # Setup optimizer and scheduler
     optimizer, lr_scheduler = setup_optimizer_and_scheduler(model, config)
 
@@ -339,7 +318,6 @@ def run_training(config: dict) -> None:
         ),
         config=config,
         replay_builder=replay_builder,
-        ewc=ewc,
     )
     logging.info("Training completed successfully!")
 

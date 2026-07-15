@@ -12,6 +12,7 @@ Implementation of the So3krates + SO3LR model in pytorch.
 3. move to the clone repository
 4. `pip install -r requirements.txt`
 5. `pip install .`
+6. (Optional) PME electrostatics support: `pip install ".[pme]"` (installs `torch-pme>=0.4`)
 
 #### Implemented features:
 1. ASE calculator for MD (including pre-trained SO3LR)
@@ -109,13 +110,10 @@ torchkrates-merge --inputs a.h5 b.h5 --output merged.h5 \
 
 ### `torchkrates-create-lammps-model` — LAMMPS Model Export
 
-> [!NOTE]
-> More details and how to use the model in LAMMPS are coming.
+> [!IMPORTANT]
+> GPU-accelerated LAMMPS (Kokkos) must be built against the same CUDA and PyTorch version as the converted model.
 
-> [!IMPORTANT]  
-> Only works with torch==2.6.0 for CUDA 12.6.0 on Meluxina!
-
-Convert a trained SO3LR model to a TorchScript model compatible with the LAMMPS ML-IAP interface.
+Convert a trained SO3LR model to a format compatible with the LAMMPS ML-IAP interface.
 
 ```bash
 torchkrates-create-lammps-model model.pt --elements Si O
@@ -131,6 +129,38 @@ torchkrates-create-lammps-model model.pt --elements Si O
 | `--electrostatic-energy-scale` | Override the electrostatic energy scaling factor. |
 | `--dispersion-energy-scale` | Override the dispersion energy scaling factor. |
 | `--dispersion-energy-cutoff-lr-damping` | Override the dispersion long-range damping cutoff. |
+
+#### Output file
+
+The converted model is saved as `<model_path>-mliap_lammps.pt` in the same directory as the input.
+
+#### LAMMPS input script — pair style and pair_coeff
+
+```lammps
+pair_style mliap unified so3lr /path/to/model-mliap_lammps.pt
+pair_coeff * * C H O
+```
+
+The `pair_style` line specifies the converted model file. The `pair_coeff` line maps LAMMPS atom types to elements: it must list exactly one element symbol per atom type defined in the data file, in the same order as the `Masses` block.
+
+> [!IMPORTANT]
+> Specifying the wrong number of elements — e.g. `C H N O` when the data file only has 3 atom types (C, H, O) — silently misassigns atom types and produces wrong energies and forces without any error message.
+
+#### Running LAMMPS with GPU (Kokkos)
+
+For compilation and general guidance, see the [NVIDIA blog post on AI-driven MD simulations](https://developer.nvidia.com/blog/enabling-scalable-ai-driven-molecular-dynamics-simulations/).
+
+Example launch command for Kokkos GPU:
+
+```bash
+mpirun -np $num_gpus /path/to/lammps/build_cuda/lmp \
+    -k on g $num_gpus \
+    -sf kk \
+    -pk kokkos newton on neigh half \
+    -in prod.in
+```
+
+where `$num_gpus` is the number of GPU processes and `/path/to/lammps/build_cuda/lmp` is the Kokkos-enabled LAMMPS executable. The model auto-detects the GPU device on the first timestep.
 
 ---
 
@@ -551,46 +581,6 @@ TRAINING:
 ```
 
 This samples 3500 structures from `pretrain_A.xyz` and 1500 from `pretrain_B.h5`, then combines them with the fine-tuning data (oversampled to ~5000) for a total of ~10000 training structures per epoch.
-
-
-#### Elastic Weight Consolidation (EWC / reEWC)
-
-EWC is a regularisation technique that prevents catastrophic forgetting during fine-tuning. It adds a penalty to the loss that keeps model parameters close to their pretrained values, weighted by their importance on the pretraining task. Importance is estimated via the diagonal of the Fisher Information Matrix (FIM), computed once on a subset of the pretraining data before training begins.
-
-**reEWC** — the variant proposed in [An efficient forgetting-aware fine-tuning framework for pretrained universal MLIPs](https://www.nature.com/articles/s41524-025-01895-w) — combines EWC with data replay. To use reEWC, enable both EWC (below) and the replay settings above simultaneously.
-
-The EWC penalty added to each gradient step is:
-
-$$\mathcal{L}_\text{EWC} = \mathcal{L}_\text{FT} + \frac{\lambda}{2} \sum_i F_i \left(\theta_i - \theta^*_i\right)^2$$
-
-where $F_i$ is the diagonal FIM entry for parameter $i$, $\theta^*_i$ is its pretrained value, and $\lambda$ controls the regularisation strength.
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `use_ewc` | `bool` | `False` | Enable EWC regularisation. |
-| `ewc_lambda` | `float` | `1e6` | Regularisation strength λ. The paper reports λ = 10⁶ for eV/atom energy and eV/Å force losses; So3krates uses comparable loss scales so this is a reasonable starting point, but should be validated empirically. |
-| `ewc_fisher_data` | `str` | `None` | Path to a subset of the **pretraining** dataset for Fisher estimation (XYZ, raw HDF5, or preprocessed HDF5). Must **not** be the fine-tuning training or validation set — EWC protects parameters important for old knowledge, so Fisher must be computed on pretraining data. Can point to the same file as `replay_datasets`. Required when `use_ewc: true`. |
-| `ewc_num_fisher_samples` | `int` | `1000` | Number of individual **structures** (not batches) to use for Fisher estimation. Batches of size `batch_size` are drawn until this count is reached. |
-
-**Example (reEWC — EWC + replay):**
-
-```yaml
-TRAINING:
-  path_to_train_data: finetune.xyz
-  finetune_choice: naive
-  # EWC
-  use_ewc: true
-  ewc_lambda: 1.e6
-  ewc_fisher_data: /data/pretrain_subset.xyz
-  ewc_num_fisher_samples: 1000
-  # Replay (makes this reEWC)
-  replay_datasets:
-    - /data/pretrain_subset.xyz
-  replay_fractions: [1.0]
-  replay_total: 1000
-```
-
-> **Note on computational cost:** EWC alone adds negligible overhead (one-time Fisher pass before training, a cheap quadratic penalty per step). reEWC doubles the per-epoch data volume due to the replay component.
 
 
 ### General Settings (`GENERAL`)

@@ -521,8 +521,8 @@ def get_symmetric_displacement(
         (num_graphs, 3, 3),
         dtype=positions.dtype,
         device=positions.device,
+        requires_grad=True,
     )
-    displacement.requires_grad_(True)
     symmetric_displacement = 0.5 * (
         displacement + displacement.transpose(-1, -2)
     )  # From https://github.com/mir-group/nequip
@@ -637,13 +637,16 @@ def prepare_graph(
             )
         else:
             vectors_all = None
-            vectors = data["vectors"].requires_grad_(True)
+            if not data["vectors"].requires_grad:
+                data["vectors"].requires_grad_(True)
+            vectors = data["vectors"]
             vectors_lr = None
             lengths_lr = None
         lengths = torch.linalg.vector_norm(vectors, dim=1, keepdim=True)
         ikw = InteractionKwargs(data["lammps_class"], (n_real, n_total))
     else:
-        data["positions"].requires_grad_(True)
+        if not data["positions"].requires_grad:
+            data["positions"].requires_grad_(True)
         positions = data["positions"]
         cell = data["cell"]
         num_atoms_arange = torch.arange(

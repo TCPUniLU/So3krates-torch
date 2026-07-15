@@ -362,6 +362,31 @@ def vdw_qdo_disp_damp(
     return c * V3 * hartree_factor
 
 
+def _coulomb_erf_energy(
+    q: torch.Tensor,
+    rij: torch.Tensor,
+    senders: torch.Tensor,
+    receivers: torch.Tensor,
+    ke,
+    sigma,
+    c,
+) -> torch.Tensor:
+    """Pairwise Coulomb energy with erf damping (no cutoff smoothing).
+
+    `ke`/`sigma`/`c` may be plain floats or 0-dim tensors.
+    """
+    if q.dim() == 2 and q.size(-1) == 1:
+        q = q.squeeze(-1)
+    if rij.dim() == 2 and rij.size(-1) == 1:
+        rij = rij.squeeze(-1)
+    qi = q[receivers]
+    qj = q[senders]
+
+    r = rij.clamp_min(1e-12)
+    pairwise = torch.erf(r / sigma) / r
+    return c * ke * qi * qj * pairwise
+
+
 class CoulombErf(nn.Module):
     """Pairwise Coulomb with erf damping (no cutoff smoothing).
 
@@ -395,17 +420,69 @@ class CoulombErf(nn.Module):
         senders: torch.Tensor,
         receivers: torch.Tensor,
     ) -> torch.Tensor:
-        # normalize shapes
-        if q.dim() == 2 and q.size(-1) == 1:
-            q = q.squeeze(-1)
-        if rij.dim() == 2 and rij.size(-1) == 1:
-            rij = rij.squeeze(-1)
-        qi = q[receivers]
-        qj = q[senders]
+        return _coulomb_erf_energy(
+            q, rij, senders, receivers, self.ke, self.sigma, self.c
+        )
 
-        r = rij.clamp_min(1e-12)
-        pairwise = torch.erf(r / self.sigma) / r
-        return self.c * self.ke * qi * qj * pairwise
+
+def _coulomb_erf_shift_and_force_shift(cutoff: float, sigma: float):
+    """Potential and its (negated) derivative evaluated at the cutoff,
+    used to shift-and-force-shift the erf-damped Coulomb energy smoothly
+    to zero at the cutoff.
+
+    Pure Python scalar math: `cutoff`/`sigma` are fixed, non-trainable
+    floats, so no gradient ever flows through this computation.
+    """
+    r = max(cutoff, 1e-12)
+    shift = math.erf(r / sigma) / r
+    force_shift = (
+        2 * r * math.exp(-((r / sigma) ** 2)) / (math.sqrt(math.pi) * sigma)
+        - math.erf(r / sigma)
+    ) / (r**2)
+    return shift, force_shift
+
+
+def _coulomb_erf_shifted_force_smooth_energy(
+    q: torch.Tensor,
+    rij: torch.Tensor,
+    senders: torch.Tensor,
+    receivers: torch.Tensor,
+    ke,
+    sigma,
+    cutoff,
+    cuton,
+    c,
+) -> torch.Tensor:
+    """Coulomb erf energy with smooth shifted-force cutoff in
+    [cuton, cutoff]. `ke`/`sigma`/`cutoff`/`cuton`/`c` may be plain
+    floats or 0-dim tensors.
+    """
+    if q.dim() == 2 and q.size(-1) == 1:
+        q = q.squeeze(-1)
+    if rij.dim() == 2 and rij.size(-1) == 1:
+        rij = rij.squeeze(-1)
+
+    # smooth switching
+    f = switching_fn(rij, cuton, cutoff)
+
+    r_safe = rij.clamp_min(1e-12)
+    pairwise = torch.erf(r_safe / sigma) / r_safe
+    shift, force_shift = _coulomb_erf_shift_and_force_shift(
+        float(cutoff), float(sigma)
+    )
+    shifted_potential = pairwise - shift - force_shift * (rij - cutoff)
+    qi = q[receivers]
+    qj = q[senders]
+
+    inside = rij < cutoff
+    energy = (
+        c
+        * ke
+        * qi
+        * qj
+        * (f * (pairwise - shift) + (1 - f) * shifted_potential)
+    )
+    return torch.where(inside, energy, torch.zeros_like(energy))
 
 
 class CoulombErfShiftedForceSmooth(nn.Module):
@@ -438,23 +515,6 @@ class CoulombErfShiftedForceSmooth(nn.Module):
         self.register_buffer("c", torch.tensor(c_val, dtype=dt))
         self.neighborlist_format_lr = neighborlist_format_lr
 
-    @torch.no_grad()
-    def _potential(self, r: torch.Tensor, sigma: torch.Tensor) -> torch.Tensor:
-        r = r.clamp_min(1e-12)
-        return torch.erf(r / sigma) / r
-
-    @torch.no_grad()
-    def _force(self, r: torch.Tensor, sigma: torch.Tensor) -> torch.Tensor:
-        # derivative of potential w.r.t r, used for force shift at cutoff
-        r = r.clamp_min(1e-12)
-        return (
-            2
-            * r
-            * torch.exp(-((r / sigma) ** 2))
-            / (math.sqrt(math.pi) * sigma)
-            - torch.erf(r / sigma)
-        ) / (r**2)
-
     def forward(
         self,
         q: torch.Tensor,
@@ -462,33 +522,17 @@ class CoulombErfShiftedForceSmooth(nn.Module):
         senders: torch.Tensor,
         receivers: torch.Tensor,
     ) -> torch.Tensor:
-        if q.dim() == 2 and q.size(-1) == 1:
-            q = q.squeeze(-1)
-        if rij.dim() == 2 and rij.size(-1) == 1:
-            rij = rij.squeeze(-1)
-
-        # smooth switching
-        f = switching_fn(rij, self.cuton, self.cutoff)
-
-        r_safe = rij.clamp_min(1e-12)
-        pairwise = torch.erf(r_safe / self.sigma) / r_safe
-        shift = self._potential(self.cutoff, self.sigma)
-        force_shift = self._force(self.cutoff, self.sigma)
-        shifted_potential = (
-            pairwise - shift - force_shift * (rij - self.cutoff)
+        return _coulomb_erf_shifted_force_smooth_energy(
+            q,
+            rij,
+            senders,
+            receivers,
+            self.ke,
+            self.sigma,
+            self.cutoff,
+            self.cuton,
+            self.c,
         )
-        qi = q[receivers]
-        qj = q[senders]
-
-        inside = rij < self.cutoff
-        energy = (
-            self.c
-            * self.ke
-            * qi
-            * qj
-            * (f * (pairwise - shift) + (1 - f) * shifted_potential)
-        )
-        return torch.where(inside, energy, torch.zeros_like(energy))
 
 
 class ZBLRepulsion(nn.Module):
@@ -682,6 +726,10 @@ class ElectrostaticInteraction(nn.Module):
         neighborlist_format_lr: str = "sparse",
     ) -> None:
         super().__init__()
+        if neighborlist_format_lr not in ("sparse", "ordered_sparse"):
+            raise ValueError(
+                "neighborlist_format_lr must be 'sparse' or 'ordered_sparse'"
+            )
         self.ke = ke
         self.neighborlist_format_lr = neighborlist_format_lr
 
@@ -707,28 +755,39 @@ class ElectrostaticInteraction(nn.Module):
         Returns:
             (N,1) atomic electrostatic energies.
         """
-        input_dtype = lengths_lr.dtype
-        if cutoff_lr is not None:
-            cuton = 0.45 * float(cutoff_lr)
-            coulomb = CoulombErfShiftedForceSmooth(
-                ke=self.ke,
-                sigma=electrostatic_energy_scale,
-                cutoff=float(cutoff_lr),
-                cuton=cuton,
-                neighborlist_format_lr=self.neighborlist_format_lr,
-                dtype=input_dtype,
-            )
-        else:
-            coulomb = CoulombErf(
-                ke=self.ke,
-                sigma=electrostatic_energy_scale,
-                neighborlist_format_lr=self.neighborlist_format_lr,
-                dtype=input_dtype,
-            )
+        # Computed inline (not stored on self in __init__) so that
+        # pretrained checkpoints pickled before this attribute existed
+        # keep working — unpickling restores __dict__ directly without
+        # re-running __init__.
+        c = 0.5 if self.neighborlist_format_lr == "sparse" else 1.0
+
         if lengths_lr.dim() == 2 and lengths_lr.size(-1) == 1:
             lengths_lr = lengths_lr.squeeze(-1)
 
-        edge_e = coulomb(partial_charges, lengths_lr, senders_lr, receivers_lr)
+        if cutoff_lr is not None:
+            cutoff = float(cutoff_lr)
+            cuton = 0.45 * cutoff
+            edge_e = _coulomb_erf_shifted_force_smooth_energy(
+                partial_charges,
+                lengths_lr,
+                senders_lr,
+                receivers_lr,
+                self.ke,
+                electrostatic_energy_scale,
+                cutoff,
+                cuton,
+                c,
+            )
+        else:
+            edge_e = _coulomb_erf_energy(
+                partial_charges,
+                lengths_lr,
+                senders_lr,
+                receivers_lr,
+                self.ke,
+                electrostatic_energy_scale,
+                c,
+            )
 
         atomic_e = scatter_sum(
             src=edge_e,
