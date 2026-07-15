@@ -7,6 +7,14 @@ pytest.importorskip("mlff")
 import numpy as np
 import torch
 
+# Captured *before* importing `v1_stagewise_parity` below, since that
+# import already triggers its module-level
+# `torch.set_default_dtype(torch.float64)` side effect. Capturing the
+# default dtype inside the `_restore_default_dtype` fixture body would
+# run after collection/import and would therefore observe the
+# already-mutated float64 value, making the fixture a no-op.
+_PRE_IMPORT_DEFAULT_DTYPE = torch.get_default_dtype()
+
 from so3krates_torch.scripts.v1_stagewise_parity import (
     JAX_V1_CONFIG,
     V1_TORCH_SETTINGS,
@@ -25,7 +33,8 @@ from so3krates_torch.tools.jax_torch_conversion import flatten_params
 # module-level side effect of `torch.set_default_dtype(torch.float64)`,
 # needed there for the parity math. The `_restore_default_dtype`
 # fixture below guards against that leaking into other test modules
-# that run later in the same pytest session.
+# that run later in the same pytest session, using the default dtype
+# captured in `_PRE_IMPORT_DEFAULT_DTYPE` above -- before the import ran.
 #
 # These tests exercise the shared conversion primitives
 # (`jax_to_torch`/`torch_to_jax`/`get_model_settings_flax_to_torch`/
@@ -36,9 +45,8 @@ from so3krates_torch.tools.jax_torch_conversion import flatten_params
 
 @pytest.fixture(scope="module", autouse=True)
 def _restore_default_dtype():
-    previous_dtype = torch.get_default_dtype()
     yield
-    torch.set_default_dtype(previous_dtype)
+    torch.set_default_dtype(_PRE_IMPORT_DEFAULT_DTYPE)
 
 
 def test_weight_roundtrip_passes():
