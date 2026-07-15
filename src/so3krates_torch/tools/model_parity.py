@@ -18,6 +18,7 @@ larger CLI command.
 
 import copy
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
@@ -169,8 +170,8 @@ def _jax_energy_forces(cfg, flax_params: dict, inputs: dict):
         out = model.apply(flax_params, inputs_r)
         return (out["energy"] * graph_mask).sum()
 
-    energy, neg_grad = jax.value_and_grad(energy_fn)(inputs["positions"])
-    forces = -neg_grad
+    energy, grad = jax.value_and_grad(energy_fn)(inputs["positions"])
+    forces = -grad
 
     energy_np = float(np.asarray(energy))
     forces_np = np.asarray(forces)[node_mask]
@@ -206,8 +207,8 @@ def check_model_parity(
     flax_params: dict,
     torch_model: torch.nn.Module,
     r_max: float,
-    r_max_lr: float = None,
-    structure_path: str = None,
+    r_max_lr: Optional[float] = None,
+    structure_path: Optional[str] = None,
     index: int = 0,
     atol: float = 1e-3,
     rtol: float = 1e-2,
