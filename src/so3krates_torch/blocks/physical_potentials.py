@@ -1015,12 +1015,26 @@ if _torchpme_for_c6_potential is not None:
 
 
 class PMEDispersionInteraction(nn.Module):
-    """C6 dispersion energy via Particle Mesh Ewald / Ewald (torch-pme).
+    """K-space-ONLY C6 dispersion energy via Particle Mesh Ewald / Ewald
+    (torch-pme).
 
     Uses per-atom pseudo-charges q_i = sqrt(C6_i) (geometric-mean
     factorization, required for Ewald/PME additivity), matching
     so3lr_dev's DispersionEnergyKspace exactly, including its nonzero
     background correction for the (non-neutral) dispersion pseudo-charges.
+
+    This class computes the reciprocal-space (k-space) contribution ONLY —
+    it passes an empty short-range neighbor list to torch-pme's
+    ``Calculator.forward`` so that the real-space term it would otherwise
+    add is trivially zero. This mirrors so3lr_dev's
+    ``DispersionEnergyKspace``, whose docstring states it handles "the
+    Casimir-Polder mixing-rule residual handled in real space by
+    DispersionEnergySparse" — i.e. the real-space Casimir-Polder residual
+    and the cancellation of the near-range portion of the geometric-mean
+    long-range tail are handled entirely elsewhere, by
+    ``DispersionInteraction`` (the residual formula
+    ``V_C6_residual = V_C6_full + C6_geom_ij * lr_r_ij``), not by this
+    class.
     """
 
     def __init__(
@@ -1066,18 +1080,13 @@ class PMEDispersionInteraction(nn.Module):
         c6_pseudo_charges: torch.Tensor,  # (N,) — sqrt(clamp(C6_i, min=0)), already computed by caller
         positions: torch.Tensor,  # (N, 3), Angstrom
         cell: torch.Tensor,  # (N_graphs, 3, 3) or (N_graphs*3, 3) — PyG-batched, same convention as PMEElectrostaticInteraction
-        edge_index: torch.Tensor,  # (2, E_sr) SR neighbor list — same role as electrostatics' edge_index
-        lengths: torch.Tensor,  # (E_sr,) or (E_sr,1)
         batch_segments: torch.Tensor,  # (N,)
         num_graphs: int,
         num_nodes: int,
-    ) -> torch.Tensor:  # (N, 1) per-atom k-space dispersion energy in eV
+    ) -> torch.Tensor:  # (N, 1) per-atom k-space-only dispersion energy in eV
         # PyG Batch concatenates [3,3] cells along dim 0 → [N*3,3].
         # Restore to [N,3,3] so cell[g] yields the correct [3,3] matrix.
         cell = cell.view(-1, 3, 3)
-
-        if lengths.dim() == 2 and lengths.size(-1) == 1:
-            lengths = lengths.squeeze(-1)
 
         input_dtype = positions.dtype
         device = positions.device
@@ -1104,24 +1113,20 @@ class PMEDispersionInteraction(nn.Module):
                     "systems."
                 )
 
-            # SR edges within graph g
-            edge_mask = atom_mask[edge_index[0]]
-            idx_g = edge_index[:, edge_mask]  # (2, E_g)
-            # lengths has shape [E,1] (keepdim=True in prepare_graph);
-            # torchpme expects 1-D distances [E_g], in Bohr.
-            d_g = lengths[edge_mask] / bohr_factor  # (E_g,)
-
-            # Renumber to local indices 0..N_g-1
-            offset = atom_mask.nonzero(as_tuple=False)[0, 0]
-            local_idx = idx_g - offset  # (2, E_g)
+            # This class is k-space-ONLY (see class docstring): the
+            # real-space term is made trivially zero by handing
+            # torch-pme's Calculator.forward an empty neighbor list, so
+            # only the reciprocal-space contribution is computed.
+            empty_idx = torch.zeros((0, 2), dtype=torch.long, device=device)
+            empty_dist = torch.zeros((0,), dtype=input_dtype, device=device)
 
             # charges: (N_g, 1); output: (N_g, 1)
             potentials_g = self.calculator.forward(
                 charges=c_g.unsqueeze(1),
                 cell=cell_g,
                 positions=pos_g,
-                neighbor_indices=local_idx.T,  # (E_g, 2)
-                neighbor_distances=d_g,
+                neighbor_indices=empty_idx,
+                neighbor_distances=empty_dist,
             )
 
             # E_i = -q_i * phi_i * Hartree (no 0.5, no ke prefactor)
