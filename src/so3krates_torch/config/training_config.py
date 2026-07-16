@@ -61,6 +61,13 @@ class ArchitectureConfig(BaseModel):
     use_pme: bool = False
     pme_smearing: Optional[float] = None
     pme_mesh_spacing: Optional[float] = None
+    # PME dispersion (k-space correction added on top of the real-space
+    # C6 residual + C8/C10 terms — does not replace them, unlike use_pme
+    # above for electrostatics)
+    use_pme_dispersion: bool = False
+    pme_dispersion_smearing: Optional[float] = None
+    pme_dispersion_mesh_spacing: Optional[float] = None
+    legacy_dispersion_bool: bool = True
     compute_avg_num_neighbors: bool = True
     # Multi-head
     convert_to_multihead: bool = False

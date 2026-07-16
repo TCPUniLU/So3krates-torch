@@ -24,6 +24,8 @@ from so3krates_torch.blocks.physical_potentials import (
     ElectrostaticInteraction,
     DispersionInteraction,
     PMEElectrostaticInteraction,
+    PMEDispersionInteraction,
+    atomic_c6_pseudo_charges,
 )
 from so3krates_torch.tools import scatter
 from so3krates_torch.tools import utils
@@ -555,6 +557,10 @@ class SO3LR(So3krates):
         use_pme: bool = False,
         pme_smearing: float = None,
         pme_mesh_spacing: float = None,
+        use_pme_dispersion: bool = False,
+        pme_dispersion_smearing: Optional[float] = None,
+        pme_dispersion_mesh_spacing: Optional[float] = None,
+        legacy_dispersion_bool: bool = True,
         c6_ratios_bool: bool = False,
         use_simple_hirshfeld: bool = False,
         *args,
@@ -618,6 +624,13 @@ class SO3LR(So3krates):
             )
 
         # Dispersion
+        # NOTE: unlike electrostatics' `use_pme` (which fully replaces the
+        # real-space+long-range Coulomb calculation), PME dispersion only
+        # *adds* a k-space correction on top of DispersionInteraction's
+        # real-space residual + C8/C10 terms — those always need the
+        # long-range neighbor list, whether or not use_pme_dispersion is
+        # set. So this gate stays unconditional (no `and not
+        # use_pme_dispersion`), unlike the electrostatics gate above.
         if self.dispersion_energy_bool:
             self.use_lr = True
 
@@ -635,6 +648,20 @@ class SO3LR(So3krates):
         self.dispersion_potential = DispersionInteraction(
             neighborlist_format_lr=self.neighborlist_format_lr
         )
+        self.legacy_dispersion_bool = legacy_dispersion_bool
+
+        self.use_pme_dispersion = use_pme_dispersion
+        if use_pme_dispersion:
+            _disp_smearing = pme_dispersion_smearing or self.r_max_lr / 5.0
+            _disp_mesh_spacing = (
+                pme_dispersion_mesh_spacing or _disp_smearing / 2.0
+            )
+            self.pme_dispersion_smearing = _disp_smearing
+            self.pme_dispersion_mesh_spacing = _disp_mesh_spacing
+            self.pme_dispersion_potential = PMEDispersionInteraction(
+                smearing=_disp_smearing,
+                mesh_spacing=_disp_mesh_spacing,
+            )
 
         # Independent C6 ratio head (new JAX feature)
         if c6_ratios_bool:
@@ -909,7 +936,36 @@ class SO3LR(So3krates):
                 cutoff_lr_damping=self.dispersion_energy_cutoff_lr_damping,
                 dispersion_energy_scale=self.dispersion_energy_scale,
                 c6_ratios=c6_ratios,
+                use_pme_dispersion=getattr(self, "use_pme_dispersion", False),
+                pme_dispersion_smearing=getattr(
+                    self, "pme_dispersion_smearing", None
+                ),
+                legacy_dispersion_bool=getattr(
+                    self, "legacy_dispersion_bool", True
+                ),
             )
+
+            if getattr(self, "use_pme_dispersion", False):
+                c6_i = atomic_c6_pseudo_charges(
+                    atomic_numbers=data["atomic_numbers"],
+                    hirshfeld_ratios=hirshfeld_ratios,
+                    c6_ratios=c6_ratios,
+                    legacy_dispersion_bool=getattr(
+                        self, "legacy_dispersion_bool", True
+                    ),
+                )
+                c6_pseudo_charges = torch.sqrt(torch.clamp(c6_i, min=0))
+                kspace_dispersion_energies = self.pme_dispersion_potential(
+                    c6_pseudo_charges=c6_pseudo_charges,
+                    positions=self.positions,
+                    cell=self.cell,
+                    batch_segments=self.batch_segments,
+                    num_graphs=self.num_graphs,
+                    num_nodes=inv_features.shape[0],
+                )
+                dispersion_energies = (
+                    dispersion_energies + kspace_dispersion_energies
+                )
 
         atomic_energies = self._combine_energies(
             atomic_energies=atomic_energies,

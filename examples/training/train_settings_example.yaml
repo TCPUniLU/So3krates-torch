@@ -71,6 +71,14 @@ ARCHITECTURE:
   # + real-space vdW-QDO dispersion (C6+C8+C10). r_max_lr and
   # dispersion_energy_cutoff_lr_damping are still required for dispersion.
   # Dispersion converges as 1/r_max_lr^3; real-space is accurate without PME.
+  # use_pme_dispersion: false  # true = PME (k-space) dispersion for periodic systems (requires torch-pme)
+  # pme_dispersion_smearing: 2.4       # Ewald splitting (Å); default = r_max_lr / 5
+  # pme_dispersion_mesh_spacing: 1.2   # FFT grid spacing (Å); default = smearing / 2
+  # legacy_dispersion_bool: true  # true = legacy (JAX v1) alpha/C6 reference table;
+  #   false = refitted table required by so3lr-s/m/l checkpoints.
+  # PME dispersion adds a k-space correction on top of the existing real-space
+  # C6 residual + C8/C10 terms — r_max_lr and dispersion_energy_cutoff_lr_damping
+  # are still required exactly as without PME dispersion.
   compute_avg_num_neighbors: True
 
 TRAINING:

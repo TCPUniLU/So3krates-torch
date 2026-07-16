@@ -114,6 +114,16 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
         "use_pme": arch_config.get("use_pme", False),
         "pme_smearing": arch_config.get("pme_smearing", None),
         "pme_mesh_spacing": arch_config.get("pme_mesh_spacing", None),
+        "use_pme_dispersion": arch_config.get("use_pme_dispersion", False),
+        "pme_dispersion_smearing": arch_config.get(
+            "pme_dispersion_smearing", None
+        ),
+        "pme_dispersion_mesh_spacing": arch_config.get(
+            "pme_dispersion_mesh_spacing", None
+        ),
+        "legacy_dispersion_bool": arch_config.get(
+            "legacy_dispersion_bool", True
+        ),
         "neighborlist_format_lr": arch_config.get(
             "neighborlist_format_lr", "sparse"
         ),
