@@ -987,41 +987,24 @@ class PMEElectrostaticInteraction(nn.Module):
         pass  # interface compatibility
 
 
-try:
-    import torchpme as _torchpme_for_c6_potential
-    from torchpme.lib import gamma as _torchpme_gamma
-except ImportError:  # pragma: no cover - torchpme optional at import time
-    _torchpme_for_c6_potential = None
-    _torchpme_gamma = None
-
-
-if _torchpme_for_c6_potential is not None:
-
-    class _C6InversePowerLawPotential(
-        _torchpme_for_c6_potential.InversePowerLawPotential
-    ):
-        """InversePowerLawPotential(exponent=6) with the nonzero background
-        correction dispersion's non-neutral (all-positive) pseudo-charges need —
-        torch-pme's base implementation zeroes this for exponent >= 3, which is
-        only valid for neutral charge distributions.
-        """
-
-        def background_correction(self) -> torch.Tensor:
-            prefac = torch.pi**1.5 * (2 * self.smearing**2) ** (
-                (3 - self.exponent) / 2
-            )
-            prefac /= (3 - self.exponent) * _torchpme_gamma(self.exponent / 2)
-            return self.prefactor * prefac
-
-
 class PMEDispersionInteraction(nn.Module):
     """K-space-ONLY C6 dispersion energy via Particle Mesh Ewald / Ewald
     (torch-pme).
 
     Uses per-atom pseudo-charges q_i = sqrt(C6_i) (geometric-mean
     factorization, required for Ewald/PME additivity), matching
-    so3lr_dev's DispersionEnergyKspace exactly, including its nonzero
-    background correction for the (non-neutral) dispersion pseudo-charges.
+    so3lr_dev's DispersionEnergyKspace exactly.
+
+    Uses a stock, unmodified ``torchpme.InversePowerLawPotential(exponent=6)``.
+    No background-correction patch is needed here: torch-pme's own
+    ``background_correction``/``lr_from_k_sq`` already handle exponent > 3
+    correctly — for exponent > 3 the reciprocal-space k=0 term is finite and
+    is computed directly by ``lr_from_k_sq`` (its ``k0_limit`` branch), so
+    ``background_correction()`` correctly returns zero to avoid double
+    counting that k=0 contribution. (torch-pme only needs a nonzero
+    ``background_correction`` patch for exponent <= 3 — the Coulomb case —
+    where the k=0 term is manually zeroed in ``lr_from_k_sq`` and must be
+    patched back in for non-neutral systems; that case does not apply here.)
 
     This class computes the reciprocal-space (k-space) contribution ONLY —
     it passes an empty short-range neighbor list to torch-pme's
@@ -1060,7 +1043,7 @@ class PMEDispersionInteraction(nn.Module):
         smearing_bohr = smearing / BOHR
         mesh_spacing_bohr = mesh_spacing / BOHR
 
-        potential = _C6InversePowerLawPotential(
+        potential = torchpme.InversePowerLawPotential(
             exponent=6, smearing=smearing_bohr
         )
         self.calculator = (
