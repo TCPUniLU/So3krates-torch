@@ -216,6 +216,12 @@ def build_jax_v1_config_from_settings(
     # Training is always sparse-format for long-range blocks in this
     # mlff checkout (see mlff/config/from_config.py:run_training).
     cfg.neighborlist_format_lr = "sparse"
+    # `make_so3krates_sparse_from_config` (mlff/config/from_config.py)
+    # reads this top-level field unconditionally -- added upstream after
+    # this script was first written (mlff v1.0-lrs-gems branch, PR #39
+    # "new_pass_obs"); `None` matches `SO3kratesSparse`'s own default and
+    # this script never needs sown intermediate quantities.
+    cfg.output_intermediate_quantities = None
     return cfg
 
 

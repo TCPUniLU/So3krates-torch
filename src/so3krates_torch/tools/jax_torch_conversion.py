@@ -1017,6 +1017,14 @@ def get_model_settings_torch_to_flax(
     cfg.neighborlist_format_lr = torch_settings.get(
         "neighborlist_format_lr", "sparse"
     )
+    # `make_so3krates_sparse_from_config` (mlff's `mlff/config/from_config.py`)
+    # reads this top-level field unconditionally on newer mlff checkouts
+    # (added upstream after this converter was first written); `None`
+    # matches `SO3kratesSparse`'s own default and is a no-op for the
+    # weight/shape conversion this module otherwise performs.
+    cfg.output_intermediate_quantities = torch_settings.get(
+        "output_intermediate_quantities", None
+    )
 
     # Data settings
     cfg.data = config_dict.ConfigDict()
