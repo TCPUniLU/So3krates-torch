@@ -400,6 +400,34 @@ def gamma_cubic_fit(alpha: torch.Tensor) -> torch.Tensor:
     return gamma
 
 
+def _vdw_qdo_disp_damp_terms(
+    R: torch.Tensor,
+    gamma: torch.Tensor,
+    C6: torch.Tensor,
+    alpha_ij: torch.Tensor,
+    gamma_scale: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Shared per-term computation behind ``vdw_qdo_disp_damp``.
+
+    Returns the individual (undamped-sum, un-Hartree-scaled) C6/C8/C10
+    damped terms plus the damping length ``p``, so that PME-dispersion's
+    real-space residual branch (`DispersionInteraction.forward`) can
+    replace only the C6 term while reusing the exact same C8/C10/p
+    computation as the non-PME path — no duplicated math, no risk of the
+    two paths silently diverging.
+    """
+    # Compute higher-order dispersion coefficients
+    C8 = 5 / gamma * C6
+    C10 = 245 / 8 / gamma**2 * C6
+    p = gamma_scale * 2 * 2.54 * alpha_ij ** (1 / 7)
+
+    C6_term = -C6 / (R**6 + p**6)
+    C8_term = -C8 / (R**8 + p**8)
+    C10_term = -C10 / (R**10 + p**10)
+
+    return C6_term, C8_term, C10_term, p
+
+
 def vdw_qdo_disp_damp(
     R: torch.Tensor,
     gamma: torch.Tensor,
@@ -412,17 +440,11 @@ def vdw_qdo_disp_damp(
     input_dtype = R.dtype
     device = R.device
 
-    # Compute higher-order dispersion coefficients
-    C8 = 5 / gamma * C6
-    C10 = 245 / 8 / gamma**2 * C6
-    p = gamma_scale * 2 * 2.54 * alpha_ij ** (1 / 7)
-
     # Compute potential — inline to avoid 6 simultaneous [N_pairs] tensors
-    V3 = (
-        -C6 / (R**6 + p**6)
-        - C8 / (R**8 + p**8)
-        - C10 / (R**10 + p**10)
+    C6_term, C8_term, C10_term, _p = _vdw_qdo_disp_damp_terms(
+        R, gamma, C6, alpha_ij, gamma_scale
     )
+    V3 = C6_term + C8_term + C10_term
 
     hartree_factor = torch.tensor(HARTREE, dtype=input_dtype, device=device)
     return c * V3 * hartree_factor
@@ -1138,6 +1160,9 @@ class DispersionInteraction(nn.Module):
         cutoff_lr_damping: Optional[float] = None,
         dispersion_energy_scale: float = 1.0,
         c6_ratios: Optional[torch.Tensor] = None,
+        use_pme_dispersion: bool = False,
+        pme_dispersion_smearing: Optional[float] = None,
+        legacy_dispersion_bool: bool = True,
     ) -> torch.Tensor:
         """
         Compute per-node dispersion energy using potential described
@@ -1154,6 +1179,20 @@ class DispersionInteraction(nn.Module):
                 provided, C6 is scaled independently from alpha (new JAX
                 behaviour). When None, C6 is scaled by hirshfeld_ratio²
                 (backward-compatible).
+            use_pme_dispersion: when True, the C6 term is replaced by its
+                real-space residual (full damped C6 minus the geometric-
+                mean long-range part that `PMEDispersionInteraction` adds
+                back in k-space). C8/C10 and the switching-function cutoff
+                are unaffected. Default False reproduces today's exact
+                real-space-only behaviour byte-for-byte.
+            pme_dispersion_smearing: PME-dispersion smearing width, in
+                Angstrom (same convention as `PMEDispersionInteraction`'s
+                `smearing`). Required (raises if None) when
+                `use_pme_dispersion=True`; ignored otherwise.
+            legacy_dispersion_bool: selects the free-atom alpha/C6
+                reference table forwarded to `mixing_rules` (and, when
+                `use_pme_dispersion=True`, to `atomic_c6_pseudo_charges`).
+                True (default) reproduces today's exact table selection.
 
         Returns:
             (N,1) atomic dispersion energies.
@@ -1183,6 +1222,7 @@ class DispersionInteraction(nn.Module):
             senders_lr,
             hirshfeld_ratios,
             c6_ratios=c6_ratios,
+            legacy_dispersion_bool=legacy_dispersion_bool,
         )
 
         # Use cubic fit for gamma
@@ -1192,28 +1232,103 @@ class DispersionInteraction(nn.Module):
         bohr_factor = torch.tensor(BOHR, dtype=input_dtype, device=device)
         distances_au = lengths_lr / bohr_factor
 
-        # Get dispersion energy per edge
-        dispersion_energy_ij = vdw_qdo_disp_damp(
-            distances_au,
-            gamma_ij,
-            C6_ij,
-            alpha_ij,
-            dispersion_energy_scale,
-            self.c,
-        )
+        if use_pme_dispersion:
+            if pme_dispersion_smearing is None:
+                raise ValueError(
+                    "use_pme_dispersion=True requires "
+                    "pme_dispersion_smearing to be set (got None)."
+                )
 
-        # Apply smooth cutoff if specified
-        if cutoff_lr is not None:
-            # Apply switching function for smooth cutoff
-            w = switching_fn(
-                lengths_lr,
-                x_on=cutoff_lr - cutoff_lr_damping,
-                x_off=cutoff_lr,
+            # --- PME-aware real-space splitting ---
+            # C6 becomes a real-space residual: the full damped
+            # Casimir-Polder C6 term minus the geometric-mean long-range
+            # part that PMEDispersionInteraction adds back in k-space.
+            # C8/C10 keep their existing form and cutoff treatment.
+            C6_term, C8_term, C10_term, _p = _vdw_qdo_disp_damp_terms(
+                distances_au,
+                gamma_ij,
+                C6_ij,
+                alpha_ij,
+                dispersion_energy_scale,
             )
-            # Apply mask where distances > 0
-            mask = lengths_lr > 0
-            w = torch.where(mask, w, torch.zeros_like(w))
-            dispersion_energy_ij = dispersion_energy_ij * w
+
+            # Per-atom pseudo-charges (Task 1) gathered per edge — NOT the
+            # mixing-rule C6_ij combination used in C6_term above.
+            C6_atomic = atomic_c6_pseudo_charges(
+                atomic_numbers,
+                hirshfeld_ratios,
+                c6_ratios=c6_ratios,
+                legacy_dispersion_bool=legacy_dispersion_bool,
+            )
+            C6_i = C6_atomic[receivers_lr]
+            C6_j = C6_atomic[senders_lr]
+            C6_geom_ij = torch.sqrt(C6_i * C6_j)
+
+            smearing_bohr = (
+                torch.tensor(
+                    pme_dispersion_smearing,
+                    dtype=input_dtype,
+                    device=device,
+                )
+                / bohr_factor
+            )
+            two_sigma2 = 2 * smearing_bohr**2
+            x = distances_au**2 / two_sigma2
+            exp_neg_x = torch.exp(-x)
+            distances_au_safe = torch.where(
+                distances_au > 0,
+                distances_au,
+                torch.ones_like(distances_au),
+            )
+            lr_r = (1 - exp_neg_x * (1 + x + 0.5 * x**2)) / (
+                distances_au_safe**6
+            )
+
+            V_C6_residual = C6_term + C6_geom_ij * lr_r
+            V_C8C10 = C8_term + C10_term
+
+            # Apply smooth cutoff to C8/C10 only — the C6 residual is
+            # deliberately left uncut (the Ewald split already localizes
+            # it near zero well before cutoff_lr).
+            if cutoff_lr is not None:
+                w = switching_fn(
+                    lengths_lr,
+                    x_on=cutoff_lr - cutoff_lr_damping,
+                    x_off=cutoff_lr,
+                )
+                mask = lengths_lr > 0
+                w = torch.where(mask, w, torch.zeros_like(w))
+                V_C8C10 = V_C8C10 * w
+
+            hartree_factor = torch.tensor(
+                HARTREE, dtype=input_dtype, device=device
+            )
+            dispersion_energy_ij = (
+                self.c * (V_C6_residual + V_C8C10) * hartree_factor
+            )
+        else:
+            # Get dispersion energy per edge
+            dispersion_energy_ij = vdw_qdo_disp_damp(
+                distances_au,
+                gamma_ij,
+                C6_ij,
+                alpha_ij,
+                dispersion_energy_scale,
+                self.c,
+            )
+
+            # Apply smooth cutoff if specified
+            if cutoff_lr is not None:
+                # Apply switching function for smooth cutoff
+                w = switching_fn(
+                    lengths_lr,
+                    x_on=cutoff_lr - cutoff_lr_damping,
+                    x_off=cutoff_lr,
+                )
+                # Apply mask where distances > 0
+                mask = lengths_lr > 0
+                w = torch.where(mask, w, torch.zeros_like(w))
+                dispersion_energy_ij = dispersion_energy_ij * w
 
         # Sum over edges for each node
         atomic_dispersion_energy = scatter_sum(
