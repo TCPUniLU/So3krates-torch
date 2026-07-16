@@ -65,6 +65,30 @@ def main():
         default="cpu",
         help="Device to use for the model (e.g., 'cpu' or 'cuda')",
     )
+    argparser.add_argument(
+        "--check_parity",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Verify JAX/Torch model outputs agree after conversion",
+    )
+    argparser.add_argument(
+        "--parity_structure",
+        type=str,
+        default=None,
+        help="Structure file to check parity on (default: bundled example)",
+    )
+    argparser.add_argument(
+        "--parity_atol",
+        type=float,
+        default=1e-3,
+        help="Absolute tolerance for the parity check",
+    )
+    argparser.add_argument(
+        "--parity_rtol",
+        type=float,
+        default=1e-2,
+        help="Relative tolerance for the parity check",
+    )
 
     args = argparser.parse_args()
     validated = Jax2TorchArgs.model_validate(vars(args))
@@ -86,6 +110,37 @@ def main():
 
     if args.save_model_path is not None:
         torch.save(model, args.save_model_path)
+
+    if args.check_parity:
+        import json
+        import pickle
+
+        from ml_collections import config_dict
+
+        from so3krates_torch.tools.model_parity import check_model_parity
+
+        with open(args.path_to_params, "rb") as f:
+            flax_params = pickle.load(f)
+        with open(args.path_to_hyperparams, "r") as f:
+            cfg = config_dict.ConfigDict(json.load(f))
+
+        parity_ok = check_model_parity(
+            cfg=cfg,
+            flax_params=flax_params,
+            torch_model=model,
+            r_max=cfg.model.cutoff,
+            r_max_lr=cfg.model.cutoff_lr,
+            structure_path=args.parity_structure,
+            atol=args.parity_atol,
+            rtol=args.parity_rtol,
+        )
+        if not parity_ok:
+            print(
+                "WARNING: JAX<->Torch parity check FAILED -- the converted "
+                "model was still saved, but its outputs do not match the "
+                "source model within tolerance. See the table above."
+            )
+            return 1
 
     return 0
 

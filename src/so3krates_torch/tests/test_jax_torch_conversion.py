@@ -118,3 +118,149 @@ def test_model_parity_matches_for_v1_pair():
         r_max=V1_TORCH_SETTINGS["r_max"],
         r_max_lr=V1_TORCH_SETTINGS["r_max_lr"],
     )
+
+
+# ---------------------------------------------------------------------
+# End-to-end CLI tests for `--check_parity` wiring (torchkrates-jax2torch
+# / torchkrates-torch2jax). These exercise the real CLI `main()`
+# entrypoints (argv -> argparse -> Pydantic validation -> conversion ->
+# parity check), not the underlying conversion/parity primitives, which
+# are already covered above.
+# ---------------------------------------------------------------------
+
+import json
+import pickle
+import sys
+
+import yaml
+
+from so3krates_torch.cli.jax_to_torch import main as jax_to_torch_main
+from so3krates_torch.cli.torch_to_jax import main as torch_to_jax_main
+
+
+def test_jax2torch_cli_check_parity_passes_by_default(tmp_path, monkeypatch):
+    """Round-trip a real v1 JAX model through `torchkrates-jax2torch`
+    and confirm the CLI wiring for `--check_parity` (default True)
+    actually runs the check and still reports overall success.
+    """
+    _model_jax, flax_params, cfg = build_jax_v1(JAX_V1_CONFIG)
+
+    params_path = tmp_path / "params.pkl"
+    with open(params_path, "wb") as f:
+        pickle.dump(flax_params, f)
+
+    hyperparams_path = tmp_path / "hyperparameters.json"
+    with open(hyperparams_path, "w") as f:
+        json.dump(cfg.to_dict(), f)
+
+    save_model_path = tmp_path / "so3lr_torch.model"
+
+    argv = [
+        "torchkrates-jax2torch",
+        "--path_to_params",
+        str(params_path),
+        "--path_to_hyperparams",
+        str(hyperparams_path),
+        "--save_model_path",
+        str(save_model_path),
+        "--dtype",
+        "float64",
+    ]
+    if V1_TORCH_SETTINGS["trainable_rbf"]:
+        argv.append("--trainable_rbf")
+
+    monkeypatch.setattr(sys, "argv", argv)
+    assert jax_to_torch_main() == 0
+    assert save_model_path.exists()
+
+
+def test_jax2torch_cli_check_parity_flag_can_be_disabled(
+    tmp_path, monkeypatch
+):
+    """Same setup as above, but with `--no-check_parity` -- proves the
+    CLI accepts the disabling flag and completes without running (or
+    being blocked by) the parity check.
+    """
+    _model_jax, flax_params, cfg = build_jax_v1(JAX_V1_CONFIG)
+
+    params_path = tmp_path / "params.pkl"
+    with open(params_path, "wb") as f:
+        pickle.dump(flax_params, f)
+
+    hyperparams_path = tmp_path / "hyperparameters.json"
+    with open(hyperparams_path, "w") as f:
+        json.dump(cfg.to_dict(), f)
+
+    save_model_path = tmp_path / "so3lr_torch.model"
+
+    argv = [
+        "torchkrates-jax2torch",
+        "--path_to_params",
+        str(params_path),
+        "--path_to_hyperparams",
+        str(hyperparams_path),
+        "--save_model_path",
+        str(save_model_path),
+        "--dtype",
+        "float64",
+        "--no-check_parity",
+    ]
+    if V1_TORCH_SETTINGS["trainable_rbf"]:
+        argv.append("--trainable_rbf")
+
+    monkeypatch.setattr(sys, "argv", argv)
+    assert jax_to_torch_main() == 0
+    assert save_model_path.exists()
+
+
+def test_torch2jax_cli_check_parity_passes_by_default(tmp_path, monkeypatch):
+    """Reverse direction: round-trip a real v1 torch model through
+    `torchkrates-torch2jax` and confirm the CLI wiring for
+    `--check_parity` (default True) actually runs the check and still
+    reports overall success.
+    """
+    torch_model = build_torch_v1(V1_TORCH_SETTINGS)
+
+    state_dict_path = tmp_path / "checkpoint.pt"
+    torch.save(torch_model.state_dict(), state_dict_path)
+
+    # `V1_TORCH_SETTINGS["dtype"]` is a `torch.dtype` object (e.g.
+    # `torch.float64`), which does not YAML-serialize cleanly via plain
+    # `yaml.dump` -- convert to the bare string form the CLI's own
+    # `getattr(torch, args.dtype)` expects.
+    serializable_settings = dict(V1_TORCH_SETTINGS)
+    serializable_settings["dtype"] = str(V1_TORCH_SETTINGS["dtype"]).rsplit(
+        ".", 1
+    )[-1]
+
+    hyperparams_path = tmp_path / "config.yaml"
+    with open(hyperparams_path, "w") as f:
+        yaml.dump(
+            {"ARCHITECTURE": serializable_settings},
+            f,
+            default_flow_style=False,
+        )
+
+    save_settings_path = tmp_path / "jax_settings"
+    save_params_path = tmp_path / "jax_params"
+
+    argv = [
+        "torchkrates-torch2jax",
+        "--path_to_state_dict",
+        str(state_dict_path),
+        "--path_to_hyperparams",
+        str(hyperparams_path),
+        "--save_settings_path",
+        str(save_settings_path),
+        "--save_params_path",
+        str(save_params_path),
+        "--dtype",
+        "float64",
+    ]
+    if V1_TORCH_SETTINGS["trainable_rbf"]:
+        argv.append("--trainable_rbf")
+
+    monkeypatch.setattr(sys, "argv", argv)
+    assert torch_to_jax_main() == 0
+    assert (save_settings_path / "hyperparameters.json").exists()
+    assert (save_params_path / "params.pkl").exists()

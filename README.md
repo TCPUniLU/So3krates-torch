@@ -303,6 +303,15 @@ torchkrates-torch2jax \
 
 This writes `hyperparameters.json` and `params.pkl` into the two given directories, matching mlff's expected JAX checkpoint layout.
 
+**Parity check:** by default, both CLIs verify after conversion that the JAX and PyTorch model representations produce the same energy/forces on a real structure (the bundled `tests/data/aqm_small.xyz` unless `--parity_structure` is given). The converted model/params are saved regardless of the check's outcome, but the CLI exits with status `1` if the check fails, so the failure isn't silently missed.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--check_parity` / `--no-check_parity` | `True` | After conversion, verify the two model representations agree on a real structure's energy/forces. |
+| `--parity_structure` | bundled `aqm_small.xyz` | ASE-readable structure file to check parity on. |
+| `--parity_atol` | `1e-3` | Absolute tolerance for the parity check. |
+| `--parity_rtol` | `1e-2` | Relative tolerance for the parity check. |
+
 ---
 
 ## Training Configuration

@@ -123,6 +123,10 @@ class Jax2TorchArgs(BaseModel):
     trainable_rbf: bool = False
     dtype: str = "float32"
     device: str = "cpu"
+    check_parity: bool = True
+    parity_structure: Optional[str] = None
+    parity_atol: float = 1e-3
+    parity_rtol: float = 1e-2
 
     @model_validator(mode="after")
     def validate_at_least_one_save_path(self):
@@ -149,6 +153,10 @@ class Torch2JaxArgs(BaseModel):
     use_defined_shifts: bool = False
     trainable_rbf: bool = False
     dtype: str = "float32"
+    check_parity: bool = True
+    parity_structure: Optional[str] = None
+    parity_atol: float = 1e-3
+    parity_rtol: float = 1e-2
 
     @model_validator(mode="after")
     def validate_at_least_one_save_path(self):
