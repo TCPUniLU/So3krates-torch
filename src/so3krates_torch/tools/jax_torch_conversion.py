@@ -453,6 +453,28 @@ def get_model_settings_flax_to_torch(
         nhl_repulsion_bool=getattr(cfg.model, "nhl_repulsion_bool", False),
         c6_ratios_bool=getattr(cfg.model, "c6_ratios_bool", False),
         use_simple_hirshfeld=getattr(cfg.model, "use_simple_hirshfeld", False),
+        # JAX ties both electrostatics PME and dispersion PME to the same
+        # single `kspace_electrostatics` method flag (and shared
+        # kspace_smearing/kspace_spacing values) -- there is no separate
+        # JAX flag for "PME dispersion only" vs. "PME electrostatics only".
+        # Torch keeps independent use_pme/use_pme_dispersion knobs, but on
+        # conversion from JAX both must default from the same JAX source
+        # values (deliberate one-JAX-flag-to-two-torch-flags fan-out).
+        use_pme_dispersion=getattr(
+            cfg.model, "kspace_electrostatics", False
+        ),
+        pme_dispersion_smearing=getattr(
+            cfg.model, "kspace_smearing", None
+        ),
+        pme_dispersion_mesh_spacing=getattr(
+            cfg.model, "kspace_spacing", None
+        ),
+        legacy_dispersion_bool=getattr(
+            cfg.model, "legacy_so3lr_bool", False
+        ),
+        use_pme=getattr(cfg.model, "kspace_electrostatics", False),
+        pme_smearing=getattr(cfg.model, "kspace_smearing", None),
+        pme_mesh_spacing=getattr(cfg.model, "kspace_spacing", None),
         num_theory_levels=num_theory_levels,
         final_layer_bias=(
             "params/observables_0/energy_dense_final/bias" in flat_params
@@ -996,6 +1018,28 @@ def get_model_settings_torch_to_flax(
     )
     cfg.model.dispersion_energy_scale = torch_settings.get(
         "dispersion_energy_scale", 1.0
+    )
+    # Torch's two independent PME flags (use_pme for electrostatics,
+    # use_pme_dispersion for dispersion) collapse back to JAX's single
+    # shared kspace_electrostatics flag -- `or` is the right merge since
+    # JAX only has one on/off switch; if either torch flag requests PME,
+    # JAX's shared flag must be on. For the smearing/spacing values, if
+    # both torch flags are set with *different* smearing/spacing, JAX
+    # genuinely cannot represent that (one shared kspace_smearing/
+    # kspace_spacing pair for both) -- this is a real, documented
+    # information-loss case on the torch->JAX direction; we prefer the
+    # electrostatics (use_pme) value when both are non-None and differ.
+    cfg.model.kspace_electrostatics = torch_settings.get(
+        "use_pme", False
+    ) or torch_settings.get("use_pme_dispersion", False)
+    cfg.model.kspace_smearing = torch_settings.get(
+        "pme_smearing", None
+    ) or torch_settings.get("pme_dispersion_smearing", None)
+    cfg.model.kspace_spacing = torch_settings.get(
+        "pme_mesh_spacing", None
+    ) or torch_settings.get("pme_dispersion_mesh_spacing", None)
+    cfg.model.legacy_so3lr_bool = torch_settings.get(
+        "legacy_dispersion_bool", False
     )
     cfg.model.num_features_head = torch_settings.get("num_features_head", None)
     cfg.model.qk_non_linearity = torch_settings.get(

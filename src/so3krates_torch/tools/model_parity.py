@@ -18,7 +18,7 @@ larger CLI command.
 
 import copy
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import torch
@@ -147,7 +147,12 @@ def _build_torch_batch(
     )
 
 
-def _jax_energy_forces(cfg, flax_params: dict, inputs: dict):
+def _jax_energy_forces(
+    cfg,
+    flax_params: dict,
+    inputs: dict,
+    model_factory: Optional[Callable] = None,
+):
     """Energy (scalar) + forces (n_real_atoms, 3), real atoms/graph only.
 
     Follows the ``jax.value_and_grad``-of-total-energy recipe from
@@ -157,11 +162,19 @@ def _jax_energy_forces(cfg, flax_params: dict, inputs: dict):
     padding graph) -- masked with ``inputs["graph_mask"]`` before
     summing to a scalar. The gradient comes out with one row per node
     (real + padding); masked with ``inputs["node_mask"]`` to real atoms.
+
+    ``model_factory``, if given, replaces the default v1 ``mlff``
+    ``make_so3krates_sparse_from_config`` import for building the JAX
+    model from ``cfg`` (e.g. a v2/``so3lr_dev`` equivalent).
     """
     import jax
-    from mlff.config import make_so3krates_sparse_from_config
 
-    model = make_so3krates_sparse_from_config(cfg)
+    if model_factory is None:
+        from mlff.config import (
+            make_so3krates_sparse_from_config as model_factory,
+        )
+
+    model = model_factory(cfg)
     graph_mask = inputs["graph_mask"]
     node_mask = np.asarray(inputs["node_mask"])
 
@@ -212,6 +225,7 @@ def check_model_parity(
     index: int = 0,
     atol: float = 1e-3,
     rtol: float = 1e-2,
+    model_factory: Optional[Callable] = None,
 ) -> bool:
     """Run both models on one real structure and compare energy+forces.
 
@@ -239,6 +253,10 @@ def check_model_parity(
     diff for energy and forces. Returns True iff both agree within
     ``atol``/``rtol`` (``np.allclose`` semantics:
     ``|a - b| <= atol + rtol * |b|``).
+
+    ``model_factory``, if given, is forwarded to ``_jax_energy_forces``
+    to build the JAX model from ``cfg`` (defaults to the v1 ``mlff``
+    factory, so existing callers are unaffected).
     """
     import jax
 
@@ -252,7 +270,9 @@ def check_model_parity(
         r_max, r_max_lr, structure_path, index, model_dtype
     )
 
-    energy_jax, forces_jax = _jax_energy_forces(cfg, flax_params, inputs_jax)
+    energy_jax, forces_jax = _jax_energy_forces(
+        cfg, flax_params, inputs_jax, model_factory=model_factory
+    )
     energy_torch, forces_torch = _torch_energy_forces(torch_model, batch_torch)
 
     energy_jax_arr = np.asarray(energy_jax)
