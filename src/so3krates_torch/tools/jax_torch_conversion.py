@@ -470,7 +470,7 @@ def get_model_settings_flax_to_torch(
             cfg.model, "kspace_spacing", None
         ),
         legacy_dispersion_bool=getattr(
-            cfg.model, "legacy_so3lr_bool", False
+            cfg.model, "legacy_so3lr_bool", True
         ),
         use_pme=getattr(cfg.model, "kspace_electrostatics", False),
         pme_smearing=getattr(cfg.model, "kspace_smearing", None),
@@ -1039,7 +1039,7 @@ def get_model_settings_torch_to_flax(
         "pme_mesh_spacing", None
     ) or torch_settings.get("pme_dispersion_mesh_spacing", None)
     cfg.model.legacy_so3lr_bool = torch_settings.get(
-        "legacy_dispersion_bool", False
+        "legacy_dispersion_bool", True
     )
     cfg.model.num_features_head = torch_settings.get("num_features_head", None)
     cfg.model.qk_non_linearity = torch_settings.get(
