@@ -259,12 +259,40 @@ def segment_sum(data, segment_ids, num_segments):
     return result
 
 
+def _dispersion_tables(
+    legacy_dispersion_bool: bool,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Free-atom alpha/C6 reference tables (indexed by Z-1).
+
+    Returns the legacy (JAX v1) module-level ``ALPHAS``/``C6_COEF`` tables
+    when ``legacy_dispersion_bool`` is True, otherwise the refitted tables
+    from ``dispersion_ref_data`` (so3lr-s/m/l). Both tables share the
+    identical Z-1 indexing convention and units. Returned tables are the
+    raw (undtyped/undeviced) tensors — callers apply
+    ``.to(device=..., dtype=...)`` themselves, as ``mixing_rules`` already
+    does for the legacy case.
+    """
+    if legacy_dispersion_bool:
+        return ALPHAS, C6_COEF
+
+    from so3krates_torch.blocks.dispersion_ref_data import (
+        alphas as _ALPHAS_REFITTED,
+        C6_coef as _C6_COEF_REFITTED,
+    )
+
+    return (
+        torch.tensor(_ALPHAS_REFITTED, dtype=torch.get_default_dtype()),
+        torch.tensor(_C6_COEF_REFITTED, dtype=torch.get_default_dtype()),
+    )
+
+
 def mixing_rules(
     atomic_numbers: torch.Tensor,
     idx_i: torch.Tensor,
     idx_j: torch.Tensor,
     hirshfeld_ratios: torch.Tensor,
     c6_ratios: Optional[torch.Tensor] = None,
+    legacy_dispersion_bool: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Apply mixing rules to compute alpha_ij and C6_ij for dispersion.
 
@@ -273,12 +301,18 @@ def mixing_rules(
       C6_i    = C6_free[Z_i]   * c6_ratio_i
     Otherwise (backward compat) C6 is scaled by hirshfeld_ratio²:
       C6_i    = C6_free[Z_i]   * hirshfeld_ratio_i²
+
+    legacy_dispersion_bool selects which free-atom alpha/C6 reference
+    table is used (see `_dispersion_tables`): True (default, backward
+    compatible) uses the legacy JAX v1 table; False uses the refitted
+    table required by so3lr-s/m/l.
     """
     dtype = hirshfeld_ratios.dtype
     device = hirshfeld_ratios.device
 
-    alphas = ALPHAS.to(device=device, dtype=dtype)
-    c6_coef = C6_COEF.to(device=device, dtype=dtype)
+    alphas_table, c6_table = _dispersion_tables(legacy_dispersion_bool)
+    alphas = alphas_table.to(device=device, dtype=dtype)
+    c6_coef = c6_table.to(device=device, dtype=dtype)
 
     atomic_number_i = atomic_numbers[idx_i] - 1
     atomic_number_j = atomic_numbers[idx_j] - 1
@@ -306,6 +340,38 @@ def mixing_rules(
     )
 
     return alpha_ij, C6_ij
+
+
+def atomic_c6_pseudo_charges(
+    atomic_numbers: torch.Tensor,  # (N,)
+    hirshfeld_ratios: torch.Tensor,  # (N,)
+    c6_ratios: Optional[torch.Tensor] = None,  # (N,), optional
+    legacy_dispersion_bool: bool = True,
+) -> torch.Tensor:
+    """Per-atom free-atom-scaled C6 coefficient, C6_i = C6_free[Z_i-1] * ratio_i.
+
+    ratio_i = c6_ratios[i] if provided, else hirshfeld_ratios[i]**2 (legacy
+    fallback — matches so3lr_dev's `legacy` branch: C6 derived from Hirshfeld
+    ratios when there's no dedicated C6 head).
+
+    Returns:
+        (N,) tensor of per-atom C6_i values (may be used directly, or via
+        q_i = sqrt(clamp(C6_i, min=0)) for PME pseudo-charges).
+    """
+    dtype = hirshfeld_ratios.dtype
+    device = hirshfeld_ratios.device
+
+    _, c6_table = _dispersion_tables(legacy_dispersion_bool)
+    c6_coef = c6_table.to(device=device, dtype=dtype)
+
+    atomic_number_idx = atomic_numbers - 1
+
+    if c6_ratios is not None:
+        C6_i = c6_coef[atomic_number_idx] * c6_ratios
+    else:
+        C6_i = c6_coef[atomic_number_idx] * torch.square(hirshfeld_ratios)
+
+    return C6_i
 
 
 def gamma_cubic_fit(alpha: torch.Tensor) -> torch.Tensor:
@@ -891,6 +957,153 @@ class PMEElectrostaticInteraction(nn.Module):
 
             # E_i = 0.5 * ke * q_i * phi_i
             e_g = 0.5 * self.ke * q_g.unsqueeze(1) * potentials_g
+            atomic_e[atom_mask] = e_g
+
+        return atomic_e
+
+    def reset_output_convention(self, output_convention):
+        pass  # interface compatibility
+
+
+try:
+    import torchpme as _torchpme_for_c6_potential
+    from torchpme.lib import gamma as _torchpme_gamma
+except ImportError:  # pragma: no cover - torchpme optional at import time
+    _torchpme_for_c6_potential = None
+    _torchpme_gamma = None
+
+
+if _torchpme_for_c6_potential is not None:
+
+    class _C6InversePowerLawPotential(
+        _torchpme_for_c6_potential.InversePowerLawPotential
+    ):
+        """InversePowerLawPotential(exponent=6) with the nonzero background
+        correction dispersion's non-neutral (all-positive) pseudo-charges need —
+        torch-pme's base implementation zeroes this for exponent >= 3, which is
+        only valid for neutral charge distributions.
+        """
+
+        def background_correction(self) -> torch.Tensor:
+            prefac = torch.pi**1.5 * (2 * self.smearing**2) ** (
+                (3 - self.exponent) / 2
+            )
+            prefac /= (3 - self.exponent) * _torchpme_gamma(self.exponent / 2)
+            return self.prefactor * prefac
+
+
+class PMEDispersionInteraction(nn.Module):
+    """C6 dispersion energy via Particle Mesh Ewald / Ewald (torch-pme).
+
+    Uses per-atom pseudo-charges q_i = sqrt(C6_i) (geometric-mean
+    factorization, required for Ewald/PME additivity), matching
+    so3lr_dev's DispersionEnergyKspace exactly, including its nonzero
+    background correction for the (non-neutral) dispersion pseudo-charges.
+    """
+
+    def __init__(
+        self,
+        *,
+        smearing: float,
+        mesh_spacing: float,
+        interpolation_nodes: int = 4,
+        do_ewald: bool = False,
+    ) -> None:
+        super().__init__()
+        import torchpme  # lazy import — only required when use_pme_dispersion=True
+
+        # torchpme itself operates in whatever length unit `positions`/
+        # `cell` are given in at `forward` call time; since `forward`
+        # converts positions/cell/lengths to Bohr (to match the Hartree
+        # atomic-unit convention used for the C6 pseudo-charges, mirroring
+        # so3lr_dev's DispersionEnergyKspace), `smearing`/`mesh_spacing`
+        # must be baked into the (Bohr-space) potential/calculator here at
+        # construction time — this is the "torchpme call boundary" for
+        # these two parameters, since they are fixed at construction and
+        # not passed again on every `forward` call.
+        smearing_bohr = smearing / BOHR
+        mesh_spacing_bohr = mesh_spacing / BOHR
+
+        potential = _C6InversePowerLawPotential(
+            exponent=6, smearing=smearing_bohr
+        )
+        self.calculator = (
+            torchpme.EwaldCalculator(
+                potential=potential, lr_wavelength=mesh_spacing_bohr
+            )
+            if do_ewald
+            else torchpme.PMECalculator(
+                potential=potential,
+                mesh_spacing=mesh_spacing_bohr,
+                interpolation_nodes=interpolation_nodes,
+            )
+        )
+
+    def forward(
+        self,
+        c6_pseudo_charges: torch.Tensor,  # (N,) — sqrt(clamp(C6_i, min=0)), already computed by caller
+        positions: torch.Tensor,  # (N, 3), Angstrom
+        cell: torch.Tensor,  # (N_graphs, 3, 3) or (N_graphs*3, 3) — PyG-batched, same convention as PMEElectrostaticInteraction
+        edge_index: torch.Tensor,  # (2, E_sr) SR neighbor list — same role as electrostatics' edge_index
+        lengths: torch.Tensor,  # (E_sr,) or (E_sr,1)
+        batch_segments: torch.Tensor,  # (N,)
+        num_graphs: int,
+        num_nodes: int,
+    ) -> torch.Tensor:  # (N, 1) per-atom k-space dispersion energy in eV
+        # PyG Batch concatenates [3,3] cells along dim 0 → [N*3,3].
+        # Restore to [N,3,3] so cell[g] yields the correct [3,3] matrix.
+        cell = cell.view(-1, 3, 3)
+
+        if lengths.dim() == 2 and lengths.size(-1) == 1:
+            lengths = lengths.squeeze(-1)
+
+        input_dtype = positions.dtype
+        device = positions.device
+        bohr_factor = torch.tensor(BOHR, dtype=input_dtype, device=device)
+
+        atomic_e = torch.zeros(
+            num_nodes,
+            1,
+            dtype=input_dtype,
+            device=device,
+        )
+        for g in range(num_graphs):
+            atom_mask = batch_segments == g
+            pos_g = positions[atom_mask] / bohr_factor  # (N_g, 3), Bohr
+            c_g = c6_pseudo_charges[atom_mask]  # (N_g,)
+            cell_g = cell[g] / bohr_factor  # (3, 3), Bohr
+            if cell_g.abs().sum() == 0:
+                raise ValueError(
+                    "PME dispersion requires periodic boundary "
+                    "conditions, but the cell for graph "
+                    f"{g} is all zeros (non-periodic system). "
+                    "Either set pbc=True and provide a cell, or "
+                    "use use_pme_dispersion=False for non-periodic "
+                    "systems."
+                )
+
+            # SR edges within graph g
+            edge_mask = atom_mask[edge_index[0]]
+            idx_g = edge_index[:, edge_mask]  # (2, E_g)
+            # lengths has shape [E,1] (keepdim=True in prepare_graph);
+            # torchpme expects 1-D distances [E_g], in Bohr.
+            d_g = lengths[edge_mask] / bohr_factor  # (E_g,)
+
+            # Renumber to local indices 0..N_g-1
+            offset = atom_mask.nonzero(as_tuple=False)[0, 0]
+            local_idx = idx_g - offset  # (2, E_g)
+
+            # charges: (N_g, 1); output: (N_g, 1)
+            potentials_g = self.calculator.forward(
+                charges=c_g.unsqueeze(1),
+                cell=cell_g,
+                positions=pos_g,
+                neighbor_indices=local_idx.T,  # (E_g, 2)
+                neighbor_distances=d_g,
+            )
+
+            # E_i = -q_i * phi_i * Hartree (no 0.5, no ke prefactor)
+            e_g = -c_g.unsqueeze(1) * potentials_g * HARTREE
             atomic_e[atom_mask] = e_g
 
         return atomic_e
