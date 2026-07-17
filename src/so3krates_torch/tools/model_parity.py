@@ -99,6 +99,100 @@ def _build_jax_inputs(cfg, structure_path, index: int) -> dict:
     )
 
 
+def _build_jax_inputs_v2(cfg, structure_path, index: int) -> dict:
+    """Single-structure ``inputs`` dict for ``so3lr_dev``'s ``model.apply``.
+
+    v2 (``so3lr_dev``) counterpart of ``_build_jax_inputs``. ``so3lr_dev``'s
+    graph pipeline is genuinely different from v1 ``mlff``'s, not just a
+    renamed import: its ``ASE_to_jraph`` returns a ``(graph, lr_data)``
+    tuple (long-range neighbor indices are produced alongside the main
+    graph rather than embedded inside it), batching goes through
+    ``dynamically_batch_with_lr`` (not plain ``jraph.dynamically_batch``,
+    which has no notion of the long-range pair budget), and
+    ``graph_to_batch_fn`` takes the batched ``(main_graph, lr_batch)`` pair
+    as its first two positional args plus an optional ``kspace_constants``
+    dict. Padding follows the same ``+1`` convention as ``so3lr_dev``'s own
+    ``so3lr/cli/so3lr_eval.py`` batching call (one spare node/edge/graph/
+    pair slot for jraph's mandatory padding graph), specialized here to a
+    single structure the same way ``_build_jax_inputs`` is.
+
+    When ``cfg.model.kspace_electrostatics`` is set (PME/Ewald k-space
+    electrostatics enabled), the k-space grid/smearing are computed for
+    this structure's cell via ``so3lr_dev``'s own
+    ``kspace_utils.setup_kspace_grid`` and passed through as
+    ``kspace_constants``, mirroring ``so3lr_dev``'s own
+    ``from_config.py::_compute_kspace_constants`` (electrostatics and
+    dispersion share the same grid/smearing). Left as ``None`` -- a
+    clean no-op -- when kspace is disabled (the shipped ``so3lr-s/-m/-l``
+    checkpoints' default).
+    """
+    import jax.numpy as jnp
+    import jax.tree_util as jtu
+    from ase.io import read
+    from so3lr.mlff.data.dataloader_sparse_ase import ASE_to_jraph
+    from so3lr.mlff.utils.jraph_utils import (
+        dynamically_batch_with_lr,
+        graph_to_batch_fn,
+    )
+    from so3lr.mlff.utils.kspace_utils import setup_kspace_grid
+
+    xyz_path = structure_path if structure_path is not None else _AQM_SMALL
+    atoms = _atoms_with_dummy_calc(read(str(xyz_path), index=index))
+    cutoff, cutoff_lr = cfg.model.cutoff, cfg.model.cutoff_lr
+
+    graph, lr_data = ASE_to_jraph(
+        atoms,
+        cutoff=cutoff,
+        calculate_neighbors_lr=True,
+        cutoff_lr=cutoff_lr,
+    )
+    graph_batch = next(
+        iter(
+            dynamically_batch_with_lr(
+                [(graph, lr_data)],
+                n_node=int(graph.n_node[0]) + 1,
+                n_edge=int(graph.n_edge[0]) + 1,
+                n_graph=2,
+                n_pairs=int(lr_data["n_pairs"][0]) + 1,
+            )
+        )
+    )
+
+    kspace_electrostatics = cfg.model.get("kspace_electrostatics", None)
+    kspace_constants = None
+    if kspace_electrostatics is not None:
+        box = jnp.asarray(np.array(atoms.get_cell()))
+        k_grid, k_smearing = setup_kspace_grid(
+            kspace_electrostatics=kspace_electrostatics,
+            kspace_smearing=cfg.model.get("kspace_smearing", 2.0),
+            kspace_spacing=cfg.model.get("kspace_spacing", 1.0),
+            box=box,
+        )
+        kspace_constants = {
+            "k_grid": k_grid,
+            "k_smearing": k_smearing,
+            "k_grid_disp": k_grid,
+            "k_smearing_disp": k_smearing,
+        }
+
+    # graph_to_batch_fn returns plain numpy -- jax.vmap indexing inside
+    # GeometryEmbedSparse raises TracerArrayConversionError on raw
+    # numpy, so convert to jax arrays first (same rationale as
+    # ``_build_jax_inputs``).
+    inputs = jtu.tree_map(
+        jnp.asarray,
+        graph_to_batch_fn(*graph_batch, kspace_constants=kspace_constants),
+    )
+    return jtu.tree_map(
+        lambda x: (
+            x.astype(jnp.float64)
+            if jnp.issubdtype(x.dtype, jnp.floating)
+            else x
+        ),
+        inputs,
+    )
+
+
 def _build_torch_batch(
     r_max: float,
     r_max_lr,
@@ -152,6 +246,7 @@ def _jax_energy_forces(
     flax_params: dict,
     inputs: dict,
     model_factory: Optional[Callable] = None,
+    jax_input_builder: Optional[Callable] = None,
 ):
     """Energy (scalar) + forces (n_real_atoms, 3), real atoms/graph only.
 
@@ -166,6 +261,11 @@ def _jax_energy_forces(
     ``model_factory``, if given, replaces the default v1 ``mlff``
     ``make_so3krates_sparse_from_config`` import for building the JAX
     model from ``cfg`` (e.g. a v2/``so3lr_dev`` equivalent).
+
+    ``jax_input_builder`` is accepted for signature symmetry with
+    ``check_model_parity`` (which resolves it and builds ``inputs``
+    before calling this function) but is otherwise unused here --
+    ``inputs`` has already been built by the time this function runs.
     """
     import jax
 
@@ -173,6 +273,9 @@ def _jax_energy_forces(
         from mlff.config import (
             make_so3krates_sparse_from_config as model_factory,
         )
+    if jax_input_builder is None:
+        jax_input_builder = _build_jax_inputs  # noqa: F841 (unused; kept
+        # for signature symmetry with check_model_parity, see docstring)
 
     model = model_factory(cfg)
     graph_mask = inputs["graph_mask"]
@@ -226,6 +329,7 @@ def check_model_parity(
     atol: float = 1e-3,
     rtol: float = 1e-2,
     model_factory: Optional[Callable] = None,
+    jax_input_builder: Optional[Callable] = None,
 ) -> bool:
     """Run both models on one real structure and compare energy+forces.
 
@@ -257,15 +361,25 @@ def check_model_parity(
     ``model_factory``, if given, is forwarded to ``_jax_energy_forces``
     to build the JAX model from ``cfg`` (defaults to the v1 ``mlff``
     factory, so existing callers are unaffected).
+
+    ``jax_input_builder``, if given, replaces the default v1
+    ``_build_jax_inputs`` for building the JAX-side ``inputs`` dict from
+    ``cfg``/``structure_path``/``index`` (e.g. ``_build_jax_inputs_v2``
+    for a ``so3lr_dev`` caller). Independent of ``model_factory`` -- a
+    v2 caller passes both together, but neither's resolution depends on
+    the other.
     """
     import jax
 
     jax.config.update("jax_enable_x64", True)
 
+    if jax_input_builder is None:
+        jax_input_builder = _build_jax_inputs
+
     torch_model = copy.deepcopy(torch_model).eval()
     model_dtype = next(torch_model.parameters()).dtype
 
-    inputs_jax = _build_jax_inputs(cfg, structure_path, index)
+    inputs_jax = jax_input_builder(cfg, structure_path, index)
     batch_torch = _build_torch_batch(
         r_max, r_max_lr, structure_path, index, model_dtype
     )
