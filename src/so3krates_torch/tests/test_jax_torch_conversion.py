@@ -416,31 +416,19 @@ def test_flax_to_torch_mapping_suppresses_layer_norm_weights_under_rms_norm():
     cfg.model.layer_normalization_2 = True
 
     mapping_without_rms = get_flax_to_torch_mapping(cfg, trainable_rbf=True)
-    assert (
-        "params/layers_0/layer_normalization_1/scale"
-        in mapping_without_rms
-    )
-    assert (
-        "params/layers_0/layer_normalization_2/scale"
-        in mapping_without_rms
-    )
+    assert "params/layers_0/layer_normalization_1/scale" in mapping_without_rms
+    assert "params/layers_0/layer_normalization_2/scale" in mapping_without_rms
 
     cfg.model.use_rms_norm = True
     mapping_with_rms = get_flax_to_torch_mapping(cfg, trainable_rbf=True)
     assert (
-        "params/layers_0/layer_normalization_1/scale"
-        not in mapping_with_rms
+        "params/layers_0/layer_normalization_1/scale" not in mapping_with_rms
     )
+    assert "params/layers_0/layer_normalization_1/bias" not in mapping_with_rms
     assert (
-        "params/layers_0/layer_normalization_1/bias" not in mapping_with_rms
+        "params/layers_0/layer_normalization_2/scale" not in mapping_with_rms
     )
-    assert (
-        "params/layers_0/layer_normalization_2/scale"
-        not in mapping_with_rms
-    )
-    assert (
-        "params/layers_0/layer_normalization_2/bias" not in mapping_with_rms
-    )
+    assert "params/layers_0/layer_normalization_2/bias" not in mapping_with_rms
 
 
 def test_torch_to_flax_mapping_suppresses_layer_norm_weights_under_rms_norm():
