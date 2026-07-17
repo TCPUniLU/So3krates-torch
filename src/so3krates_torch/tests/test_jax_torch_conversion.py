@@ -348,26 +348,17 @@ def test_torch2jax_cli_check_parity_passes_by_default(tmp_path, monkeypatch):
     `--check_parity` (default True) actually runs the check and still
     reports overall success.
 
-    Uses a local settings dict with ``final_layer_bias=False``, not the
-    shared ``V1_TORCH_SETTINGS`` (which has it ``True``) -- a real,
-    precisely-diagnosed, out-of-scope-to-fix-here gap:
-    ``jax_torch_conversion.py``'s ``get_model_settings_torch_to_flax``
-    (the CLI's own, un-overridable cfg-building path in this direction)
-    never translates ``final_layer_bias`` into ``cfg.model.
-    use_final_bias_bool``, and ``so3lr_dev``'s own factory defaults that
-    key to ``False`` when absent -- so a bias-enabled torch model
-    round-tripped this way silently loses its final-layer bias on the
-    JAX side, a real, constant (zero-gradient, so forces still match)
-    per-atom energy offset. See the Task 3 amendment report for the
-    full empirical trace. This test's own purpose is to confirm
-    `--check_parity` *wiring* (the flag is honored, the check runs and
-    passes), not to be a bit-exact fidelity test of every setting
-    combination -- ``final_layer_bias`` fidelity in this direction has
-    no existing test either way, so avoiding the gap here doesn't hide
-    a regression this test used to catch.
+    Uses the shared `V1_TORCH_SETTINGS` (`final_layer_bias=True`)
+    directly -- `check_model_parity`'s own `_with_final_bias_bool`
+    defensive fix (model_parity.py) fills in `cfg.model.
+    use_final_bias_bool` from the torch model's own bias state
+    whenever `jax_torch_conversion.py`'s `get_model_settings_torch_to_
+    flax` (out of scope, already-approved Task 2 code) leaves it unset,
+    so this exact scenario -- a bias-enabled torch model round-tripped
+    through the CLI's torch->flax direction -- now round-trips its
+    final-layer bias correctly again, end to end.
     """
     settings = dict(V1_TORCH_SETTINGS)
-    settings["final_layer_bias"] = False
     torch_model = build_torch_v1(settings)
 
     state_dict_path = tmp_path / "checkpoint.pt"

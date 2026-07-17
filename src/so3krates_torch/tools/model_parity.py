@@ -234,6 +234,76 @@ def _match_theory_levels(inputs_jax: dict, num_theory_levels: int) -> dict:
     return inputs_jax
 
 
+# Analogous gap to the theory-levels one above, for a different cfg key:
+# ``get_model_settings_torch_to_flax`` (jax_torch_conversion.py, out of
+# scope, already-approved Task 2 code) never sets
+# ``cfg.model.use_final_bias_bool`` on the torch->flax cfg-building path,
+# and so3lr_dev's own factory (``from_config.py``) defaults that key to
+# ``False`` when absent -- so a bias-enabled torch model converted via
+# that path would otherwise silently lose its final-layer bias on the
+# JAX side of this parity check (a real, constant, zero-gradient per-atom
+# energy offset). ``check_model_parity`` derives the real value directly
+# from ``torch_model`` itself (see ``_detect_final_layer_bias``) and
+# fills it into a *copy* of ``cfg`` only when genuinely absent (see
+# ``_with_final_bias_bool``) -- mirroring the exact "explicit value
+# always wins, only fill in the default when absent" convention
+# ``jax_torch_conversion.py``'s own ``is_v2_config``/``legacy_so3lr_bool``
+# handling already established. This is a clean no-op for all real
+# shipped so3lr/-s/-m/-l checkpoints, whose ``hyperparameters.json``
+# always sets ``use_final_bias_bool`` explicitly.
+def _detect_final_layer_bias(torch_model: torch.nn.Module) -> Optional[bool]:
+    """Whether ``torch_model``'s own final energy-output bias is
+    present, read directly off its already-built module.
+
+    ``atomic_energy_output_block.final_layer`` is a plain
+    ``torch.nn.Linear`` (constructed with ``bias=final_layer_bias``, see
+    ``AtomicEnergyOutputHead.__init__``) for the base ``So3krates``/
+    ``SO3LR`` torch models -- ``.bias`` is ``None`` iff the model was
+    built with ``final_layer_bias=False``, a real ``Parameter``
+    otherwise. Returns ``None`` (meaning "can't tell, don't touch cfg")
+    if ``torch_model`` doesn't have this exact shape -- e.g.
+    ``MultiHeadSO3LR``'s ``MultiAtomicEnergyOutputHead``, whose
+    equivalent bias is a raw ``Parameter`` named ``final_layer_bias``
+    (never ``None``, always present, a different shape entirely), not a
+    ``final_layer.bias``. Confirmed: this repo's current CLI/test suite
+    never actually calls ``check_model_parity`` with such a model (only
+    plain ``So3krates``/``SO3LR`` instances are ever built by
+    ``torch_to_jax.py``/``jax_to_torch.py``), but this function stays
+    defensive here regardless, skipping cleanly rather than guessing or
+    crashing if that ever changes.
+    """
+    output_block = getattr(torch_model, "atomic_energy_output_block", None)
+    final_layer = getattr(output_block, "final_layer", None)
+    if not isinstance(final_layer, torch.nn.Linear):
+        return None
+    return final_layer.bias is not None
+
+
+def _with_final_bias_bool(cfg, torch_model: torch.nn.Module):
+    """Copy of ``cfg`` with ``cfg.model.use_final_bias_bool`` filled in
+    from ``torch_model``'s own bias state (``_detect_final_layer_bias``)
+    -- see the module comment above for why this is needed.
+
+    A clean no-op (returns ``cfg`` unchanged, no copy made) whenever
+    ``cfg.model.use_final_bias_bool`` is already explicitly set
+    (including an explicit ``False`` -- that value always wins
+    unchanged) or when ``torch_model``'s bias state can't be reliably
+    determined (``_detect_final_layer_bias`` returns ``None``). Uses
+    ``hasattr`` rather than ``cfg.model.get(...)`` to check presence
+    without triggering a ``ConfigDict`` default, matching the same
+    idiom ``jax_torch_conversion.py``'s own ``is_v2_config`` check
+    already uses (``hasattr(cfg.model, k)``).
+    """
+    if hasattr(cfg.model, "use_final_bias_bool"):
+        return cfg
+    use_final_bias_bool = _detect_final_layer_bias(torch_model)
+    if use_final_bias_bool is None:
+        return cfg
+    cfg = copy.deepcopy(cfg)
+    cfg.model.use_final_bias_bool = use_final_bias_bool
+    return cfg
+
+
 def _build_torch_batch(
     r_max: float,
     r_max_lr,
@@ -422,6 +492,12 @@ def check_model_parity(
     a single-theory-level model and a real 16-theory-level so3lr_dev
     checkpoint both "just work" without the caller needing to know
     about this at all.
+
+    ``cfg.model.use_final_bias_bool`` is likewise filled in from
+    ``torch_model``'s own final-layer bias state when genuinely absent
+    from ``cfg.model`` (see ``_with_final_bias_bool``/
+    ``_detect_final_layer_bias`` above) -- a no-op for cfgs that already
+    set it explicitly (true for all real shipped so3lr_dev checkpoints).
     """
     import jax
 
@@ -432,6 +508,8 @@ def check_model_parity(
 
     torch_model = copy.deepcopy(torch_model).eval()
     model_dtype = next(torch_model.parameters()).dtype
+
+    cfg = _with_final_bias_bool(cfg, torch_model)
 
     num_theory_levels = _detect_num_theory_levels(flax_params)
     inputs_jax = _match_theory_levels(
