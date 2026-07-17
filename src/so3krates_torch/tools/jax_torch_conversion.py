@@ -460,18 +460,10 @@ def get_model_settings_flax_to_torch(
         # Torch keeps independent use_pme/use_pme_dispersion knobs, but on
         # conversion from JAX both must default from the same JAX source
         # values (deliberate one-JAX-flag-to-two-torch-flags fan-out).
-        use_pme_dispersion=getattr(
-            cfg.model, "kspace_electrostatics", False
-        ),
-        pme_dispersion_smearing=getattr(
-            cfg.model, "kspace_smearing", None
-        ),
-        pme_dispersion_mesh_spacing=getattr(
-            cfg.model, "kspace_spacing", None
-        ),
-        legacy_dispersion_bool=getattr(
-            cfg.model, "legacy_so3lr_bool", True
-        ),
+        use_pme_dispersion=getattr(cfg.model, "kspace_electrostatics", False),
+        pme_dispersion_smearing=getattr(cfg.model, "kspace_smearing", None),
+        pme_dispersion_mesh_spacing=getattr(cfg.model, "kspace_spacing", None),
+        legacy_dispersion_bool=getattr(cfg.model, "legacy_so3lr_bool", True),
         use_pme=getattr(cfg.model, "kspace_electrostatics", False),
         pme_smearing=getattr(cfg.model, "kspace_smearing", None),
         pme_mesh_spacing=getattr(cfg.model, "kspace_spacing", None),
