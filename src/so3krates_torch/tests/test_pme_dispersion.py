@@ -448,6 +448,48 @@ def test_pme_dispersion_residual_split_self_consistency():
     # exact setup. 2e-3 eV/atom (2 meV/atom) gives sensible margin above
     # that baseline while still tightly constraining the residual-split
     # identity this test guards.
+    #
+    # IMPORTANT CAVEAT (independent review finding, verified by direct
+    # computation — do not delete when "cleaning up" this comment): the
+    # tight ~0.41 meV/atom margin observed here at
+    # `PMEDispersionInteraction`'s *default* `interpolation_nodes=4` is a
+    # coincidental near-cancellation of two unrelated numerical
+    # artifacts, NOT evidence that the residual (real-space) + k-space
+    # split is physically accurate to ~1%:
+    #   1. The mesh's own FFT-interpolation bias at interpolation_nodes=4
+    #      (~3.47 meV/atom) — this is the exact same under-converged-mesh
+    #      artifact diagnosed in Test 1's docstring above, which is why
+    #      Test 1 locally raises interpolation_nodes to 7 for its
+    #      Ewald-vs-mesh comparison.
+    #   2. A genuine, separate `r_max_lr=10.0` Angstrom real-space
+    #      truncation effect (~3.05 meV/atom), confirmed by holding
+    #      E_kspace at its exact Ewald-sum value (do_ewald=True, fully
+    #      k-space-converged) and sweeping r_max_lr: 7.0 A -> 11.08
+    #      meV/atom, 10.0 A -> 3.05 meV/atom, 12.5 A -> 1.45 meV/atom.
+    #      This shrinks monotonically with cutoff, as expected for a real
+    #      truncation error (i.e. it is not noise).
+    # Swapping only the k-space term in this test's own calculation while
+    # holding E_residual/E_nonpme fixed makes this cancellation visible
+    # directly:
+    #   mesh,  interpolation_nodes=4 (current default, used above): 0.414 meV/atom
+    #   mesh,  interpolation_nodes=7 (torch-pme's max, well-converged): 3.049 meV/atom
+    #   exact Ewald sum (do_ewald=True):                                3.051 meV/atom
+    # The well-converged k-space value (~3.05 meV/atom) is ~7.4x *larger*
+    # than what's observed at the current default (~0.41 meV/atom) — the
+    # two artifacts above (~3.47 and ~3.05 meV/atom) happen to nearly
+    # cancel at interpolation_nodes=4, mesh_spacing=0.25, r_max_lr=10.0.
+    #
+    # Consequence for future maintainers: if `PMEDispersionInteraction`'s
+    # production default `interpolation_nodes` is ever raised above 4
+    # (motivated by Test 1's own diagnosis that nodes=4 is inadequate for
+    # FFT convergence at mesh_spacing=0.25), this test will very likely
+    # start failing at the current 2e-3 eV/atom tolerance — not because
+    # of a regression, but because this cancellation goes away once the
+    # mesh's own bias shrinks. If that happens, re-run this test, observe
+    # the new actual meV/atom figure, and re-derive an appropriate
+    # tolerance/baseline from that measurement — do NOT simply loosen the
+    # tolerance to make a failure disappear without re-deriving what the
+    # new baseline should be.
     assert per_atom_diff < 2e-3, (
         f"Residual-split self-consistency failed: PME total "
         f"{E_pme_total:.6f} eV vs non-PME {E_nonpme:.6f} eV, "
