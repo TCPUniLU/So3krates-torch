@@ -31,12 +31,16 @@ _AQM_SMALL = (
 def _atoms_with_dummy_calc(atoms):
     """Copy of `atoms` with a dummy SinglePointCalculator attached.
 
-    Works around a bug in the mlff v1.0 checkout's ``ASE_to_jraph``: it
-    crashes with ``AttributeError: 'float' object has no attribute
-    'reshape'`` when ``atoms.calc is None`` (see
-    ``v1_stagewise_parity._atoms_with_dummy_calc``). We don't need real
-    reference energies for a model-vs-model parity check, so a dummy
-    calculator is enough to route around the crash.
+    Mirrors ``v1_stagewise_parity._atoms_with_dummy_calc``, which works
+    around a real crash in old (v1) ``mlff``'s ``ASE_to_jraph`` --
+    ``AttributeError: 'float' object has no attribute 'reshape'`` when
+    ``atoms.calc is None``. ``so3lr_dev``'s own ``ASE_to_jraph`` does
+    not have that bug (confirmed: it falls back to a NaN-valued energy
+    placeholder instead of crashing), so this is no longer strictly
+    required for correctness -- but attaching a dummy calculator is
+    harmless (we don't need real reference energies for a
+    model-vs-model parity check) and keeps this module's fixture
+    loading parallel to the reference script's.
     """
     from ase.calculators.singlepoint import SinglePointCalculator
 
@@ -48,73 +52,20 @@ def _atoms_with_dummy_calc(atoms):
 
 
 def _build_jax_inputs(cfg, structure_path, index: int) -> dict:
-    """Single-structure ``inputs`` dict for ``model.apply``, float64.
-
-    Mirrors ``v1_stagewise_parity.build_example_jax_inputs``: mlff's
-    own graph pipeline (``ASE_to_jraph`` + ``jraph.dynamically_batch``
-    + ``graph_to_batch_fn``), padded by exactly 1 node/edge/pair for the
-    mandatory jraph padding graph. Floating leaves are cast to float64
-    explicitly (independent of ``flax_params``'s own dtype -- see the
-    module-level dtype-handling notes in ``check_model_parity``).
-    """
-    import jax.numpy as jnp
-    import jax.tree_util as jtu
-    import jraph
-    from ase.io import read
-    from mlff.data.dataloader_sparse_ase import ASE_to_jraph
-    from mlff.utils.jraph_utils import graph_to_batch_fn
-
-    xyz_path = structure_path if structure_path is not None else _AQM_SMALL
-    atoms = _atoms_with_dummy_calc(read(str(xyz_path), index=index))
-    cutoff, cutoff_lr = cfg.model.cutoff, cfg.model.cutoff_lr
-
-    graph = ASE_to_jraph(
-        atoms,
-        cutoff=cutoff,
-        calculate_neighbors_lr=True,
-        cutoff_lr=cutoff_lr,
-    )
-    batched = next(
-        iter(
-            jraph.dynamically_batch(
-                [graph],
-                n_node=int(graph.n_node[0]) + 1,
-                n_edge=int(graph.n_edge[0]) + 1,
-                n_graph=2,
-                n_pairs=len(graph.idx_i_lr) + 1,
-            )
-        )
-    )
-    # graph_to_batch_fn returns plain numpy -- jax.vmap indexing inside
-    # GeometryEmbedSparse raises TracerArrayConversionError on raw
-    # numpy, so convert to jax arrays first.
-    inputs = jtu.tree_map(jnp.asarray, graph_to_batch_fn(batched))
-    return jtu.tree_map(
-        lambda x: (
-            x.astype(jnp.float64)
-            if jnp.issubdtype(x.dtype, jnp.floating)
-            else x
-        ),
-        inputs,
-    )
-
-
-def _build_jax_inputs_v2(cfg, structure_path, index: int) -> dict:
     """Single-structure ``inputs`` dict for ``so3lr_dev``'s ``model.apply``.
 
-    v2 (``so3lr_dev``) counterpart of ``_build_jax_inputs``. ``so3lr_dev``'s
-    graph pipeline is genuinely different from v1 ``mlff``'s, not just a
-    renamed import: its ``ASE_to_jraph`` returns a ``(graph, lr_data)``
-    tuple (long-range neighbor indices are produced alongside the main
-    graph rather than embedded inside it), batching goes through
-    ``dynamically_batch_with_lr`` (not plain ``jraph.dynamically_batch``,
-    which has no notion of the long-range pair budget), and
-    ``graph_to_batch_fn`` takes the batched ``(main_graph, lr_batch)`` pair
-    as its first two positional args plus an optional ``kspace_constants``
-    dict. Padding follows the same ``+1`` convention as ``so3lr_dev``'s own
-    ``so3lr/cli/so3lr_eval.py`` batching call (one spare node/edge/graph/
-    pair slot for jraph's mandatory padding graph), specialized here to a
-    single structure the same way ``_build_jax_inputs`` is.
+    ``so3lr_dev``'s graph pipeline is genuinely different from old
+    ``mlff`` v1's, not just a renamed import: its ``ASE_to_jraph``
+    returns a ``(graph, lr_data)`` tuple (long-range neighbor indices are
+    produced alongside the main graph rather than embedded inside it),
+    batching goes through ``dynamically_batch_with_lr`` (not plain
+    ``jraph.dynamically_batch``, which has no notion of the long-range
+    pair budget), and ``graph_to_batch_fn`` takes the batched
+    ``(main_graph, lr_batch)`` pair as its first two positional args plus
+    an optional ``kspace_constants`` dict. Padding follows the same
+    ``+1`` convention as ``so3lr_dev``'s own ``so3lr/cli/so3lr_eval.py``
+    batching call (one spare node/edge/graph/pair slot for jraph's
+    mandatory padding graph), specialized here to a single structure.
 
     When ``cfg.model.kspace_electrostatics`` is set (PME/Ewald k-space
     electrostatics enabled), the k-space grid/smearing are computed for
@@ -160,7 +111,19 @@ def _build_jax_inputs_v2(cfg, structure_path, index: int) -> dict:
 
     kspace_electrostatics = cfg.model.get("kspace_electrostatics", None)
     kspace_constants = None
-    if kspace_electrostatics is not None:
+    # Truthy check, not `is not None`: real so3lr_dev configs use `None`
+    # for "disabled" and a method string ("pme"/"ewald") for "enabled"
+    # (see `setup_kspace_grid`'s own docstring), but a cfg produced by
+    # this repo's own `get_model_settings_torch_to_flax`
+    # (jax_torch_conversion.py) can set this key to an explicit Python
+    # `False` when converting torch's boolean `use_pme`/
+    # `use_pme_dispersion` flags back to JAX's single shared flag (real,
+    # reported finding -- out of scope to fix here, see the Task 3
+    # amendment report). `False` is never a valid *enabled* kspace
+    # method, so treating it the same as `None` is correct for both
+    # sources and avoids crashing on a non-periodic structure when
+    # kspace is actually meant to be off.
+    if kspace_electrostatics:
         box = jnp.asarray(np.array(atoms.get_cell()))
         k_grid, k_smearing = setup_kspace_grid(
             kspace_electrostatics=kspace_electrostatics,
@@ -177,8 +140,7 @@ def _build_jax_inputs_v2(cfg, structure_path, index: int) -> dict:
 
     # graph_to_batch_fn returns plain numpy -- jax.vmap indexing inside
     # GeometryEmbedSparse raises TracerArrayConversionError on raw
-    # numpy, so convert to jax arrays first (same rationale as
-    # ``_build_jax_inputs``).
+    # numpy, so convert to jax arrays first.
     inputs = jtu.tree_map(
         jnp.asarray,
         graph_to_batch_fn(*graph_batch, kspace_constants=kspace_constants),
@@ -193,12 +155,92 @@ def _build_jax_inputs_v2(cfg, structure_path, index: int) -> dict:
     )
 
 
+# so3lr_dev's own ``ASE_to_jraph`` (``mlff/data/dataloader_sparse_ase.py``)
+# hardcodes a 16-column ``theory_mask`` with column 5 always active, for
+# *every* structure it builds -- there is no ``cfg`` knob for this (it is
+# a pure input/runtime shape, not a model-architecture setting; so3lr_dev's
+# own flax observable head infers ``num_theory_levels`` from
+# ``theory_mask.shape[-1]`` at ``model.init``/``model.apply`` time). That
+# hardcoding is correct for the real shipped ``so3lr-s/-m/-l`` checkpoints
+# (all genuinely 16-theory-level models), but wrong whenever the actual
+# ``flax_params`` being tested describe a model with a *different*
+# ``num_theory_levels`` -- e.g. a single-theory-level "v1" model produced
+# by this repo's own conversion utilities. ``check_model_parity`` detects
+# the real value from ``flax_params`` itself (see
+# ``_detect_num_theory_levels``) and reconciles both sides via
+# ``_match_theory_levels``/``_theory_level_index`` below, so callers never
+# need to know or pass any of this explicitly.
+_SO3LR_DEV_MAX_THEORY_LEVELS = 16
+_SO3LR_DEV_THEORY_LEVEL = 5
+
+
+def _detect_num_theory_levels(
+    flax_params: dict, default: int = _SO3LR_DEV_MAX_THEORY_LEVELS
+) -> int:
+    """``num_theory_levels`` implied by ``flax_params``'s own
+    ``energy_dense_final`` kernel width (``(regression_dim, T)``),
+    falling back to ``default`` (so3lr_dev's own hardcoded value) if the
+    expected param path isn't found (e.g. a differently-shaped params
+    tree)."""
+    params = flax_params.get("params", flax_params)
+    try:
+        kernel = params["observables_0"]["energy_dense_final"]["kernel"]
+    except (KeyError, TypeError):
+        return default
+    return int(kernel.shape[-1])
+
+
+def _theory_level_index(num_theory_levels: int) -> int:
+    """Which one-hot ``theory_mask``/``theory_level`` column represents
+    "the active theory level" for a model with ``num_theory_levels``
+    columns. Column 5 (so3lr_dev's own hardcoded choice) only exists
+    when ``num_theory_levels`` actually is so3lr_dev's own hardcoded 16;
+    for any other value, column 0 is used instead -- any valid column
+    works here, since nothing in this repo's real checkpoints/tests
+    attaches meaning to a *specific* index beyond "populated by real
+    weights"."""
+    return (
+        _SO3LR_DEV_THEORY_LEVEL
+        if num_theory_levels == _SO3LR_DEV_MAX_THEORY_LEVELS
+        else 0
+    )
+
+
+def _match_theory_levels(inputs_jax: dict, num_theory_levels: int) -> dict:
+    """Override ``inputs_jax``'s ``theory_mask``/``theory_level`` to
+    have exactly ``num_theory_levels`` columns (one-hot at
+    ``_theory_level_index(num_theory_levels)``) when they don't already
+    match -- see the module-level comment above
+    ``_SO3LR_DEV_MAX_THEORY_LEVELS`` for why this is needed. A clean
+    no-op (returns ``inputs_jax`` unchanged) when they already match,
+    which is always true for the real shipped so3lr-s/-m/-l checkpoints.
+    """
+    if inputs_jax["theory_mask"].shape[-1] == num_theory_levels:
+        return inputs_jax
+    import jax.numpy as jnp
+
+    n_graphs = inputs_jax["theory_mask"].shape[0]
+    idx = _theory_level_index(num_theory_levels)
+    theory_mask = (
+        jnp.zeros((n_graphs, num_theory_levels), dtype=bool)
+        .at[:, idx]
+        .set(True)
+    )
+    inputs_jax = dict(inputs_jax)
+    inputs_jax["theory_mask"] = theory_mask
+    inputs_jax["theory_level"] = jnp.full(
+        (n_graphs,), idx, dtype=inputs_jax["theory_level"].dtype
+    )
+    return inputs_jax
+
+
 def _build_torch_batch(
     r_max: float,
     r_max_lr,
     structure_path,
     index: int,
     dtype: torch.dtype,
+    theory_level: Optional[int] = None,
 ):
     """Torch-side counterpart of ``_build_jax_inputs``.
 
@@ -207,6 +249,13 @@ def _build_torch_batch(
     tensors are cast to ``dtype`` (matching the torch model's own
     dtype -- see the dtype-handling notes in ``check_model_parity``);
     integer/bool tensors (indices, masks, ...) are left untouched.
+
+    ``theory_level``, if given, is written onto the built
+    ``Configuration`` before batching (harmless no-op for a
+    single-theory-level torch model -- ``AtomicEnergyOutputHead`` only
+    reads it when its own ``num_theory_levels > 1``), so this batch's
+    active theory column can be kept consistent with whatever
+    ``_match_theory_levels`` picked for the JAX side.
     """
     from ase.io import read
 
@@ -222,6 +271,8 @@ def _build_torch_batch(
     atoms = read(str(xyz_path), index=index)
     z_table = AtomicNumberTable([int(z) for z in range(1, 119)])
     config = config_from_atoms(atoms, key_specification=KeySpecification())
+    if theory_level is not None:
+        config.theory_level = theory_level
     data_loader = torch_geometric.dataloader.DataLoader(
         dataset=[
             AtomicData.from_config(
@@ -258,9 +309,9 @@ def _jax_energy_forces(
     summing to a scalar. The gradient comes out with one row per node
     (real + padding); masked with ``inputs["node_mask"]`` to real atoms.
 
-    ``model_factory``, if given, replaces the default v1 ``mlff``
+    ``model_factory``, if given, replaces the default ``so3lr_dev``
     ``make_so3krates_sparse_from_config`` import for building the JAX
-    model from ``cfg`` (e.g. a v2/``so3lr_dev`` equivalent).
+    model from ``cfg``.
 
     ``jax_input_builder`` is accepted for signature symmetry with
     ``check_model_parity`` (which resolves it and builds ``inputs``
@@ -270,12 +321,9 @@ def _jax_energy_forces(
     import jax
 
     if model_factory is None:
-        from mlff.config import (
+        from so3lr.mlff.config import (
             make_so3krates_sparse_from_config as model_factory,
         )
-    if jax_input_builder is None:
-        jax_input_builder = _build_jax_inputs  # noqa: F841 (unused; kept
-        # for signature symmetry with check_model_parity, see docstring)
 
     model = model_factory(cfg)
     graph_mask = inputs["graph_mask"]
@@ -359,15 +407,21 @@ def check_model_parity(
     ``|a - b| <= atol + rtol * |b|``).
 
     ``model_factory``, if given, is forwarded to ``_jax_energy_forces``
-    to build the JAX model from ``cfg`` (defaults to the v1 ``mlff``
+    to build the JAX model from ``cfg`` (defaults to the ``so3lr_dev``
     factory, so existing callers are unaffected).
 
-    ``jax_input_builder``, if given, replaces the default v1
+    ``jax_input_builder``, if given, replaces the default
     ``_build_jax_inputs`` for building the JAX-side ``inputs`` dict from
-    ``cfg``/``structure_path``/``index`` (e.g. ``_build_jax_inputs_v2``
-    for a ``so3lr_dev`` caller). Independent of ``model_factory`` -- a
-    v2 caller passes both together, but neither's resolution depends on
-    the other.
+    ``cfg``/``structure_path``/``index``. Independent of
+    ``model_factory``.
+
+    The JAX-side ``theory_mask``/``theory_level`` (and the matching
+    torch-side ``theory_level``) are reconciled automatically against
+    ``flax_params``'s own ``num_theory_levels`` (see
+    ``_detect_num_theory_levels``/``_match_theory_levels`` above) -- so
+    a single-theory-level model and a real 16-theory-level so3lr_dev
+    checkpoint both "just work" without the caller needing to know
+    about this at all.
     """
     import jax
 
@@ -379,9 +433,17 @@ def check_model_parity(
     torch_model = copy.deepcopy(torch_model).eval()
     model_dtype = next(torch_model.parameters()).dtype
 
-    inputs_jax = jax_input_builder(cfg, structure_path, index)
+    num_theory_levels = _detect_num_theory_levels(flax_params)
+    inputs_jax = _match_theory_levels(
+        jax_input_builder(cfg, structure_path, index), num_theory_levels
+    )
     batch_torch = _build_torch_batch(
-        r_max, r_max_lr, structure_path, index, model_dtype
+        r_max,
+        r_max_lr,
+        structure_path,
+        index,
+        model_dtype,
+        theory_level=_theory_level_index(num_theory_levels),
     )
 
     energy_jax, forces_jax = _jax_energy_forces(
