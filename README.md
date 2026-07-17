@@ -12,7 +12,7 @@ Implementation of the So3krates + SO3LR model in pytorch.
 3. move to the clone repository
 4. `pip install -r requirements.txt`
 5. `pip install .`
-6. (Optional) PME electrostatics support: `pip install ".[pme]"` (installs `torch-pme>=0.4`)
+6. (Optional) PME electrostatics/dispersion support: `pip install ".[pme]"` (installs `torch-pme>=0.5`)
 
 #### Implemented features:
 1. ASE calculator for MD (including pre-trained SO3LR)
@@ -245,13 +245,21 @@ torchkrates-metric \
 
 ### `torchkrates-tune-pme` — PME Parameter Tuning
 
-Find optimal PME parameters (`pme_smearing`, `pme_mesh_spacing`) for a given dataset and SR cutoff. Runs `torchpme.tuning.tune_pme()` on a representative sample of training structures and reports the median values. Requires `torch-pme` and `matscipy` to be installed.
+Find optimal PME parameters (`pme_smearing`, `pme_mesh_spacing`) for a given dataset and SR cutoff. Runs `torchpme.tuning.tune_pme()` on a representative sample of training structures and reports the median values. With `--tune_dispersion`, also scans for optimal PME dispersion parameters (`pme_dispersion_smearing`, `pme_dispersion_mesh_spacing`) by comparing coarser candidates against a tight-PME reference on the same structures. Requires `torch-pme` and `matscipy` to be installed.
 
 ```bash
 torchkrates-tune-pme \
     --data_path train_data.h5 \
     --r_max 6.0 \
     --n_samples 50 \
+    --update_config config.yaml
+
+# Also tune PME dispersion parameters
+torchkrates-tune-pme \
+    --data_path train_data.h5 \
+    --r_max 6.0 \
+    --r_max_lr 12.0 \
+    --tune_dispersion \
     --update_config config.yaml
 ```
 
@@ -264,7 +272,10 @@ torchkrates-tune-pme \
 | `--charges_key` | `None` | Key in `atoms.arrays` for partial charges (default: unit charges) |
 | `--device` | `cpu` | Device for torch tensors |
 | `--dtype` | `float64` | `float32` or `float64` |
-| `--update_config` | `None` | If given, write `pme_smearing` and `pme_mesh_spacing` to this YAML config |
+| `--update_config` | `None` | If given, write the tuned parameters to this YAML config |
+| `--r_max_lr` | `None` | Long-range cutoff radius in Å. Required when `--tune_dispersion` is given. |
+| `--tune_dispersion` | `False` | Also scan PME dispersion parameters (`pme_dispersion_smearing`, `pme_dispersion_mesh_spacing`) against a tight-PME reference. |
+| `--dispersion_accuracy` | `1e-3` | Target accuracy (eV/atom) for the dispersion parameter scan. Picks the coarsest grid point within this threshold. |
 
 Example output:
 ```
@@ -272,6 +283,10 @@ PME tuning results (median over structures):
   Electrostatics:
     pme_smearing:     1.1842 Å
     pme_mesh_spacing: 0.5921 Å
+
+  Dispersion (C6, scanned vs tight-PME reference):
+    pme_dispersion_smearing:     2.4000 Å
+    pme_dispersion_mesh_spacing: 1.2000 Å
 ```
 
 ---
@@ -392,16 +407,20 @@ These enable the physics-based long-range interactions that distinguish SO3LR fr
 | `dispersion_energy_bool` | `bool` | `True` | Enable van der Waals dispersion interactions via learned Hirshfeld ratios. Requires `r_max_lr`. |
 | `dispersion_energy_scale` | `float` | `1.2` | Scaling factor for the dispersion energy contribution. |
 | `dispersion_energy_cutoff_lr_damping` | `float` | `None` | Damping cutoff (Å) for the TS dispersion damping function. Required when `dispersion_energy_bool: true`. |
+| `legacy_dispersion_bool` | `bool` | `True` | Selects the free-atom alpha/C6 reference table used for dispersion (legacy: elements Z=1–102; refitted: Z=1–86). Also used for PME dispersion's pseudo-charges. See [PME Dispersion](#pme-dispersion-particle-mesh-ewald). |
 | `neighborlist_format_lr` | `str` | `"sparse"` | Storage format for the long-range neighbor list. |
 | `use_pme` | `bool` | `False` | Enable PME electrostatics for periodic systems. See [PME Electrostatics](#pme-electrostatics-particle-mesh-ewald). |
 | `pme_smearing` | `float` | `r_max / 5` | Ewald splitting width (Å) for PME electrostatics. |
 | `pme_mesh_spacing` | `float` | `smearing / 2` | FFT grid spacing (Å) for PME electrostatics. |
+| `use_pme_dispersion` | `bool` | `False` | Enable PME dispersion for periodic systems. See [PME Dispersion](#pme-dispersion-particle-mesh-ewald). |
+| `pme_dispersion_smearing` | `float` | `r_max_lr / 5` | Ewald splitting width (Å) for PME dispersion. |
+| `pme_dispersion_mesh_spacing` | `float` | `smearing / 2` | FFT grid spacing (Å) for PME dispersion. |
 
 #### PME Electrostatics (Particle Mesh Ewald)
 
 For periodic systems, the direct-space Coulomb sum is conditionally convergent and a cutoff scheme introduces systematic errors that worsen with smaller boxes. PME splits the 1/r sum into a real-space part (using the SR neighbor list) and a reciprocal-space FFT part that captures the long-range tail exactly. When `use_pme: true`, `r_max_lr` is no longer required for electrostatics.
 
-**Requires `torch-pme>=0.4` to be installed.** Use `torchkrates-tune-pme` to find optimal parameter values for your dataset.
+**Requires `torch-pme>=0.5` to be installed.** (Versions before 0.5 silently produce wrong dispersion energies for `exponent>3` potentials — see [PME Dispersion](#pme-dispersion-particle-mesh-ewald) below — so this is not just a routine minimum-version bump.) Use `torchkrates-tune-pme` to find optimal parameter values for your dataset.
 
 **Limitations:**
 - PME requires **periodic boundary conditions** (`pbc=True` on all axes). Calling a PME model on a non-periodic system raises a `ValueError`.
@@ -424,6 +443,37 @@ ARCHITECTURE:
   pme_mesh_spacing: 0.59
   electrostatic_energy_bool: true
   electrostatic_energy_scale: 4.0
+```
+
+#### PME Dispersion (Particle Mesh Ewald)
+
+`DispersionInteraction`'s direct-space C6 sum is truncated at a cutoff with a smooth switching function; for periodic systems this truncation is a source of systematic error, the same kind of issue (though smaller in magnitude, since the C6 term decays as 1/r⁶) that PME electrostatics addresses for the 1/r Coulomb sum. `PMEDispersionInteraction` adds the missing reciprocal-space (k-space) contribution on top of the existing real-space calculation. Unlike PME electrostatics, this is **additive, not a replacement**: `DispersionInteraction`'s real-space C6 residual and its C8/C10 terms are still computed even when `use_pme_dispersion: true`, so `r_max_lr` remains required.
+
+**Requires `torch-pme>=0.5` to be installed.** (Versions before 0.5 silently produce dispersion energies wrong by O(1) eV/atom for this `exponent=6` potential — the reciprocal-space k=0 term is only supplied correctly by torch-pme's own code starting at 0.5.0.) Use `torchkrates-tune-pme --tune_dispersion` to find optimal parameter values for your dataset.
+
+**Limitations:**
+- PME dispersion requires **periodic boundary conditions** (`pbc=True` on all axes). Calling it on a non-periodic system raises a `ValueError`.
+- Unlike `use_pme`, `use_pme_dispersion` does **not** make `r_max_lr` optional — the real-space residual and C8/C10 terms are always computed alongside the k-space term.
+- PME dispersion, like PME electrostatics, operates on absolute positions and the cell matrix and is **incompatible with the LAMMPS ML-IAP interface**. Use the ASE calculator for PME dispersion production runs.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `use_pme_dispersion` | `bool` | `False` | Enable PME dispersion. Adds `PMEDispersionInteraction`'s k-space term on top of `DispersionInteraction`'s real-space residual + C8/C10 terms (does not replace them). |
+| `pme_dispersion_smearing` | `float` | `r_max_lr / 5` | Ewald splitting width in Å. Run `torchkrates-tune-pme --tune_dispersion` to find the optimal value. |
+| `pme_dispersion_mesh_spacing` | `float` | `smearing / 2` | FFT grid spacing in Å. |
+| `legacy_dispersion_bool` | `bool` | `True` | Selects the free-atom alpha/C6 reference table used for dispersion mixing rules and (when `use_pme_dispersion: true`) pseudo-charges. `True` (default) uses the legacy table (elements Z=1–102); `False` uses the refitted table (Z=1–86). |
+
+Example config with PME dispersion enabled:
+```yaml
+ARCHITECTURE:
+  r_max: 6.0
+  r_max_lr: 12.0            # still required — PME dispersion adds to, not replaces, the real-space term
+  dispersion_energy_bool: true
+  dispersion_energy_scale: 1.2
+  dispersion_energy_cutoff_lr_damping: 2.0
+  use_pme_dispersion: true
+  pme_dispersion_smearing: 2.40        # from torchkrates-tune-pme --tune_dispersion
+  pme_dispersion_mesh_spacing: 1.20
 ```
 
 #### Multi-Head Ensemble
