@@ -37,11 +37,14 @@ class ArchitectureConfig(BaseModel):
     energy_learn_atomic_type_scales: bool = False
     layer_normalization_1: bool = False
     layer_normalization_2: bool = False
+    use_rms_norm: bool = False
     residual_mlp_1: bool = False
     residual_mlp_2: bool = False
     use_charge_embed: bool = False
     use_spin_embed: bool = False
     qk_non_linearity: str = "identity"
+    qk_norm: bool = False
+    use_residual_scalars: bool = False
     input_convention: str = "positions"
     layers_behave_like_identity_fn_at_init: bool = False
     output_is_zero_at_init: bool = False

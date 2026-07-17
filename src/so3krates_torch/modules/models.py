@@ -53,12 +53,15 @@ class So3krates(torch.nn.Module):
         energy_learn_atomic_type_scales: bool = False,
         layer_normalization_1: bool = False,
         layer_normalization_2: bool = False,
+        use_rms_norm: bool = False,
         residual_mlp_1: bool = False,
         residual_mlp_2: bool = False,
         use_charge_embed: bool = False,
         use_spin_embed: bool = False,
         interaction_bias: bool = True,
         qk_non_linearity: str = "identity",
+        qk_norm: bool = False,
+        use_residual_scalars: bool = False,
         cutoff_fn: str = "cosine",
         cutoff_p: int = 5,
         activation_fn: str = "silu",
@@ -119,12 +122,15 @@ class So3krates(torch.nn.Module):
         self.energy_learn_atomic_type_scales = energy_learn_atomic_type_scales
         self.layer_normalization_1 = layer_normalization_1
         self.layer_normalization_2 = layer_normalization_2
+        self.use_rms_norm = use_rms_norm
         self.residual_mlp_1 = residual_mlp_1
         self.residual_mlp_2 = residual_mlp_2
         self.use_charge_embed = use_charge_embed
         self.use_spin_embed = use_spin_embed
         self.interaction_bias = interaction_bias
         self.qk_non_linearity = qk_non_linearity
+        self.qk_norm = qk_norm
+        self.use_residual_scalars = use_residual_scalars
         self.cutoff_fn_name = cutoff_fn
         self.cutoff_p = cutoff_p
         self.activation_fn_name = activation_fn
@@ -204,15 +210,26 @@ class So3krates(torch.nn.Module):
                     avg_num_neighbors=self.avg_num_neighbors,
                     layer_normalization_1=self.layer_normalization_1,
                     layer_normalization_2=self.layer_normalization_2,
+                    use_rms_norm=self.use_rms_norm,
                     residual_mlp_1=self.residual_mlp_1,
                     residual_mlp_2=self.residual_mlp_2,
                     activation_fn=self.activation_fn,
                     qk_non_linearity=qk_non_linearity,
+                    qk_norm=self.qk_norm,
                     device=self.device,
                 )
                 for _ in range(self.num_layers)
             ]
         )
+        if self.use_residual_scalars:
+            # JAX stacknet_sparse.py: resid_lambdas init to 1.0,
+            # x0_lambdas init to 0.1, one scalar per layer.
+            self.resid_lambdas = torch.nn.Parameter(
+                torch.ones(self.num_layers)
+            )
+            self.x0_lambdas = torch.nn.Parameter(
+                torch.full((self.num_layers,), 0.1)
+            )
         self.atomic_energy_output_block = AtomicEnergyOutputHead(
             num_features=self.num_features,
             energy_regression_dim=self.energy_regression_dim,
@@ -240,7 +257,10 @@ class So3krates(torch.nn.Module):
         missing_buffer_keys = [
             key
             for key in self.state_dict().keys()
-            if "degree_repeats" in key or "vera_" in key
+            if "degree_repeats" in key
+            or "vera_" in key
+            or "resid_lambdas" in key
+            or "x0_lambdas" in key
         ]
 
         has_missing_buffers = any(
@@ -341,6 +361,11 @@ class So3krates(torch.nn.Module):
             inv_features += spin_embedding
         # never mentionend in the paper, but done in the JAX code ...
         inv_features /= self.embedding_scale
+        x0 = (
+            inv_features.clone()
+            if getattr(self, "use_residual_scalars", False)
+            else None
+        )
         ev_features = self.ev_embedding(
             sh_vectors=sh_vectors,
             cutoffs=self.cutoffs,
@@ -367,6 +392,16 @@ class So3krates(torch.nn.Module):
             if has_ghosts and layer_idx > 0:
                 inv_features = self._lammps_pad_and_sync(inv_features)
                 ev_features = self._lammps_pad_and_sync(ev_features)
+
+            if getattr(self, "use_residual_scalars", False):
+                # JAX stacknet_sparse.py: before every layer (including
+                # layer 0), mix in the initial embedding x0 via learnable
+                # per-layer scalars. Only the invariant stream is scaled;
+                # ev_features is untouched.
+                inv_features = (
+                    self.resid_lambdas[layer_idx] * inv_features
+                    + self.x0_lambdas[layer_idx] * x0
+                )
 
             transformer_output = transformer(
                 inv_features=inv_features,
@@ -680,7 +715,10 @@ class SO3LR(So3krates):
         missing_buffer_keys = [
             key
             for key in self.state_dict().keys()
-            if "degree_repeats" in key or "vera_" in key
+            if "degree_repeats" in key
+            or "vera_" in key
+            or "resid_lambdas" in key
+            or "x0_lambdas" in key
         ]
 
         has_missing_buffers = any(

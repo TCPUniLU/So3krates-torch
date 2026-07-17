@@ -7,6 +7,10 @@ from so3krates_torch.tools import scatter
 torch.set_printoptions(precision=8)
 
 
+def _rms_norm_no_params(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
+
+
 class FilterNet(torch.nn.Module):
     """
     Fig. 3e) in https://doi.org/10.1038/s41467-024-50620-6
@@ -121,11 +125,13 @@ class EuclideanTransformer(torch.nn.Module):
         filter_net_ev_layers: int = 2,
         layer_normalization_1: bool = False,
         layer_normalization_2: bool = False,
+        use_rms_norm: bool = False,
         residual_mlp_1: bool = False,
         residual_mlp_2: bool = False,
         qk_non_linearity: Optional[
             Callable[[torch.Tensor], torch.Tensor]
         ] = None,
+        qk_norm: bool = False,
     ):
         super().__init__()
 
@@ -155,6 +161,7 @@ class EuclideanTransformer(torch.nn.Module):
             message_normalization=message_normalization,
             avg_num_neighbors=avg_num_neighbors,
             qk_non_linearity=qk_non_linearity,
+            qk_norm=qk_norm,
         )
         self.interaction_block = InteractionBlock(
             degrees=degrees,
@@ -165,18 +172,35 @@ class EuclideanTransformer(torch.nn.Module):
 
         # The following blocks have been mentioned in the SO3LR paper
         # 10.26434/chemrxiv-2024-bdfr0-v3
+        self.use_rms_norm = use_rms_norm
         self.layer_normalization_1 = layer_normalization_1
         if layer_normalization_1:
-            self.layer_norm_inv_1 = torch.nn.LayerNorm(
-                normalized_shape=num_features,
-                eps=1e-6,  # flax default is 1e-6 while pytorch default is 1e-5
-            )
+            if use_rms_norm:
+                # JAX uses nn.RMSNorm(use_scale=False, ...) here — no
+                # learnable scale parameter.
+                self.layer_norm_inv_1 = torch.nn.RMSNorm(
+                    num_features,
+                    eps=1e-6,  # flax default is 1e-6 while pytorch default is 1e-5
+                    elementwise_affine=False,
+                )
+            else:
+                self.layer_norm_inv_1 = torch.nn.LayerNorm(
+                    normalized_shape=num_features,
+                    eps=1e-6,  # flax default is 1e-6 while pytorch default is 1e-5
+                )
         self.layer_normalization_2 = layer_normalization_2
         if layer_normalization_2:
-            self.layer_norm_inv_2 = torch.nn.LayerNorm(
-                normalized_shape=num_features,
-                eps=1e-6,  # flax default is 1e-6 while pytorch default is 1e-5
-            )
+            if use_rms_norm:
+                self.layer_norm_inv_2 = torch.nn.RMSNorm(
+                    num_features,
+                    eps=1e-6,  # flax default is 1e-6 while pytorch default is 1e-5
+                    elementwise_affine=False,
+                )
+            else:
+                self.layer_norm_inv_2 = torch.nn.LayerNorm(
+                    normalized_shape=num_features,
+                    eps=1e-6,  # flax default is 1e-6 while pytorch default is 1e-5
+                )
 
         self.residual_mlp_1 = residual_mlp_1
         if residual_mlp_1:
@@ -303,6 +327,7 @@ class EuclideanAttentionBlock(torch.nn.Module):
         ] = None,
         avg_num_neighbors: Optional[int] = None,
         device: str = "cpu",
+        qk_norm: bool = False,
     ):
         super().__init__()
         self.degrees = degrees
@@ -310,6 +335,7 @@ class EuclideanAttentionBlock(torch.nn.Module):
         self.num_features = num_features
         self.message_normalization = message_normalization
         self.avg_num_neighbors = avg_num_neighbors
+        self.qk_norm = qk_norm
 
         self.ev_features_dim = torch.sum(
             torch.tensor([2 * y + 1 for y in degrees])
@@ -445,6 +471,11 @@ class EuclideanAttentionBlock(torch.nn.Module):
         k_ev = self.qk_non_linearity(
             torch.einsum("nhd,hde->nhe", inv_features_ev, self.W_k_ev)
         )[senders]
+        if getattr(self, "qk_norm", False):
+            q_inv = _rms_norm_no_params(q_inv)
+            k_inv = _rms_norm_no_params(k_inv)
+            q_ev = _rms_norm_no_params(q_ev)
+            k_ev = _rms_norm_no_params(k_ev)
         return q_inv, k_inv, v_inv, q_ev, k_ev
 
     def forward(
@@ -626,6 +657,7 @@ class EuclideanAttentionBlockLORA(EuclideanAttentionBlock):
         ] = None,
         avg_num_neighbors: Optional[int] = None,
         device: str = "cpu",
+        qk_norm: bool = False,
     ):
         super().__init__(
             degrees=degrees,
@@ -637,6 +669,7 @@ class EuclideanAttentionBlockLORA(EuclideanAttentionBlock):
             qk_non_linearity=qk_non_linearity,
             avg_num_neighbors=avg_num_neighbors,
             device=device,
+            qk_norm=qk_norm,
         )
         self.weights_fused = False
         # LoRA parameters for invariants
@@ -823,6 +856,12 @@ class EuclideanAttentionBlockLORA(EuclideanAttentionBlock):
                 )
             )[senders]
 
+            if getattr(self, "qk_norm", False):
+                q_inv = _rms_norm_no_params(q_inv)
+                k_inv = _rms_norm_no_params(k_inv)
+                q_ev = _rms_norm_no_params(q_ev)
+                k_ev = _rms_norm_no_params(k_ev)
+
             return q_inv, k_inv, v_inv, q_ev, k_ev
 
 
@@ -843,6 +882,7 @@ class EuclideanAttentionBlockDoRA(EuclideanAttentionBlockLORA):
         ] = None,
         avg_num_neighbors: Optional[int] = None,
         device: str = "cpu",
+        qk_norm: bool = False,
     ):
         super().__init__(
             degrees=degrees,
@@ -856,6 +896,7 @@ class EuclideanAttentionBlockDoRA(EuclideanAttentionBlockLORA):
             qk_non_linearity=qk_non_linearity,
             avg_num_neighbors=avg_num_neighbors,
             device=device,
+            qk_norm=qk_norm,
         )
         self.weights_fused = False
         # LoRA parameters for invariants
@@ -982,6 +1023,12 @@ class EuclideanAttentionBlockDoRA(EuclideanAttentionBlockLORA):
                 lora_k_ev * (self.dora_m_k_ev / self.norm_k_ev)[None, :, :]
             )[senders]
 
+            if getattr(self, "qk_norm", False):
+                q_inv = _rms_norm_no_params(q_inv)
+                k_inv = _rms_norm_no_params(k_inv)
+                q_ev = _rms_norm_no_params(q_ev)
+                k_ev = _rms_norm_no_params(k_ev)
+
             return q_inv, k_inv, v_inv, q_ev, k_ev
 
     def fuse_lora_weights(self):
@@ -1076,6 +1123,7 @@ class EuclideanAttentionBlockVeRA(EuclideanAttentionBlockLORA):
         ] = None,
         avg_num_neighbors: Optional[int] = None,
         device: str = "cpu",
+        qk_norm: bool = False,
     ):
         super().__init__(
             degrees=degrees,
@@ -1089,6 +1137,7 @@ class EuclideanAttentionBlockVeRA(EuclideanAttentionBlockLORA):
             qk_non_linearity=qk_non_linearity,
             avg_num_neighbors=avg_num_neighbors,
             device=device,
+            qk_norm=qk_norm,
         )
         self.weights_fused = False
         # VeRA parameters for invariants
@@ -1297,5 +1346,11 @@ class EuclideanAttentionBlockVeRA(EuclideanAttentionBlockLORA):
                     vera_d=self.d_k_ev,
                 )
             )[senders]
+
+            if getattr(self, "qk_norm", False):
+                q_inv = _rms_norm_no_params(q_inv)
+                k_inv = _rms_norm_no_params(k_inv)
+                q_ev = _rms_norm_no_params(q_ev)
+                k_ev = _rms_norm_no_params(k_ev)
 
             return q_inv, k_inv, v_inv, q_ev, k_ev
