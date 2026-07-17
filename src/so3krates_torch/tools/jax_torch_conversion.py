@@ -64,6 +64,10 @@ def get_flax_to_torch_mapping(
     num_layers = cfg.model.num_layers
     layer_norm_1 = cfg.model.layer_normalization_1
     layer_norm_2 = cfg.model.layer_normalization_2
+    # v2's nn.RMSNorm(use_scale=False, ...) has no learnable scale/bias --
+    # suppress the layer-norm weight mapping below when it's in play, even
+    # if layer_normalization_1/2 is also set.
+    use_rms_norm = getattr(cfg.model, "use_rms_norm", False)
     residual_mlp_1 = cfg.model.residual_mlp_1
     residual_mlp_2 = cfg.model.residual_mlp_2
     energy_learn_atomic_type_shifts = cfg.model.energy_learn_atomic_type_shifts
@@ -245,15 +249,17 @@ def get_flax_to_torch_mapping(
             f"params/layers_{i}/exchange_block/mlp_layer_2/bias"
         ] = f"{torch_prefix}.interaction_block.linear_layer.bias"
 
-        # Layer normalization
-        if layer_norm_1:
+        # Layer normalization -- no scale/bias to map when RMSNorm is in
+        # use (JAX's nn.RMSNorm(use_scale=False, ...) has no learnable
+        # parameters).
+        if layer_norm_1 and not use_rms_norm:
             mapping[
                 f"params/layers_{i}/layer_normalization_1/scale"
             ] = f"{torch_prefix}.layer_norm_inv_1.weight"
             mapping[
                 f"params/layers_{i}/layer_normalization_1/bias"
             ] = f"{torch_prefix}.layer_norm_inv_1.bias"
-        if layer_norm_2:
+        if layer_norm_2 and not use_rms_norm:
             mapping[
                 f"params/layers_{i}/layer_normalization_2/scale"
             ] = f"{torch_prefix}.layer_norm_inv_2.weight"
@@ -288,6 +294,12 @@ def get_flax_to_torch_mapping(
             mapping[
                 f"params/layers_{i}/res_mlp_2_layer_2/bias"
             ] = f"{torch_prefix}.mlp_2.3.bias"
+
+    # Residual scalars (v2): one scalar per layer, stored as a single
+    # whole-model-stack array -- not per-layer like the mappings above.
+    if getattr(cfg.model, "use_residual_scalars", False):
+        mapping["params/resid_lambdas"] = "resid_lambdas"
+        mapping["params/x0_lambdas"] = "x0_lambdas"
 
     # Output layers
     mapping[
@@ -421,6 +433,15 @@ def get_model_settings_flax_to_torch(
         "params/observables_0/energy_dense_final/kernel"
     ]
     num_theory_levels = int(energy_kernel.shape[-1])
+    # v1.0-lrs-gems ("v1") configs never had these keys; all so3lr_dev
+    # ("v2") configs, including all three shipped so3lr-s/-m/-l
+    # checkpoints, set them explicitly -- a reliable v1/v2 marker, used
+    # below to disambiguate `legacy_so3lr_bool`'s default (see
+    # `legacy_dispersion_bool` below for why).
+    is_v2_config = any(
+        hasattr(cfg.model, k)
+        for k in ("use_rms_norm", "qk_norm", "use_residual_scalars")
+    )
     return dict(
         r_max=cfg.model.cutoff,
         r_max_lr=cfg.model.cutoff_lr,
@@ -447,6 +468,11 @@ def get_model_settings_flax_to_torch(
         layer_normalization_2=cfg.model.layer_normalization_2,
         residual_mlp_1=cfg.model.residual_mlp_1,
         residual_mlp_2=cfg.model.residual_mlp_2,
+        use_rms_norm=getattr(cfg.model, "use_rms_norm", False),
+        qk_norm=getattr(cfg.model, "qk_norm", False),
+        use_residual_scalars=getattr(
+            cfg.model, "use_residual_scalars", False
+        ),
         use_charge_embed=cfg.model.use_charge_embed,
         use_spin_embed=cfg.model.use_spin_embed,
         zbl_repulsion_bool=cfg.model.zbl_repulsion_bool,
@@ -463,7 +489,19 @@ def get_model_settings_flax_to_torch(
         use_pme_dispersion=getattr(cfg.model, "kspace_electrostatics", False),
         pme_dispersion_smearing=getattr(cfg.model, "kspace_smearing", None),
         pme_dispersion_mesh_spacing=getattr(cfg.model, "kspace_spacing", None),
-        legacy_dispersion_bool=getattr(cfg.model, "legacy_so3lr_bool", True),
+        # v1 and v2 JAX configs both omit `legacy_so3lr_bool` when unset,
+        # but mean opposite things by the omission: `so3lr_dev`'s own
+        # model-building code computes
+        # `model_config.get('legacy_so3lr_bool', False)` (all three real
+        # shipped so3lr-s/-m/-l checkpoints omit the key, so `so3lr_dev`
+        # builds them with the refitted/non-legacy dispersion table),
+        # while v1.0-lrs-gems configs omitting it means legacy=True (this
+        # repo's deliberately-chosen v1 default). Disambiguate via
+        # `is_v2_config` computed above; an explicit value in the config
+        # always wins regardless of v1/v2-ness.
+        legacy_dispersion_bool=getattr(
+            cfg.model, "legacy_so3lr_bool", False if is_v2_config else True
+        ),
         use_pme=getattr(cfg.model, "kspace_electrostatics", False),
         pme_smearing=getattr(cfg.model, "kspace_smearing", None),
         pme_mesh_spacing=getattr(cfg.model, "kspace_spacing", None),
@@ -651,6 +689,10 @@ def get_torch_to_flax_mapping(
     num_layers = cfg.model.num_layers
     layer_norm_1 = cfg.model.layer_normalization_1
     layer_norm_2 = cfg.model.layer_normalization_2
+    # v2's nn.RMSNorm(use_scale=False, ...) has no learnable scale/bias --
+    # suppress the layer-norm weight mapping below when it's in play, even
+    # if layer_normalization_1/2 is also set.
+    use_rms_norm = getattr(cfg.model, "use_rms_norm", False)
     residual_mlp_1 = cfg.model.residual_mlp_1
     residual_mlp_2 = cfg.model.residual_mlp_2
     energy_learn_atomic_type_shifts = cfg.model.energy_learn_atomic_type_shifts
@@ -825,15 +867,17 @@ def get_torch_to_flax_mapping(
             f"{torch_prefix}.interaction_block.linear_layer.bias"
         ] = f"params/layers_{i}/exchange_block/mlp_layer_2/bias"
 
-        # Layer normalization
-        if layer_norm_1:
+        # Layer normalization -- no scale/bias to map when RMSNorm is in
+        # use (JAX's nn.RMSNorm(use_scale=False, ...) has no learnable
+        # parameters).
+        if layer_norm_1 and not use_rms_norm:
             mapping[
                 f"{torch_prefix}.layer_norm_inv_1.weight"
             ] = f"params/layers_{i}/layer_normalization_1/scale"
             mapping[
                 f"{torch_prefix}.layer_norm_inv_1.bias"
             ] = f"params/layers_{i}/layer_normalization_1/bias"
-        if layer_norm_2:
+        if layer_norm_2 and not use_rms_norm:
             mapping[
                 f"{torch_prefix}.layer_norm_inv_2.weight"
             ] = f"params/layers_{i}/layer_normalization_2/scale"
@@ -868,6 +912,12 @@ def get_torch_to_flax_mapping(
             mapping[
                 f"{torch_prefix}.mlp_2.3.bias"
             ] = f"params/layers_{i}/res_mlp_2_layer_2/bias"
+
+    # Residual scalars (v2): one scalar per layer, stored as a single
+    # whole-model-stack array -- not per-layer like the mappings above.
+    if getattr(cfg.model, "use_residual_scalars", False):
+        mapping["resid_lambdas"] = "params/resid_lambdas"
+        mapping["x0_lambdas"] = "params/x0_lambdas"
 
     # Output layers
     mapping[
@@ -953,6 +1003,15 @@ def get_model_settings_torch_to_flax(
 ) -> config_dict.ConfigDict:
     """Convert PyTorch model settings to Flax ConfigDict format"""
 
+    # v1.0-lrs-gems ("v1") torch settings never had these keys; all v2
+    # ("so3lr_dev"-derived) torch settings set them explicitly -- used
+    # below to disambiguate `legacy_so3lr_bool`'s default (see
+    # `cfg.model.legacy_so3lr_bool` below for why).
+    is_v2_config = any(
+        k in torch_settings
+        for k in ("use_rms_norm", "qk_norm", "use_residual_scalars")
+    )
+
     # Create the nested config structure
     cfg = config_dict.ConfigDict()
 
@@ -991,6 +1050,11 @@ def get_model_settings_torch_to_flax(
     )
     cfg.model.residual_mlp_1 = torch_settings.get("residual_mlp_1", False)
     cfg.model.residual_mlp_2 = torch_settings.get("residual_mlp_2", False)
+    cfg.model.use_rms_norm = torch_settings.get("use_rms_norm", False)
+    cfg.model.qk_norm = torch_settings.get("qk_norm", False)
+    cfg.model.use_residual_scalars = torch_settings.get(
+        "use_residual_scalars", False
+    )
     cfg.model.use_charge_embed = torch_settings.get("use_charge_embed", False)
     cfg.model.use_spin_embed = torch_settings.get("use_spin_embed", False)
     cfg.model.zbl_repulsion_bool = torch_settings.get(
@@ -1030,8 +1094,13 @@ def get_model_settings_torch_to_flax(
     cfg.model.kspace_spacing = torch_settings.get(
         "pme_mesh_spacing", None
     ) or torch_settings.get("pme_dispersion_mesh_spacing", None)
+    # See `is_v2_config` above: v2 torch settings (all real so3lr-s/-m/-l
+    # checkpoints) omitting `legacy_dispersion_bool` mean "refitted/non-
+    # legacy" (False), while v1 torch settings omitting it mean "legacy"
+    # (True, this repo's deliberately-chosen v1 default). An explicit
+    # value always wins regardless of v1/v2-ness.
     cfg.model.legacy_so3lr_bool = torch_settings.get(
-        "legacy_dispersion_bool", True
+        "legacy_dispersion_bool", False if is_v2_config else True
     )
     cfg.model.num_features_head = torch_settings.get("num_features_head", None)
     cfg.model.qk_non_linearity = torch_settings.get(
