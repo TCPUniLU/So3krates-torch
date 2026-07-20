@@ -622,6 +622,51 @@ def test_torch_to_flax_mapping_adds_resid_lambdas_only_when_flagged():
 
 
 # ---------------------------------------------------------------------
+# v2arch-task-4-fix6: `use_simple_hirshfeld` is not a real `so3lr_dev`
+# config key either (same invented-key gotcha already fixed for
+# `nhl_repulsion_bool`/`c6_ratios_bool` above) -- the real discriminator
+# is `legacy_so3lr_bool` (`so3krates_sparse.py`:
+# `HirshfeldSparse(..., legacy=legacy_so3lr_bool, ...)`). This test
+# exercises `get_flax_to_torch_mapping` with `flat_params=None` so only
+# the config/legacy_so3lr_bool-derived primary source is in play, not
+# the `flat_params` structural fallback that every real call site
+# happens to also provide today and which previously masked this bug.
+# ---------------------------------------------------------------------
+
+
+def test_flax_to_torch_mapping_derives_simple_hirshfeld_from_legacy_bool():
+    """A non-legacy-shaped cfg (has a v2 marker key, omits both
+    `use_simple_hirshfeld` and `legacy_so3lr_bool`) must derive
+    `use_simple_hirshfeld=True` (non-legacy -> new/simple Hirshfeld
+    arch) from the `legacy_so3lr_bool`-derived default, not the old,
+    wrong, always-`False` `getattr(..., False)` default -- called with
+    `flat_params=None` (the default) so the structural
+    `flat_params`-based fallback can't paper over a regression here."""
+    cfg = _v2_shaped_cfg()
+    mapping = get_flax_to_torch_mapping(cfg, trainable_rbf=True)
+    # Simple (single-embedding) Hirshfeld arch has no Embed_1 mapping --
+    # see `get_flax_to_torch_mapping`'s use_simple_hirshfeld branch.
+    assert "params/observables_2/Embed_1/embedding" not in mapping
+    assert (
+        mapping["params/observables_2/Embed_0/embedding"]
+        == "hirshfeld_output_block.element_embedding.weight"
+    )
+
+
+def test_flax_to_torch_mapping_derives_simple_hirshfeld_false_for_v1():
+    """A v1.0-lrs-gems-shaped cfg (no v2 markers, no legacy_so3lr_bool)
+    must derive `use_simple_hirshfeld=False` (legacy -> old/attention
+    Hirshfeld arch) -- the counterpart of the test above, confirming
+    the v1 default is unchanged by this fix."""
+    cfg = _v1_shaped_cfg()
+    mapping = get_flax_to_torch_mapping(cfg, trainable_rbf=True)
+    assert (
+        mapping["params/observables_2/Embed_1/embedding"]
+        == "hirshfeld_output_block.q_embedding.weight"
+    )
+
+
+# ---------------------------------------------------------------------
 # Task 4: `--so3lr_dev_checkpoint {s,m,l}` on `torchkrates-jax2torch`.
 #
 # Lets callers point at one of the three real, bundled `so3lr_dev`

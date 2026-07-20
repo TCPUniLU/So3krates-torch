@@ -1,4 +1,5 @@
 import torch
+import warnings
 from typing import Dict, Any, Optional, Callable
 from ml_collections import config_dict
 import jax
@@ -101,12 +102,45 @@ def get_flax_to_torch_mapping(
     use_c6_ratios = not getattr(
         cfg.model, "legacy_so3lr_bool", False if is_v2_config else True
     )
-    # Detect new HirshfeldSparse arch: only one embedding (no Embed_1 key)
-    use_simple_hirshfeld = getattr(cfg.model, "use_simple_hirshfeld", False)
-    if flat_params is not None and not use_simple_hirshfeld:
-        use_simple_hirshfeld = (
+    # `use_simple_hirshfeld` does not exist anywhere in `so3lr_dev`'s
+    # source either -- same gotcha as `nhl_repulsion_bool`/
+    # `c6_ratios_bool` above. The actual JAX rule
+    # (`so3krates_sparse.py`: `HirshfeldSparse(..., legacy=
+    # legacy_so3lr_bool, ...)`) is that `legacy_so3lr_bool` directly
+    # selects the Hirshfeld architecture (legacy=True -> old,
+    # two-embedding, attention-based; legacy=False -> new, single-
+    # embedding "simple"). Derive it primarily from the same
+    # is_v2_config-disambiguated legacy_so3lr_bool default used above,
+    # reusing `use_nhl`'s already-computed getattr rather than
+    # recomputing it a third time. `getattr(..., None)` (not `False`) is
+    # deliberate: it lets an absent config key fall through to the
+    # legacy_so3lr_bool-derived default while still letting an explicit
+    # `False` win outright, per this file's "explicit value always wins"
+    # convention.
+    use_simple_hirshfeld = getattr(cfg.model, "use_simple_hirshfeld", None)
+    if use_simple_hirshfeld is None:
+        use_simple_hirshfeld = use_nhl
+    # `flat_params`, when available, is a structural cross-check rather
+    # than the sole source of truth: a real mismatch between the
+    # config/legacy_so3lr_bool-derived value and the actual params tree
+    # means one of them is wrong. The params tree wins when they
+    # disagree -- see the resolution-policy note below `use_simple_
+    # hirshfeld`'s twin computation in `get_model_settings_flax_to_torch`
+    # for the full justification (kept in sync with that function; not
+    # repeated here to avoid drift between the two comments).
+    if flat_params is not None:
+        detected_simple_hirshfeld = (
             "params/observables_2/Embed_1/embedding" not in flat_params
         )
+        if detected_simple_hirshfeld != use_simple_hirshfeld:
+            warnings.warn(
+                f"use_simple_hirshfeld mismatch: config/legacy_so3lr_bool "
+                f"implies {use_simple_hirshfeld}, but the actual params "
+                f"tree implies {detected_simple_hirshfeld}; using the "
+                f"params-tree-detected value.",
+                stacklevel=2,
+            )
+            use_simple_hirshfeld = detected_simple_hirshfeld
 
     mapping = {}
 
@@ -464,15 +498,71 @@ def get_model_settings_flax_to_torch(
         hasattr(cfg.model, k)
         for k in ("use_rms_norm", "qk_norm", "use_residual_scalars")
     )
-    # Detect new HirshfeldSparse arch: only one embedding (no Embed_1 key).
-    # Must agree with `get_flax_to_torch_mapping`'s auto-detection (same
-    # condition, same fallback order) since one constructs the model and
-    # the other maps weights into it -- see that function for details.
-    use_simple_hirshfeld = getattr(cfg.model, "use_simple_hirshfeld", False)
-    if flat_params is not None and not use_simple_hirshfeld:
-        use_simple_hirshfeld = (
+    # `use_simple_hirshfeld` does not exist anywhere in `so3lr_dev`'s
+    # source either -- same gotcha as `nhl_repulsion_bool`/
+    # `c6_ratios_bool` below. The actual JAX rule (`so3krates_sparse.py`:
+    # `HirshfeldSparse(..., legacy=legacy_so3lr_bool, ...)`) is that
+    # `legacy_so3lr_bool` directly selects the Hirshfeld architecture
+    # (legacy=True -> old, two-embedding, attention-based; legacy=False
+    # -> new, single-embedding "simple"). Derive it primarily from the
+    # same is_v2_config-disambiguated legacy_so3lr_bool default used for
+    # `nhl_repulsion_bool`/`c6_ratios_bool`/`legacy_dispersion_bool`
+    # below -- must agree with `get_flax_to_torch_mapping`'s identical
+    # derivation since one constructs the model and the other maps
+    # weights into it. `getattr(..., None)` (not `False`) is deliberate:
+    # it lets an absent config key fall through to the
+    # legacy_so3lr_bool-derived default while still letting an explicit
+    # `False` win outright, per this file's "explicit value always wins"
+    # convention.
+    #
+    # When `flat_params` is available, it's used as a structural cross-
+    # check rather than the sole source of truth: a real mismatch
+    # between the config/legacy_so3lr_bool-derived value and the actual
+    # params tree means one of them is wrong. Resolution policy
+    # (deliberate choice, not the brief's suggested hard-raise): prefer
+    # the params-tree-detected value and print a warning, rather than
+    # raising. Justification: (1) the params tree is unambiguous ground
+    # truth about which architecture was actually saved -- it's not a
+    # heuristic guess like the config-derived default, which has
+    # already been wrong twice for this exact class of bug
+    # (`nhl_repulsion_bool`/`c6_ratios_bool` above); a real checkpoint
+    # simply does or doesn't have the old head's second embedding
+    # weight, full stop. (2) A hard raise here would break several
+    # pre-existing tests (`test_flax_to_torch_v1_config_defaults_
+    # legacy_dispersion_true`,
+    # `test_flax_to_torch_explicit_legacy_so3lr_bool_always_wins[True-*]`
+    # in test_jax_torch_conversion.py) that pass a deliberately minimal,
+    # fake `flat_params` stand-in (`_MINIMAL_FLAT_PARAMS`, documented
+    # there as "not real weight arrays") which always looks
+    # structurally "simple" (it omits every key, including Embed_1, by
+    # construction) regardless of the cfg's actual legacy-ness -- those
+    # tests don't assert on `use_simple_hirshfeld` at all, so silently
+    # preferring the (spurious, in that context) detected value with a
+    # warning is harmless there, whereas raising would be a false
+    # alarm. Preferring-with-a-warning still satisfies the "must not
+    # silently prefer config over a real contradiction" requirement,
+    # since the warning surfaces at import/call time for anyone who
+    # cares to look, while not aborting the whole conversion over what,
+    # for all three real checkpoints, never actually happens (verified
+    # below).
+    use_simple_hirshfeld = getattr(cfg.model, "use_simple_hirshfeld", None)
+    if use_simple_hirshfeld is None:
+        use_simple_hirshfeld = not getattr(
+            cfg.model, "legacy_so3lr_bool", False if is_v2_config else True
+        )
+    if flat_params is not None:
+        detected_simple_hirshfeld = (
             "params/observables_2/Embed_1/embedding" not in flat_params
         )
+        if detected_simple_hirshfeld != use_simple_hirshfeld:
+            warnings.warn(
+                f"use_simple_hirshfeld mismatch: config/legacy_so3lr_bool "
+                f"implies {use_simple_hirshfeld}, but the actual params "
+                f"tree implies {detected_simple_hirshfeld}; using the "
+                f"params-tree-detected value.",
+                stacklevel=2,
+            )
+            use_simple_hirshfeld = detected_simple_hirshfeld
     return dict(
         r_max=cfg.model.cutoff,
         r_max_lr=cfg.model.cutoff_lr,
