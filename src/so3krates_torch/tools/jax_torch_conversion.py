@@ -75,7 +75,20 @@ def get_flax_to_torch_mapping(
     use_charge_embed = cfg.model.use_charge_embed
     use_spin_embed = cfg.model.use_spin_embed
     use_zbl = cfg.model.zbl_repulsion_bool
-    use_nhl = getattr(cfg.model, "nhl_repulsion_bool", False)
+    # `nhl_repulsion_bool` does not exist anywhere in `so3lr_dev`'s source
+    # -- the actual JAX flag selecting between the legacy, learnable
+    # `ZBLRepulsionSparse` and the newer, parameter-free
+    # `NLHRepulsionSparse` is `legacy_so3lr_bool` (see
+    # `so3krates_sparse.py:180-185`). Derive `use_nhl` as its logical
+    # negation, using the same `is_v2_config`-disambiguated default as
+    # `get_model_settings_flax_to_torch`'s `legacy_dispersion_bool`.
+    is_v2_config = any(
+        hasattr(cfg.model, k)
+        for k in ("use_rms_norm", "qk_norm", "use_residual_scalars")
+    )
+    use_nhl = not getattr(
+        cfg.model, "legacy_so3lr_bool", False if is_v2_config else True
+    )
     use_electrostatic_energy = cfg.model.electrostatic_energy_bool
     use_dispersion_energy = cfg.model.dispersion_energy_bool
     use_c6_ratios = getattr(cfg.model, "c6_ratios_bool", False)
@@ -476,7 +489,20 @@ def get_model_settings_flax_to_torch(
         use_charge_embed=cfg.model.use_charge_embed,
         use_spin_embed=cfg.model.use_spin_embed,
         zbl_repulsion_bool=cfg.model.zbl_repulsion_bool,
-        nhl_repulsion_bool=getattr(cfg.model, "nhl_repulsion_bool", False),
+        # `nhl_repulsion_bool` does not exist anywhere in `so3lr_dev`'s
+        # source -- the actual JAX flag that selects between the legacy,
+        # learnable `ZBLRepulsionSparse` and the newer, parameter-free
+        # `NLHRepulsionSparse` is `legacy_so3lr_bool` (see
+        # `so3krates_sparse.py:180-185`). Derive `nhl_repulsion_bool` as
+        # its logical negation, reusing the same `is_v2_config`-disambig-
+        # uated default already used for `legacy_dispersion_bool` below --
+        # v1 configs default to legacy=True -> nhl=False (ZBL, no
+        # regression), v2 configs (all real so3lr-s/-m/-l checkpoints)
+        # default to legacy=False -> nhl=True (NLH, the fix). An explicit
+        # `legacy_so3lr_bool` in the config still wins unchanged.
+        nhl_repulsion_bool=not getattr(
+            cfg.model, "legacy_so3lr_bool", False if is_v2_config else True
+        ),
         c6_ratios_bool=getattr(cfg.model, "c6_ratios_bool", False),
         use_simple_hirshfeld=getattr(cfg.model, "use_simple_hirshfeld", False),
         # JAX ties both electrostatics PME and dispersion PME to the same
@@ -568,7 +594,25 @@ def convert_flax_to_torch_params(
         torched = torch.from_numpy(flax_array_np)
 
         expected_shape = torch_state_dict[torch_key].shape
-        if flax_array.ndim == 2 and torch_key not in special_embeddings:
+        # `energy_offset`/`atomic_scales` are genuinely 2-D, shape
+        # (119, num_theory_levels) (element-padding-row x theory-level),
+        # on real multi-theory-level checkpoints -- NOT a Dense kernel
+        # that needs the generic `.T` below. Transposing here first would
+        # make the later padding-strip (`torched[1:]`) strip the wrong
+        # axis (theory-level instead of padding-element). No transpose is
+        # needed for these two keys themselves; the separate,
+        # already-correctly-special-cased `energy_scales.weight` Linear
+        # transpose a few lines below already handles the one convention
+        # switch actually needed, operating on the untransposed array.
+        if (
+            flax_array.ndim == 2
+            and torch_key not in special_embeddings
+            and flax_key
+            not in (
+                "params/observables_0/energy_offset",
+                "params/observables_0/atomic_scales",
+            )
+        ):
             torched = torched.T
         elif flax_array.ndim == 3:
             torched = torched.permute(0, 2, 1)

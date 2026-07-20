@@ -686,40 +686,41 @@ def test_so3lr_dev_checkpoint_resolves_to_real_existing_files():
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "The original blocker this test was written against (models.py's "
-        "SO3krates.__init__ unconditionally raising NotImplementedError "
-        "for layers_behave_like_identity_fn_at_init/output_is_zero_at_init "
-        "== True) is fixed as of the Task 4 fix (see "
-        "v2arch-task-4-fix-report.md): jax_torch_conversion.py's "
-        "get_model_settings_flax_to_torch now unconditionally forces both "
-        "to False on the flax->torch path, so torch model *construction* "
-        "for a real so3lr-s/-m/-l checkpoint now succeeds. This test still "
-        "xfails, but on two different, pre-existing, out-of-scope bugs in "
-        "`convert_flax_to_torch_params` "
-        "(src/so3krates_torch/tools/jax_torch_conversion.py) uncovered "
-        "only now that construction gets far enough to attempt the real "
-        "weight conversion: (1) for `energy_offset`/`atomic_scales` "
-        "(mapped to atomic_energy_output_block.energy_shifts/"
-        "energy_scales.weight), the 2D-array `.T` transpose is applied "
-        "*before* the 'strip the JAX padding row' `[1:]` slice, so for "
-        "every real checkpoint (all three are genuine multi-theory-level, "
-        "num_theory_levels=16) the slice strips a theory level off the "
-        "now-transposed array instead of the padding element row -- "
-        "'Shape mismatch for atomic_energy_output_block.energy_shifts: "
-        "expected torch.Size([118, 16]), got torch.Size([15, 119])' (and "
-        "the mirror-image mismatch for energy_scales.weight); (2) "
-        "`get_flax_to_torch_mapping` unconditionally maps 10 "
-        "`zbl_repulsion.{a1..a4,c1..c4,p,d}` keys whenever "
-        "`zbl_repulsion_bool and not nhl_repulsion_bool`, but all three "
-        "real checkpoints set `zbl_repulsion_bool=True` while their "
-        "params.pkl contains *no* `params/observables_0/zbl_repulsion/*` "
-        "keys at all (confirmed by direct inspection: v2's ZBL repulsion "
-        "has no learnable flax params, unlike what this mapping code "
-        "assumes) -- `flat_params[flax_key]` raises `KeyError: "
-        "'params/observables_0/zbl_repulsion/a1'`, identically for s/m/l. "
-        "Both bugs are out of scope for the Task 4 fix (confined to "
-        "get_model_settings_flax_to_torch) and for models.py (untouched "
-        "by that fix) -- reported per v2arch-task-4-fix-report.md rather "
+        "The two bugs this test previously xfailed on (see "
+        "v2arch-task-4-fix2-report.md) are now fixed: (1) "
+        "`convert_flax_to_torch_params` no longer transposes "
+        "`energy_offset`/`atomic_scales` before stripping the JAX padding "
+        "row, so the (119, num_theory_levels) -> (118, num_theory_levels) "
+        "slice now strips the correct (padding-element) axis; (2) "
+        "`get_flax_to_torch_mapping`/`get_model_settings_flax_to_torch` no "
+        "longer read the non-existent `nhl_repulsion_bool` JAX config key "
+        "-- both now derive the repulsion-functional selection from "
+        "`legacy_so3lr_bool` (the real JAX flag, confirmed via direct "
+        "`so3lr_dev` source read), so the ZBL param-mapping block is "
+        "correctly skipped for real v2 checkpoints instead of raising "
+        "`KeyError: 'params/observables_0/zbl_repulsion/a1'`. This test "
+        "still xfails, but now on a third, different, pre-existing, "
+        "out-of-scope bug uncovered only now that both bugs above stopped "
+        "blocking the code path before reaching it: "
+        "`get_model_settings_flax_to_torch`'s `use_simple_hirshfeld` "
+        "(which selects which Hirshfeld-head variant the torch model is "
+        "*constructed* with) reads only the raw "
+        "`cfg.model.use_simple_hirshfeld` config key (absent, so defaults "
+        "`False`/old two-embedding arch, for all three real checkpoints), "
+        "while the sibling `get_flax_to_torch_mapping` correctly "
+        "auto-detects the arch from the actual params tree (checking for "
+        "the absence of `params/observables_2/Embed_1/embedding`, which "
+        "is genuinely absent for all three real checkpoints -> 'simple', "
+        "single-embedding arch). The two disagree for every real "
+        "checkpoint, so the mapping tries to look up "
+        "`hirshfeld_output_block.element_embedding.weight` (the 'simple' "
+        "arch's torch parameter name) in a torch model that was "
+        "constructed with the old, two-embedding arch and has no such "
+        "attribute -- `KeyError: "
+        "'hirshfeld_output_block.element_embedding.weight'`, identically "
+        "for s/m/l. This is out of scope for this fix (confined to Bugs "
+        "A/B per v2arch-task-4-fix2-brief.md) and for models.py "
+        "(untouched) -- reported per v2arch-task-4-fix2-report.md rather "
         "than silently worked around."
     ),
 )
@@ -736,11 +737,11 @@ def test_jax2torch_cli_so3lr_dev_checkpoint_end_to_end(tmp_path, monkeypatch):
     light so it doesn't also pay for a full JAX-side parity build on a
     real (larger-than-the-synthetic-v1-test-model) bundled checkpoint.
 
-    Currently xfails (see reason above) on two different, pre-existing
-    `convert_flax_to_torch_params`/`get_flax_to_torch_mapping` bugs
-    unrelated to this task -- `strict=True` so this turns into a loud
-    failure (prompting an update here) the day those are fixed and this
-    starts passing for real.
+    Currently xfails (see reason above) on a different, pre-existing
+    `get_model_settings_flax_to_torch`/`get_flax_to_torch_mapping`
+    `use_simple_hirshfeld`-detection mismatch, unrelated to this task --
+    `strict=True` so this turns into a loud failure (prompting an update
+    here) the day that's fixed and this starts passing for real.
     """
     save_model_path = tmp_path / "so3lr_s_torch.model"
 
