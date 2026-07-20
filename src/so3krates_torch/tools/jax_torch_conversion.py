@@ -517,8 +517,18 @@ def get_model_settings_flax_to_torch(
         qk_non_linearity=cfg.model.qk_non_linearity,
         num_features_head=cfg.model.num_features // cfg.model.num_heads,
         activation_fn=cfg.model.activation_fn,
-        layers_behave_like_identity_fn_at_init=cfg.model.layers_behave_like_identity_fn_at_init,
-        output_is_zero_at_init=cfg.model.output_is_zero_at_init,
+        # These two flags only ever select flax's from-scratch random-init
+        # kernel_init (zeros vs. lecun_normal) -- they have zero effect on
+        # parameter shapes or forward-pass structure, and once real trained
+        # weights are loaded on top (the entire point of this conversion
+        # path), the flag's effect is already gone. Forcing `False`
+        # unconditionally (regardless of `cfg.model`'s actual values) is
+        # what lets the torch model be *constructed* at all for real
+        # checkpoints that set either flag `True` in their hyperparameters
+        # -- `models.py`'s `So3krates.__init__` unconditionally raises
+        # `NotImplementedError` otherwise.
+        layers_behave_like_identity_fn_at_init=False,
+        output_is_zero_at_init=False,
         input_convention=cfg.model.input_convention,
         energy_activation_fn=cfg.model.energy_activation_fn,
     )

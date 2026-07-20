@@ -686,20 +686,41 @@ def test_so3lr_dev_checkpoint_resolves_to_real_existing_files():
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "Pre-existing, out-of-scope bug in models.py (SO3krates.__init__, "
-        "not touched by this task): it unconditionally raises "
-        "NotImplementedError when `layers_behave_like_identity_fn_at_init` "
-        "or `output_is_zero_at_init` is True, regardless of the fact that "
-        "a real checkpoint's weights get loaded on top right afterward "
-        "(making the 'at init' behavior moot for conversion purposes). "
-        "All three real, bundled so3lr_dev checkpoints (so3lr-s/-m/-l) "
-        "set both flags True in their hyperparameters.json, so "
-        "`torchkrates-jax2torch --so3lr_dev_checkpoint {s,m,l}` currently "
-        "always hits this. Confirmed this is unrelated to this task's new "
-        "code: reproduces identically when pointing the pre-existing "
-        "--path_to_params/--path_to_hyperparams flags directly at the "
-        "same real so3lr-s checkpoint files, with --so3lr_dev_checkpoint "
-        "never involved. See the Task 4 report for the full repro."
+        "The original blocker this test was written against (models.py's "
+        "SO3krates.__init__ unconditionally raising NotImplementedError "
+        "for layers_behave_like_identity_fn_at_init/output_is_zero_at_init "
+        "== True) is fixed as of the Task 4 fix (see "
+        "v2arch-task-4-fix-report.md): jax_torch_conversion.py's "
+        "get_model_settings_flax_to_torch now unconditionally forces both "
+        "to False on the flax->torch path, so torch model *construction* "
+        "for a real so3lr-s/-m/-l checkpoint now succeeds. This test still "
+        "xfails, but on two different, pre-existing, out-of-scope bugs in "
+        "`convert_flax_to_torch_params` "
+        "(src/so3krates_torch/tools/jax_torch_conversion.py) uncovered "
+        "only now that construction gets far enough to attempt the real "
+        "weight conversion: (1) for `energy_offset`/`atomic_scales` "
+        "(mapped to atomic_energy_output_block.energy_shifts/"
+        "energy_scales.weight), the 2D-array `.T` transpose is applied "
+        "*before* the 'strip the JAX padding row' `[1:]` slice, so for "
+        "every real checkpoint (all three are genuine multi-theory-level, "
+        "num_theory_levels=16) the slice strips a theory level off the "
+        "now-transposed array instead of the padding element row -- "
+        "'Shape mismatch for atomic_energy_output_block.energy_shifts: "
+        "expected torch.Size([118, 16]), got torch.Size([15, 119])' (and "
+        "the mirror-image mismatch for energy_scales.weight); (2) "
+        "`get_flax_to_torch_mapping` unconditionally maps 10 "
+        "`zbl_repulsion.{a1..a4,c1..c4,p,d}` keys whenever "
+        "`zbl_repulsion_bool and not nhl_repulsion_bool`, but all three "
+        "real checkpoints set `zbl_repulsion_bool=True` while their "
+        "params.pkl contains *no* `params/observables_0/zbl_repulsion/*` "
+        "keys at all (confirmed by direct inspection: v2's ZBL repulsion "
+        "has no learnable flax params, unlike what this mapping code "
+        "assumes) -- `flat_params[flax_key]` raises `KeyError: "
+        "'params/observables_0/zbl_repulsion/a1'`, identically for s/m/l. "
+        "Both bugs are out of scope for the Task 4 fix (confined to "
+        "get_model_settings_flax_to_torch) and for models.py (untouched "
+        "by that fix) -- reported per v2arch-task-4-fix-report.md rather "
+        "than silently worked around."
     ),
 )
 def test_jax2torch_cli_so3lr_dev_checkpoint_end_to_end(tmp_path, monkeypatch):
@@ -715,10 +736,11 @@ def test_jax2torch_cli_so3lr_dev_checkpoint_end_to_end(tmp_path, monkeypatch):
     light so it doesn't also pay for a full JAX-side parity build on a
     real (larger-than-the-synthetic-v1-test-model) bundled checkpoint.
 
-    Currently xfails (see reason above) on a pre-existing models.py
-    limitation unrelated to this task -- `strict=True` so this turns
-    into a loud failure (prompting an update here) the day that
-    limitation is fixed and this starts passing for real.
+    Currently xfails (see reason above) on two different, pre-existing
+    `convert_flax_to_torch_params`/`get_flax_to_torch_mapping` bugs
+    unrelated to this task -- `strict=True` so this turns into a loud
+    failure (prompting an update here) the day those are fixed and this
+    starts passing for real.
     """
     save_model_path = tmp_path / "so3lr_s_torch.model"
 
