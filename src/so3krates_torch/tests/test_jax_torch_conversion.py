@@ -724,3 +724,71 @@ def test_jax2torch_cli_so3lr_dev_checkpoint_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", argv)
     assert jax_to_torch_main() == 0
     assert save_model_path.exists()
+
+
+def test_so3lr_dev_checkpoint_s_parity_at_machine_precision_ceiling():
+    """Tight-tolerance regression test for the `c6_ratios_bool`
+    conversion bug (v2arch-task-4-fix4): before that fix,
+    `get_flax_to_torch_mapping`/`get_model_settings_flax_to_torch` gated
+    the torch-side `c6_ratios_output_block` on a non-existent
+    `cfg.model.c6_ratios_bool` JAX config key (always `False`), so the
+    checkpoint's real, trained `c6_ratios` head was silently dropped and
+    `DispersionInteraction` fell back to `so3lr_dev`'s legacy
+    (`C6 ~ hirshfeld_ratio**2`) formula instead -- a real, ~1e-3-eV-level
+    physics bug, not float noise (see
+    v2arch-residual-diff-investigation-report.md and
+    v2arch-task-4-fix4-report.md for the full root-cause trail).
+
+    `check_model_parity`'s own default tolerance (`atol=1e-3`,
+    `rtol=1e-2`) is loose enough that this bug still silently "passed"
+    it -- exactly why it went unnoticed until a dedicated investigation.
+    This test uses `rtol=0.0` (so only the absolute diff matters -- some
+    force components are near zero, which would otherwise inflate a
+    relative-diff-based check into a false failure, as already noted for
+    the diagnostic numbers in v2arch-task-4-fix2-report.md) and a much
+    tighter `atol=1e-6`, comfortably above the ~1e-7-level noise floor
+    every other term already sits at (per the investigation's per-term
+    breakdown) but far below the ~1e-3 the c6_ratios bug used to produce
+    -- so a future regression of this exact bug would fail loudly
+    instead of silently passing a loose tolerance again.
+
+    Only `so3lr-s` (cheapest of the three real checkpoints) is checked
+    here, deliberately, to keep this fast enough for the default test
+    suite; `so3lr-m`/`-l` are checked at the same tight tolerance in
+    v2arch-task-4-fix4-report.md's manual verification.
+    """
+    import json
+    import pickle
+    from importlib.resources import files
+
+    from ml_collections import config_dict
+
+    from so3krates_torch.tools.jax_torch_conversion import (
+        convert_flax_to_torch,
+    )
+    from so3krates_torch.tools.model_parity import check_model_parity
+
+    checkpoint_dir = files("so3lr") / "models" / "so3lr-s"
+    params_path = str(checkpoint_dir / "params.pkl")
+    hyperparams_path = str(checkpoint_dir / "hyperparameters.json")
+
+    torch_model = convert_flax_to_torch(
+        path_to_flax_params=params_path,
+        path_to_flax_hyperparams=hyperparams_path,
+        dtype=torch.float64,
+    )
+
+    with open(params_path, "rb") as f:
+        flax_params = pickle.load(f)
+    with open(hyperparams_path, "r") as f:
+        cfg = config_dict.ConfigDict(json.load(f))
+
+    assert check_model_parity(
+        cfg=cfg,
+        flax_params=flax_params,
+        torch_model=torch_model,
+        r_max=cfg.model.cutoff,
+        r_max_lr=cfg.model.cutoff_lr,
+        atol=1e-6,
+        rtol=0.0,
+    )

@@ -91,7 +91,16 @@ def get_flax_to_torch_mapping(
     )
     use_electrostatic_energy = cfg.model.electrostatic_energy_bool
     use_dispersion_energy = cfg.model.dispersion_energy_bool
-    use_c6_ratios = getattr(cfg.model, "c6_ratios_bool", False)
+    # `c6_ratios_bool` does not exist anywhere in `so3lr_dev`'s source
+    # either -- same gotcha as `nhl_repulsion_bool` above. The actual JAX
+    # rule (`so3krates_sparse.py`: `c6_ratios = None if legacy_so3lr_bool
+    # else C6RatiosSparse(...)`) is "build a c6_ratios head whenever the
+    # model is non-legacy" -- derive it the same way, reusing the same
+    # is_v2_config-disambiguated legacy_so3lr_bool default used for
+    # nhl_repulsion_bool/legacy_dispersion_bool above.
+    use_c6_ratios = not getattr(
+        cfg.model, "legacy_so3lr_bool", False if is_v2_config else True
+    )
     # Detect new HirshfeldSparse arch: only one embedding (no Embed_1 key)
     use_simple_hirshfeld = getattr(cfg.model, "use_simple_hirshfeld", False)
     if flat_params is not None and not use_simple_hirshfeld:
@@ -512,7 +521,16 @@ def get_model_settings_flax_to_torch(
         nhl_repulsion_bool=not getattr(
             cfg.model, "legacy_so3lr_bool", False if is_v2_config else True
         ),
-        c6_ratios_bool=getattr(cfg.model, "c6_ratios_bool", False),
+        # `c6_ratios_bool` does not exist anywhere in `so3lr_dev`'s source
+        # either -- same gotcha as `nhl_repulsion_bool` above. The actual JAX
+        # rule (`so3krates_sparse.py`: `c6_ratios = None if legacy_so3lr_bool
+        # else C6RatiosSparse(...)`) is "build a c6_ratios head whenever the
+        # model is non-legacy" -- derive it the same way, reusing the same
+        # is_v2_config-disambiguated legacy_so3lr_bool default used for
+        # nhl_repulsion_bool/legacy_dispersion_bool above.
+        c6_ratios_bool=not getattr(
+            cfg.model, "legacy_so3lr_bool", False if is_v2_config else True
+        ),
         use_simple_hirshfeld=use_simple_hirshfeld,
         # JAX ties both electrostatics PME and dispersion PME to the same
         # single `kspace_electrostatics` method flag (and shared
@@ -1069,6 +1087,34 @@ def get_torch_to_flax_mapping(
     mapping[
         "hirshfeld_output_block.transform_features.2.bias"
     ] = "params/observables_2/hirshfeld_ratios_dense_final/bias"
+
+    # Mirrors `get_flax_to_torch_mapping`'s `use_c6_ratios`-gated
+    # `observables_3` block (see the `c6_ratios_bool` fix above), but
+    # added unconditionally here -- same pattern already used for
+    # `zbl_repulsion.*` a few lines above in this function: if the torch
+    # model actually has no `c6_ratios_output_block` (e.g. a legacy-
+    # dispersion model), `convert_torch_to_flax_params` already skips any
+    # mapping entry whose torch key isn't found, printing a warning
+    # rather than crashing. Without these entries, a real (non-legacy)
+    # v2 torch model's genuinely-trained `c6_ratios_output_block` weights
+    # would be silently dropped on torch->flax conversion -- unlike the
+    # `zbl_repulsion.*` case, there was no unconditional entry here to
+    # begin with, so this was a real gap, not an already-safe one.
+    mapping[
+        "c6_ratios_output_block.element_embedding.weight"
+    ] = "params/observables_3/Embed_0/embedding"
+    mapping[
+        "c6_ratios_output_block.transform_features.0.weight"
+    ] = "params/observables_3/c6_ratios_dense_regression/kernel"
+    mapping[
+        "c6_ratios_output_block.transform_features.0.bias"
+    ] = "params/observables_3/c6_ratios_dense_regression/bias"
+    mapping[
+        "c6_ratios_output_block.transform_features.2.weight"
+    ] = "params/observables_3/c6_ratios_dense_final/kernel"
+    mapping[
+        "c6_ratios_output_block.transform_features.2.bias"
+    ] = "params/observables_3/c6_ratios_dense_final/bias"
 
     return mapping
 
