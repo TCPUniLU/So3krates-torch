@@ -604,8 +604,10 @@ def prepare_graph(
             n_real, device=data["node_attrs"].device
         )
         displacement = None
+        # Use n_total (real + ghost) so positions matches per-atom
+        # tensors like partial_charges computed over all atoms.
         positions = torch.zeros(
-            (int(n_real), 3),
+            (int(n_total), 3),
             dtype=data["vectors"].dtype,
             device=data["vectors"].device,
         )

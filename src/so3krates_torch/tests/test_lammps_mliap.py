@@ -731,7 +731,7 @@ class TestEndToEndForward:
             "natoms": (natoms, ntotal),
         }
 
-        total_energy, node_energy, pair_forces = wrapper(batch_dict)
+        total_energy, node_energy, pair_forces, pair_forces_lr = wrapper(batch_dict)
 
         assert total_energy.shape == ()
         assert node_energy.shape[0] == natoms

@@ -27,6 +27,8 @@ class So3LammpsConfig:
         SO3_PROFILE_END: Step to stop CUDA profiling (default: 10)
         SO3_ALLOW_CPU: Allow CPU computation with Kokkos
         SO3_FORCE_CPU: Force CPU even with Kokkos
+        SO3_DEBUG_DUMP: Dump neighbor list data to .pt files for debugging
+        SO3_DEBUG_STEP: Step at which to dump debug data (default: 0)
     """
 
     def __init__(self):
@@ -36,6 +38,8 @@ class So3LammpsConfig:
         self.profile_end_step = int(os.environ.get("SO3_PROFILE_END", "10"))
         self.allow_cpu = self._get_env_bool("SO3_ALLOW_CPU", False)
         self.force_cpu = self._get_env_bool("SO3_FORCE_CPU", False)
+        self.debug_dump = self._get_env_bool("SO3_DEBUG_DUMP", False)
+        self.debug_dump_step = int(os.environ.get("SO3_DEBUG_STEP", "0"))
 
     @staticmethod
     def _get_env_bool(var_name: str, default: bool) -> bool:
@@ -89,25 +93,19 @@ class So3EdgeForcesWrapper(torch.nn.Module):
             #    "Retrain with electrostatic_energy_bool=False or use a "
             #    "different model."
             #)
-            if kwargs["long_range"] == None:
+            if kwargs.get("long_range") is None:
                 raise ValueError(
                     "Model has electrostatic_energy_bool=True. "
-                    "Nevertheless, no long range cuttoff is specified. "
+                    "Nevertheless, no long range cutoff is specified. "
                     "use --long-range to specify it"
                 )
             else:
                 self.long_range = kwargs["long_range"]
         if getattr(model, "dispersion_energy_bool", False):
-            #raise ValueError(
-            #    "Model has dispersion_energy_bool=True. "
-            #    "LAMMPS MLIAP only supports short-range interactions. "
-            #    "Retrain with dispersion_energy_bool=False or use a "
-            #    "different model."
-            #)
-            if kwargs["long_range"] == None:
+            if kwargs.get("long_range") is None:
                 raise ValueError(
                     "Model has dispersion_energy_bool=True. "
-                    "Nevertheless, no long range cuttoff is specified. "
+                    "Nevertheless, no long range cutoff is specified. "
                     "use --long-range to specify it"
                 )
             else:
@@ -229,7 +227,8 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
         self.element_types = [chemical_symbols[z] for z in atomic_numbers]
         self.num_species = len(self.element_types)
         self.num_elements = model.num_elements
-        self.rcutfac = 0.5 * (float(model.r_max) if kwargs["long_range"] is None else float(kwargs["long_range"]))  # CHANGED: use kwargs value, not model.r_max_lr (may be None)
+        long_range = kwargs.get("long_range")
+        self.rcutfac = 0.5 * (float(model.r_max) if long_range is None else float(long_range))
         self.ndescriptors = 1
         self.nparams = 1
         self.dtype = next(model.parameters()).dtype
@@ -384,6 +383,33 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
             batch["edge_index_lr"] = edge_index_lr
             batch["vectors_lr"] = vectors_lr
 
+        # Debug dump for neighbor list analysis
+        # Read env vars directly to bypass pickled config
+        debug_dump = os.environ.get("SO3_DEBUG_DUMP", "").lower() in ("1", "true", "yes")
+        debug_step = int(os.environ.get("SO3_DEBUG_STEP", "1"))
+        if debug_dump and self.step == debug_step:
+            distances = torch.linalg.norm(vectors_all, dim=-1)
+            debug_data = {
+                "pair_i": pair_i.cpu(),
+                "pair_j": pair_j.cpu(),
+                "vectors": vectors_all.cpu(),
+                "distances": distances.cpu(),
+                "natoms": natoms,
+                "nghosts": nghosts,
+                "ntotal": ntotal,
+                "atomic_numbers": actual_z.cpu(),
+                "step": self.step,
+            }
+            if has_long_range:
+                debug_data["sr_mask"] = sr_mask.cpu()
+                debug_data["n_sr_pairs"] = int(sr_mask.sum())
+                debug_data["n_lr_pairs"] = len(pair_i)
+            dump_path = f"so3lr_debug_step{self.step}.pt"
+            torch.save(debug_data, dump_path)
+            logging.info(f"SO3LR debug: dumped neighbor list to {dump_path}")
+            logging.info(f"  natoms={natoms}, nghosts={nghosts}, npairs={len(pair_i)}")
+            logging.info(f"  distance range: [{distances.min():.4f}, {distances.max():.4f}] A")
+
         return batch
 
     def _update_lammps_data(self, data, atom_energies, pair_forces, natoms):
@@ -391,6 +417,21 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
 
         Only sums energies over real atoms (first natoms), not ghost atoms.
         """
+        # Debug: dump pair forces for analysis
+        debug_dump = os.environ.get("SO3_DEBUG_DUMP", "").lower() in ("1", "true", "yes")
+        debug_step = int(os.environ.get("SO3_DEBUG_STEP", "1"))
+        if debug_dump and self.step == debug_step:
+            pair_i = torch.as_tensor(data.pair_i, dtype=torch.int64)
+            pair_j = torch.as_tensor(data.pair_j, dtype=torch.int64)
+            torch.save({
+                "pair_forces": pair_forces.detach().cpu(),
+                "pair_i": pair_i.cpu(),
+                "pair_j": pair_j.cpu(),
+                "atom_energies": atom_energies.detach().cpu(),
+                "natoms": natoms,
+            }, f"so3lr_forces_step{self.step}.pt")
+            print(f"[debug] Saved pair forces to so3lr_forces_step{self.step}.pt")
+
         if self.dtype == torch.float32:
             pair_forces = pair_forces.double()
 

@@ -4,6 +4,60 @@ import math
 from so3krates_torch.tools import scatter
 from typing import Callable, Dict, Optional, Union
 
+# mpi4py is imported lazily to avoid conflicts with LAMMPS MPI initialization
+_MPI_COMM = None
+_MPI_CHECKED = False
+
+
+def _get_mpi_comm():
+    """Lazily get MPI communicator, avoiding module-level import."""
+    global _MPI_COMM, _MPI_CHECKED
+    if _MPI_CHECKED:
+        return _MPI_COMM
+    _MPI_CHECKED = True
+    try:
+        from mpi4py import MPI
+        _MPI_COMM = MPI.COMM_WORLD
+    except ImportError:
+        _MPI_COMM = None
+    return _MPI_COMM
+
+
+class MPIAllReduceSum(torch.autograd.Function):
+    """Differentiable MPI allreduce (SUM) over ranks.
+
+    Forward: out = Σ_r input_r, same value on every rank.
+    Backward: grad_input_r = Σ_r' grad_output_r' — the gradient of a
+    sum-across-ranks is itself a sum-across-ranks, so we allreduce the
+    incoming grad the same way.
+
+    Without this, `partial_charges = x_q + correction` where correction =
+    (0 − Σ_global x_q)/N loses the correction's gradient contribution across
+    ranks → multi-GPU forces are off by a small but systematic amount.
+    """
+
+    @staticmethod
+    def forward(ctx, input_tensor, comm):
+        from mpi4py import MPI
+        ctx.comm = comm
+        ctx.input_dtype = input_tensor.dtype
+        ctx.input_device = input_tensor.device
+        out_np = comm.allreduce(input_tensor.detach().cpu().numpy(), op=MPI.SUM)
+        return torch.from_numpy(out_np).to(
+            device=ctx.input_device, dtype=ctx.input_dtype
+        )
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        from mpi4py import MPI
+        grad_np = ctx.comm.allreduce(
+            grad_output.detach().cpu().numpy(), op=MPI.SUM
+        )
+        grad_in = torch.from_numpy(grad_np).to(
+            device=ctx.input_device, dtype=ctx.input_dtype
+        )
+        return grad_in, None
+
 
 class AtomicEnergyOutputHead(nn.Module):
     def __init__(
@@ -432,28 +486,62 @@ class PartialChargesOutputHead(nn.Module):
         total_charge: torch.Tensor,
         batch_segments: torch.Tensor,
         num_graphs: int,
-    ) -> Dict[str, torch.Tensor]:
+        n_real: int = None,
+    ) -> torch.Tensor:
+        """Predict partial charges and enforce (global) charge neutrality.
+
+        In LAMMPS mode with ghost atoms, `n_real` slices the neutrality sum to
+        real atoms only. In multi-rank LAMMPS (domain decomposition), each
+        rank sees only its local atoms; to get a globally-consistent
+        correction we allreduce the local sums across ranks via
+        `MPIAllReduceSum` — which is differentiable, unlike a bare
+        `mpi_comm.allreduce`. Preserving autograd through the allreduce is
+        essential: the cross-rank dependency `partial_charges = x_q +
+        (total_charge − Σ_global x_q)/N_global` contributes to `∂E/∂position`
+        and dropping it introduces a small systematic multi-GPU force error.
+        """
         # q_ - element-dependent bias
         q_ = self.atomic_embedding(atomic_numbers).squeeze(-1)
         x_ = self.transform_inv_features(inv_features).squeeze(-1)
         x_q = x_ + q_
 
-        total_charge_predicted = scatter.scatter_sum(
-            src=x_q, index=batch_segments, dim=0, dim_size=num_graphs
+        # In LAMMPS mode with ghost atoms, enforce charge neutrality only over
+        # real (local) atoms. Ghost atoms are periodic images or cross-domain
+        # neighbors and should not contribute to the charge sum.
+        if n_real is not None and n_real < len(x_q):
+            x_q_real = x_q[:n_real]
+            batch_segments_real = batch_segments[:n_real]
+        else:
+            x_q_real = x_q
+            batch_segments_real = batch_segments
+
+        local_charge_sum = scatter.scatter_sum(
+            src=x_q_real, index=batch_segments_real, dim=0, dim_size=num_graphs
         )  # (num_graphs)
 
-        number_of_atoms_in_molecule = scatter.scatter_sum(
-            src=torch.ones_like(batch_segments),
-            index=batch_segments,
+        local_atom_count = scatter.scatter_sum(
+            src=torch.ones_like(batch_segments_real),
+            index=batch_segments_real,
             dim=0,
             dim_size=num_graphs,
         )
+
+        mpi_comm = _get_mpi_comm() if n_real is not None else None
+        if mpi_comm is not None and mpi_comm.Get_size() > 1:
+            total_charge_predicted = MPIAllReduceSum.apply(
+                local_charge_sum, mpi_comm
+            )
+            number_of_atoms_in_molecule = MPIAllReduceSum.apply(
+                local_atom_count.float(), mpi_comm
+            )
+        else:
+            total_charge_predicted = local_charge_sum
+            number_of_atoms_in_molecule = local_atom_count
 
         charge_conservation = (1 / number_of_atoms_in_molecule) * (
             total_charge - total_charge_predicted
         )
 
-        # Repeat charge conservation for each atom in molecule
         partial_charges = x_q + charge_conservation[batch_segments]
         return partial_charges
 

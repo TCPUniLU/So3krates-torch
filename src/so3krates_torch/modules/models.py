@@ -410,6 +410,7 @@ class So3krates(torch.nn.Module):
         The backward pass (reverse_exchange) accumulates ghost gradients
         back onto the real atoms, which is essential for correct edge forces.
         """
+        import os
         n_real, n_total = self.lammps_natoms
         n_ghost = n_total - n_real
         pad = torch.zeros(
@@ -419,6 +420,20 @@ class So3krates(torch.nn.Module):
         )
         features = torch.cat((features, pad), dim=0)
         features = utils.LAMMPS_MP.apply(features, self.lammps_class)
+
+        # Debug: check if ghost features are non-zero after forward_exchange
+        if os.environ.get("SO3_DEBUG_FORWARD_EXCHANGE") and n_ghost > 0:
+            with torch.no_grad():
+                ghost_feats = features[n_real:].detach()
+                ghost_norms = torch.linalg.norm(ghost_feats, dim=1)
+                nonzero = (ghost_norms > 1e-10).sum().item()
+                print(f"[forward_exchange] n_real={n_real}, n_ghost={n_ghost}, "
+                      f"ghosts_with_features={nonzero}/{n_ghost} "
+                      f"({100*nonzero/n_ghost:.1f}%)")
+                if nonzero < n_ghost:
+                    zero_ghosts = (ghost_norms <= 1e-10).nonzero().squeeze()[:5]
+                    print(f"  First zero-feature ghosts: {(zero_ghosts + n_real).tolist()}")
+
         return features
 
     def _create_output_dict(
@@ -786,12 +801,19 @@ class SO3LR(So3krates):
             )
         electrostatic_energies = None
         if self.electrostatic_energy_bool:
+            # In LAMMPS mode, enforce charge neutrality only over local (real)
+            # atoms, excluding ghost atoms (periodic images or cross-domain).
+            n_real_for_charges = None
+            if lammps_mliap and "natoms" in data:
+                n_real_for_charges = int(data["natoms"][0])
+
             partial_charges = self.partial_charges_output_block(
                 inv_features=inv_features,
                 atomic_numbers=data["atomic_numbers"],
                 total_charge=data["total_charge"],
                 batch_segments=self.batch_segments,
                 num_graphs=self.num_graphs,
+                n_real=n_real_for_charges,
             )
 
             # In LAMMPS mode, positions covers only local atoms (n_local) while
@@ -802,12 +824,14 @@ class SO3LR(So3krates):
                 n_local = int(data["natoms"][0])
                 pc_dipole = partial_charges[:n_local]
                 bs_dipole = self.batch_segments[:n_local]
+                pos_dipole = self.positions[:n_local]
             else:
                 pc_dipole = partial_charges
                 bs_dipole = self.batch_segments
+                pos_dipole = self.positions
             dipole = self.dipole_output_head(
                 partial_charges=pc_dipole,
-                positions=self.positions,
+                positions=pos_dipole,
                 batch_segments=bs_dipole,
                 num_graphs=self.num_graphs,
             )
