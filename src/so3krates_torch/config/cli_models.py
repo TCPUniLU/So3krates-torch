@@ -126,8 +126,8 @@ class Jax2TorchArgs(BaseModel):
     device: str = "cpu"
     check_parity: bool = True
     parity_structure: Optional[str] = None
-    parity_atol: float = 1e-3
-    parity_rtol: float = 1e-2
+    parity_atol: float = 1e-5
+    parity_rtol: float = 1e-4
 
     @model_validator(mode="after")
     def validate_at_least_one_save_path(self):
@@ -174,8 +174,8 @@ class Torch2JaxArgs(BaseModel):
     dtype: str = "float32"
     check_parity: bool = True
     parity_structure: Optional[str] = None
-    parity_atol: float = 1e-3
-    parity_rtol: float = 1e-2
+    parity_atol: float = 1e-5
+    parity_rtol: float = 1e-4
 
     @model_validator(mode="after")
     def validate_at_least_one_save_path(self):

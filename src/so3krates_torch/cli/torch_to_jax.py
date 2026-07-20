@@ -76,13 +76,13 @@ def main():
     argparser.add_argument(
         "--parity_atol",
         type=float,
-        default=1e-3,
+        default=1e-5,
         help="Absolute tolerance for the parity check",
     )
     argparser.add_argument(
         "--parity_rtol",
         type=float,
-        default=1e-2,
+        default=1e-4,
         help="Relative tolerance for the parity check",
     )
 

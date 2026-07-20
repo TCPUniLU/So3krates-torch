@@ -444,8 +444,8 @@ def check_model_parity(
     r_max_lr: Optional[float] = None,
     structure_path: Optional[str] = None,
     index: int = 0,
-    atol: float = 1e-3,
-    rtol: float = 1e-2,
+    atol: float = 1e-5,
+    rtol: float = 1e-4,
     model_factory: Optional[Callable] = None,
     jax_input_builder: Optional[Callable] = None,
 ) -> bool:

@@ -332,8 +332,8 @@ This writes `hyperparameters.json` and `params.pkl` into the two given directori
 |------|---------|-------------|
 | `--check_parity` / `--no-check_parity` | `True` | After conversion, verify the two model representations agree on a real structure's energy/forces. |
 | `--parity_structure` | bundled `aqm_small.xyz` | ASE-readable structure file to check parity on. |
-| `--parity_atol` | `1e-3` | Absolute tolerance for the parity check. |
-| `--parity_rtol` | `1e-2` | Relative tolerance for the parity check. |
+| `--parity_atol` | `1e-5` | Absolute tolerance for the parity check. |
+| `--parity_rtol` | `1e-4` | Relative tolerance for the parity check. |
 
 ---
 
