@@ -113,8 +113,9 @@ class MergeArgs(BaseModel):
 
 class Jax2TorchArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    path_to_params: str
-    path_to_hyperparams: str
+    path_to_params: Optional[str] = None
+    path_to_hyperparams: Optional[str] = None
+    so3lr_dev_checkpoint: Optional[Literal["s", "m", "l"]] = None
     save_settings_path: Optional[str] = None
     save_state_dict_path: Optional[str] = None
     save_model_path: Optional[str] = None
@@ -139,6 +140,24 @@ class Jax2TorchArgs(BaseModel):
                 "At least one of --save_settings_path, "
                 "--save_state_dict_path, or --save_model_path "
                 "must be provided"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_checkpoint_source(self):
+        if self.so3lr_dev_checkpoint is not None:
+            if (
+                self.path_to_params is not None
+                or self.path_to_hyperparams is not None
+            ):
+                raise ValueError(
+                    "--so3lr_dev_checkpoint cannot be combined with "
+                    "--path_to_params/--path_to_hyperparams"
+                )
+        elif self.path_to_params is None or self.path_to_hyperparams is None:
+            raise ValueError(
+                "either both --path_to_params and --path_to_hyperparams, "
+                "or --so3lr_dev_checkpoint, must be given"
             )
         return self
 

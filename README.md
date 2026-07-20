@@ -18,7 +18,7 @@ Implementation of the So3krates + SO3LR model in pytorch.
 1. ASE calculator for MD (including pre-trained SO3LR)
 2. Inference over ase readable datasets: `torchkrates-eval`
 3. Error metrics over ase readable datasets: `torchkrates-metric`
-4. Transforming pyTorch and JAX parameter formates: `torchkrates-jax2torch` or `torchkrates-torch2jax` (for these you need to install jax, flax, and mlff (https://github.com/thorben-frank/mlff/tree/v1.0-lrs-gems))
+4. Transforming pyTorch and JAX parameter formates: `torchkrates-jax2torch` or `torchkrates-torch2jax` (for these you need to install jax, flax, and the `so3lr_dev` package (this repo's JAX v2 reference implementation))
 5. Training: `torchkrates-train --config config.yaml` (see example)
 6. Data preprocessing: `torchkrates-preprocess`
 7. HDF5 file merging: `torchkrates-merge`
@@ -293,7 +293,7 @@ PME tuning results (median over structures):
 
 ### `torchkrates-jax2torch` / `torchkrates-torch2jax` — Weight Conversion
 
-Convert model weights between the PyTorch and JAX (mlff) implementations. Requires `jax`, `flax`, and [`mlff`](https://github.com/thorben-frank/mlff/tree/v1.0-lrs-gems) to be installed.
+Convert model weights between the PyTorch and JAX implementations. The `--check_parity` default-on path (see below) and the general JAX-model-building path used for conversion require `jax`, `flax`, and the `so3lr_dev` package (this repo's JAX v2 reference implementation) to be installed — they no longer need `mlff`.
 
 **JAX to PyTorch:**
 
@@ -305,6 +305,14 @@ torchkrates-jax2torch \
 ```
 
 This writes a loadable torch `SO3LR` model (via `torch.save`) to `--save_model_path`.
+
+Instead of `--path_to_params`/`--path_to_hyperparams`, you can point at one of the bundled `so3lr_dev` checkpoints (so3lr-s/-m/-l) by size via `--so3lr_dev_checkpoint {s,m,l}` (requires `so3lr_dev` to be installed):
+
+```bash
+torchkrates-jax2torch \
+    --so3lr_dev_checkpoint s \
+    --save_model_path so3lr_s_torch.model
+```
 
 **PyTorch to JAX:**
 

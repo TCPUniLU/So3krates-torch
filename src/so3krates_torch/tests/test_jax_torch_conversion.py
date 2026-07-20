@@ -619,3 +619,118 @@ def test_torch_to_flax_mapping_adds_resid_lambdas_only_when_flagged():
     mapping_on = get_torch_to_flax_mapping(cfg, trainable_rbf=True)
     assert mapping_on["resid_lambdas"] == "params/resid_lambdas"
     assert mapping_on["x0_lambdas"] == "params/x0_lambdas"
+
+
+# ---------------------------------------------------------------------
+# Task 4: `--so3lr_dev_checkpoint {s,m,l}` on `torchkrates-jax2torch`.
+#
+# Lets callers point at one of the three real, bundled `so3lr_dev`
+# checkpoints (so3lr-s/-m/-l) by name instead of spelling out
+# `--path_to_params`/`--path_to_hyperparams` -- resolved via
+# `importlib.resources.files("so3lr")`. `Jax2TorchArgs` itself gets an
+# independent `@model_validator` enforcing the same mutual-exclusivity/
+# at-least-one-form invariant the CLI's own `argparser.error(...)`
+# calls already enforce, since `Jax2TorchArgs` can be constructed
+# directly (as these tests do) without going through the CLI.
+# ---------------------------------------------------------------------
+
+from pydantic import ValidationError
+
+from so3krates_torch.config import Jax2TorchArgs
+
+
+def test_jax2torch_args_accepts_so3lr_dev_checkpoint():
+    args = Jax2TorchArgs(
+        so3lr_dev_checkpoint="s",
+        save_model_path="/tmp/does_not_need_to_exist.model",
+    )
+    assert args.so3lr_dev_checkpoint == "s"
+    assert args.path_to_params is None
+    assert args.path_to_hyperparams is None
+
+
+def test_jax2torch_args_rejects_checkpoint_and_path_together():
+    with pytest.raises(ValidationError):
+        Jax2TorchArgs(
+            so3lr_dev_checkpoint="s",
+            path_to_params="params.pkl",
+            save_model_path="/tmp/does_not_need_to_exist.model",
+        )
+
+
+def test_jax2torch_args_rejects_neither_given():
+    with pytest.raises(ValidationError):
+        Jax2TorchArgs(save_model_path="/tmp/does_not_need_to_exist.model")
+
+
+def test_so3lr_dev_checkpoint_resolves_to_real_existing_files():
+    """Confirms `importlib.resources.files("so3lr")` genuinely resolves
+    each bundled so3lr-s/-m/-l checkpoint to real, existing
+    `params.pkl`/`hyperparameters.json` files in this environment --
+    the core claim `--so3lr_dev_checkpoint` relies on -- independent of
+    whether `convert_flax_to_torch`/`SO3LR.__init__` can currently
+    build a torch model from their *contents* (see
+    `test_jax2torch_cli_so3lr_dev_checkpoint_end_to_end` below for that,
+    currently-failing, separate concern).
+    """
+    from importlib.resources import files
+
+    for size in ("s", "m", "l"):
+        checkpoint_dir = files("so3lr") / "models" / f"so3lr-{size}"
+        params_path = checkpoint_dir / "params.pkl"
+        hyperparams_path = checkpoint_dir / "hyperparameters.json"
+        assert params_path.is_file()
+        assert hyperparams_path.is_file()
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Pre-existing, out-of-scope bug in models.py (SO3krates.__init__, "
+        "not touched by this task): it unconditionally raises "
+        "NotImplementedError when `layers_behave_like_identity_fn_at_init` "
+        "or `output_is_zero_at_init` is True, regardless of the fact that "
+        "a real checkpoint's weights get loaded on top right afterward "
+        "(making the 'at init' behavior moot for conversion purposes). "
+        "All three real, bundled so3lr_dev checkpoints (so3lr-s/-m/-l) "
+        "set both flags True in their hyperparameters.json, so "
+        "`torchkrates-jax2torch --so3lr_dev_checkpoint {s,m,l}` currently "
+        "always hits this. Confirmed this is unrelated to this task's new "
+        "code: reproduces identically when pointing the pre-existing "
+        "--path_to_params/--path_to_hyperparams flags directly at the "
+        "same real so3lr-s checkpoint files, with --so3lr_dev_checkpoint "
+        "never involved. See the Task 4 report for the full repro."
+    ),
+)
+def test_jax2torch_cli_so3lr_dev_checkpoint_end_to_end(tmp_path, monkeypatch):
+    """Real end-to-end run of `torchkrates-jax2torch
+    --so3lr_dev_checkpoint s`, exercising the full CLI wiring (argv ->
+    --so3lr_dev_checkpoint resolution -> Jax2TorchArgs validation ->
+    conversion) against a genuine bundled checkpoint.
+
+    `--no-check_parity`: this test's purpose is confirming the
+    checkpoint-resolution wiring, not re-exercising the already-covered
+    `--check_parity` machinery (see
+    `test_jax2torch_cli_check_parity_passes_by_default` above) -- kept
+    light so it doesn't also pay for a full JAX-side parity build on a
+    real (larger-than-the-synthetic-v1-test-model) bundled checkpoint.
+
+    Currently xfails (see reason above) on a pre-existing models.py
+    limitation unrelated to this task -- `strict=True` so this turns
+    into a loud failure (prompting an update here) the day that
+    limitation is fixed and this starts passing for real.
+    """
+    save_model_path = tmp_path / "so3lr_s_torch.model"
+
+    argv = [
+        "torchkrates-jax2torch",
+        "--so3lr_dev_checkpoint",
+        "s",
+        "--save_model_path",
+        str(save_model_path),
+        "--no-check_parity",
+    ]
+
+    monkeypatch.setattr(sys, "argv", argv)
+    assert jax_to_torch_main() == 0
+    assert save_model_path.exists()

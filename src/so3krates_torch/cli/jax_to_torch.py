@@ -11,14 +11,26 @@ def main():
     argparser.add_argument(
         "--path_to_params",
         type=str,
-        required=True,
+        default=None,
         help="Path to the model parameters file",
     )
     argparser.add_argument(
         "--path_to_hyperparams",
         type=str,
-        required=True,
+        default=None,
         help="Path to the model hyperparameters file",
+    )
+    argparser.add_argument(
+        "--so3lr_dev_checkpoint",
+        type=str,
+        choices=["s", "m", "l"],
+        default=None,
+        help=(
+            "Load one of the bundled so3lr_dev checkpoints (so3lr-s/-m/-l) "
+            "by size instead of --path_to_params/--path_to_hyperparams. "
+            "Requires so3lr_dev (`pip install -e <so3lr_dev checkout>`) to "
+            "be installed."
+        ),
     )
     argparser.add_argument(
         "--save_settings_path",
@@ -91,6 +103,35 @@ def main():
     )
 
     args = argparser.parse_args()
+
+    if args.so3lr_dev_checkpoint is not None:
+        if (
+            args.path_to_params is not None
+            or args.path_to_hyperparams is not None
+        ):
+            argparser.error(
+                "--so3lr_dev_checkpoint cannot be combined with "
+                "--path_to_params/--path_to_hyperparams"
+            )
+        from importlib.resources import files
+
+        checkpoint_dir = (
+            files("so3lr") / "models" / f"so3lr-{args.so3lr_dev_checkpoint}"
+        )
+        args.path_to_params = str(checkpoint_dir / "params.pkl")
+        args.path_to_hyperparams = str(checkpoint_dir / "hyperparameters.json")
+        # Resolved to concrete paths above -- clear this so the
+        # Jax2TorchArgs.model_validate(vars(args)) call below (which
+        # sees this already-resolved args, not the raw --so3lr_dev_
+        # checkpoint/--path_to_params combination a user would type)
+        # doesn't trip its own mutual-exclusivity validator.
+        args.so3lr_dev_checkpoint = None
+    elif args.path_to_params is None or args.path_to_hyperparams is None:
+        argparser.error(
+            "either both --path_to_params and --path_to_hyperparams, or "
+            "--so3lr_dev_checkpoint, must be given"
+        )
+
     validated = Jax2TorchArgs.model_validate(vars(args))
 
     dtype = getattr(torch, validated.dtype, torch.float32)
