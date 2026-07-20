@@ -455,6 +455,15 @@ def get_model_settings_flax_to_torch(
         hasattr(cfg.model, k)
         for k in ("use_rms_norm", "qk_norm", "use_residual_scalars")
     )
+    # Detect new HirshfeldSparse arch: only one embedding (no Embed_1 key).
+    # Must agree with `get_flax_to_torch_mapping`'s auto-detection (same
+    # condition, same fallback order) since one constructs the model and
+    # the other maps weights into it -- see that function for details.
+    use_simple_hirshfeld = getattr(cfg.model, "use_simple_hirshfeld", False)
+    if flat_params is not None and not use_simple_hirshfeld:
+        use_simple_hirshfeld = (
+            "params/observables_2/Embed_1/embedding" not in flat_params
+        )
     return dict(
         r_max=cfg.model.cutoff,
         r_max_lr=cfg.model.cutoff_lr,
@@ -504,7 +513,7 @@ def get_model_settings_flax_to_torch(
             cfg.model, "legacy_so3lr_bool", False if is_v2_config else True
         ),
         c6_ratios_bool=getattr(cfg.model, "c6_ratios_bool", False),
-        use_simple_hirshfeld=getattr(cfg.model, "use_simple_hirshfeld", False),
+        use_simple_hirshfeld=use_simple_hirshfeld,
         # JAX ties both electrostatics PME and dispersion PME to the same
         # single `kspace_electrostatics` method flag (and shared
         # kspace_smearing/kspace_spacing values) -- there is no separate
@@ -715,7 +724,19 @@ def convert_flax_to_torch(
         dtype=dtype,
     )
 
-    if hasattr(cfg.data, "energy_shifts"):
+    if hasattr(
+        cfg.data, "energy_shifts"
+    ) and not cfg.model.energy_learn_atomic_type_shifts:
+        # When `energy_learn_atomic_type_shifts` is True, `energy_offset`
+        # is a genuinely learned flax parameter and is already mapped into
+        # this same key by `convert_flax_to_torch_params` above (via
+        # `get_flax_to_torch_mapping`'s `energy_offset` -> `energy_shifts`
+        # entry, added exactly when this flag is True) -- overwriting it
+        # here would clobber that correctly-shaped, learned value with the
+        # unrelated, dataset-level, differently-shaped `cfg.data.
+        # energy_shifts` quantity. Only fall back to that dataset-level
+        # value when the generic weight-mapping path never populated this
+        # key in the first place (i.e. the flag is False).
         torch_state_dict[
             "atomic_energy_output_block.energy_shifts"
         ] = nn.Parameter(
