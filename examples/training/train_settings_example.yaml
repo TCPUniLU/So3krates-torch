@@ -36,6 +36,22 @@ ARCHITECTURE:
   use_charge_embed: true
   use_spin_embed: true
   zbl_repulsion_bool: true
+  # --- v2 (so3lr_dev) architecture options ---
+  # use_rms_norm: false
+  #   Use parameter-free RMSNorm instead of LayerNorm wherever
+  #   layer_normalization_1/2 is enabled -- matches so3lr_dev's v2
+  #   architecture (all three shipped so3lr-s/-m/-l checkpoints set this).
+  #
+  # qk_norm: false
+  #   RMS-normalize attention queries/keys (never values) after the qk
+  #   non-linearity, in every attention block including LoRA/DoRA/VeRA
+  #   variants. Also a v2-only option.
+  #
+  # use_residual_scalars: false
+  #   Add two learnable per-layer scalars (resid_lambdas/x0_lambdas) mixing
+  #   each layer's invariant features with the initial embedding before
+  #   every transformer layer. Also a v2-only option.
+  #
   # --- Alternative / extended physics options ---
   # nhl_repulsion_bool: false
   #   Use the NHL fixed-table pair repulsion instead of the learnable ZBL
