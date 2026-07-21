@@ -149,14 +149,18 @@ def test_so3lr_checkpoint_l_parity():
 # Second gotcha, discovered while writing this exact test (see the test
 # function's own docstring below for the full root-cause diagnosis): the
 # brief's literal suggested structure -- a bare, un-rattled
-# bulk("Ar", "fcc", a=5.26).repeat((3, 3, 3)) -- places 6 of its 27
-# atoms exactly on a periodic-cell-boundary fractional coordinate,
-# which triggers an unrelated PME mesh-interpolation differentiability
-# edge case (independently present in both torch-pme and so3lr_dev's
-# jaxpme backend) at exactly those atoms, producing large, misleading
-# force "disagreements" that are not actually a JAX<->torch model
-# discrepancy (confirmed via independent finite-difference checks on
-# each side). A small deterministic ``atoms.rattle(...)`` avoids this.
+# bulk("Ar", "fcc", a=5.26).repeat((3, 3, 3)) -- has 9 atoms sitting
+# exactly on a periodic-cell-boundary fractional coordinate, 6 of which
+# trigger an unrelated PME mesh-interpolation differentiability edge
+# case (independently present in both torch-pme and so3lr_dev's jaxpme
+# backend) -- boundary-alignment alone is necessary but not sufficient
+# to predict exactly which atoms misbehave (an independent review traced
+# the trigger further, to bare torch-pme mis-differentiating at
+# symmetric/degenerate charge configurations) -- producing large,
+# misleading force "disagreements" at those atoms that are not actually
+# a JAX<->torch model discrepancy (confirmed via independent
+# finite-difference checks on each side). A small deterministic
+# ``atoms.rattle(...)`` avoids this regardless of the exact trigger.
 # ---------------------------------------------------------------------
 
 
@@ -191,11 +195,18 @@ def test_so3lr_checkpoint_s_pme_enabled_parity(tmp_path):
     keep this file's tests self-contained.
 
     Why the rattle (a real finding, not cosmetic): the un-rattled
-    lattice places 6 of its 27 atoms exactly on a periodic-cell-boundary
-    fractional coordinate (frac_z == 0.0 exactly -- an artifact of
-    ``bulk("Ar", "fcc", ...)``'s 1-atom primitive cell being repeated by
-    plain integer tiling, so every tile's corner atom sits exactly on
-    the boundary). At those 6 atoms specifically, BOTH sides'
+    lattice has 9 of its 27 atoms sitting exactly on a
+    periodic-cell-boundary fractional coordinate (frac_z == 0.0 exactly
+    -- an artifact of ``bulk("Ar", "fcc", ...)``'s 1-atom primitive cell
+    being repeated by plain integer tiling, so every tile's corner atom
+    sits exactly on the boundary), but only 6 of those 9 actually
+    misbehave -- an independent review of this test confirmed
+    boundary-alignment alone is necessary but not sufficient to predict
+    which atoms are affected, and traced the trigger further (using bare
+    ``torchpme.PMECalculator`` with no SO3LR model code at all) to
+    mis-differentiation at symmetric/degenerate per-atom charge
+    configurations, which is what a uniform-element Ar lattice produces.
+    At those 6 atoms specifically, BOTH sides'
     forces (autodiff gradients) disagreed sharply from each other
     (observed: per-atom force diff up to ~0.236 eV/Angstrom, energy
     still agreeing to ~5e-8 relative) while the other 21 (generic,
