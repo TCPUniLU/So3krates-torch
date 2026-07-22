@@ -591,9 +591,7 @@ def get_model_settings_flax_to_torch(
         residual_mlp_2=cfg.model.residual_mlp_2,
         use_rms_norm=getattr(cfg.model, "use_rms_norm", False),
         qk_norm=getattr(cfg.model, "qk_norm", False),
-        use_residual_scalars=getattr(
-            cfg.model, "use_residual_scalars", False
-        ),
+        use_residual_scalars=getattr(cfg.model, "use_residual_scalars", False),
         use_charge_embed=cfg.model.use_charge_embed,
         use_spin_embed=cfg.model.use_spin_embed,
         zbl_repulsion_bool=cfg.model.zbl_repulsion_bool,
@@ -846,9 +844,10 @@ def convert_flax_to_torch(
         dtype=dtype,
     )
 
-    if hasattr(
-        cfg.data, "energy_shifts"
-    ) and not cfg.model.energy_learn_atomic_type_shifts:
+    if (
+        hasattr(cfg.data, "energy_shifts")
+        and not cfg.model.energy_learn_atomic_type_shifts
+    ):
         # When `energy_learn_atomic_type_shifts` is True, `energy_offset`
         # is a genuinely learned flax parameter and is already mapped into
         # this same key by `convert_flax_to_torch_params` above (via

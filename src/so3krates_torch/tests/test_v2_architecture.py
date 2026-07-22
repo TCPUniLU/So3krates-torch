@@ -184,9 +184,12 @@ class TestUseRmsNorm:
 class TestQkNormBase:
     def test_qk_norm_normalizes_q_and_k_not_v(self):
         torch.set_default_dtype(torch.float64)
-        inv_features_inv, inv_features_ev, receivers, senders = (
-            _random_qkv_inputs()
-        )
+        (
+            inv_features_inv,
+            inv_features_ev,
+            receivers,
+            senders,
+        ) = _random_qkv_inputs()
 
         block_norm = _make_block(EuclideanAttentionBlock, True, seed=1)
         block_plain = _make_block(EuclideanAttentionBlock, False, seed=1)
@@ -234,9 +237,12 @@ def test_qk_norm_applied_in_finetuning_subclass_non_fused_branch(
     each fine-tuning subclass's `_get_qkv` override (the fused branch
     already delegates to the base class, which is covered separately)."""
     torch.set_default_dtype(torch.float64)
-    inv_features_inv, inv_features_ev, receivers, senders = (
-        _random_qkv_inputs()
-    )
+    (
+        inv_features_inv,
+        inv_features_ev,
+        receivers,
+        senders,
+    ) = _random_qkv_inputs()
 
     torch.manual_seed(3)
     extra_kwargs = _make_vera_matrices() if needs_vera else {}
@@ -301,9 +307,7 @@ class TestUseResidualScalars:
         )
         assert torch.allclose(
             sd["x0_lambdas"],
-            torch.full(
-                (num_layers,), 0.1, dtype=sd["x0_lambdas"].dtype
-            ),
+            torch.full((num_layers,), 0.1, dtype=sd["x0_lambdas"].dtype),
         )
         assert model.resid_lambdas.requires_grad
         assert model.x0_lambdas.requires_grad
@@ -341,9 +345,7 @@ class TestUseResidualScalars:
         model = So3krates(**config)
         model.train()
         batch = make_batch(h2o_atoms, r_max=config["r_max"])
-        out = model(
-            batch.to_dict(), compute_stress=False, compute_force=False
-        )
+        out = model(batch.to_dict(), compute_stress=False, compute_force=False)
         energy = out["energy"].sum()
         energy.backward()
 

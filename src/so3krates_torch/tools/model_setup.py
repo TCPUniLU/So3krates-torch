@@ -80,9 +80,7 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
         "use_spin_embed": arch_config.get("use_spin_embed", False),
         "qk_non_linearity": arch_config.get("qk_non_linearity", "identity"),
         "qk_norm": arch_config.get("qk_norm", False),
-        "use_residual_scalars": arch_config.get(
-            "use_residual_scalars", False
-        ),
+        "use_residual_scalars": arch_config.get("use_residual_scalars", False),
         "cutoff_fn": arch_config.get("cutoff_fn", "cosine"),
         "activation_fn": arch_config.get("activation_fn", "silu"),
         "energy_activation_fn": arch_config.get(

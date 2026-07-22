@@ -262,9 +262,12 @@ def test_so3lr_checkpoint_s_pme_enabled_parity(tmp_path):
     from ase.build import bulk
     from ase.io import write as ase_write
 
-    params_path, _hyperparams_path, flax_params, _cfg_unused = (
-        _load_checkpoint("s")
-    )
+    (
+        params_path,
+        _hyperparams_path,
+        flax_params,
+        _cfg_unused,
+    ) = _load_checkpoint("s")
 
     with open(params_path.replace("params.pkl", "hyperparameters.json")) as f:
         raw_hyperparams = json.load(f)
