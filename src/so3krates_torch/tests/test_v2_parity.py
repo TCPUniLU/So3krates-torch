@@ -1,6 +1,6 @@
 """Permanent checkpoint-level JAX<->torch parity suite for the real,
-bundled ``so3lr_dev`` checkpoints (``so3lr-s``/``-m``/``-l``), plus one
-PME-enabled numerical-consistency test.
+bundled ``so3lr_dev`` checkpoints (``so3lr-s``/``-m``/``-l``), plus
+PME-enabled numerical-consistency tests.
 
 This is the final task of the 5-task plan
 (``.plans/plans/2026-07-17-so3lr-v2-rmsnorm-qknorm-residual-scalars.md``)
@@ -12,6 +12,19 @@ reference at the genuine float64 noise floor (~1e-7-1e-8) -- this file
 locks that hard-won result in as a permanent regression suite (Part A),
 plus closes the one remaining, never-yet-tested gap: PME-enabled
 numerics against real checkpoint weights (Part B).
+
+Part C (added by Task 3 of the later, independent
+``.plans/plans/2026-07-21-pme-electrostatics-parity-fix.md`` plan) adds
+charged-system (rattled NaCl rock-salt) PME parity tests -- Parts A/B
+never exercise a genuinely charged periodic structure under PME, which
+is exactly the case most sensitive to that plan's Task 1 fix (a missing
+``electrostatic_energy_scale`` erf-damping term and a spurious extra
+0.5 factor in ``PMEElectrostaticInteraction``'s k-space energy, both
+affecting every PME-electrostatics run, not just charged ones). Part
+B's existing Ar-based test was also re-measured and its tolerance
+tightened as part of that same task, now that the underlying bug it was
+unknowingly compensating for is fixed. See Part C's own module-level
+comment further down for details.
 
 Part A follows the exact same checkpoint-resolution/model-building
 pattern as the existing, narrower
@@ -291,23 +304,31 @@ def test_so3lr_checkpoint_s_pme_enabled_parity(tmp_path):
     structure_path = tmp_path / "ar_pme.xyz"
     ase_write(str(structure_path), ar)
 
-    # PME/Ewald mesh discretization has its own, separately documented,
-    # legitimately-larger error floor in this exact codebase than the
-    # kspace-disabled machine-precision-ceiling case above (see
-    # test_pme_dispersion.py's Test 1/Test 4 -- meV/atom-level
-    # residual-split agreement was the documented target there, not
-    # eV-level machine-precision agreement; also flagged forward
-    # explicitly by Task 4's fix #5 report as something this task should
-    # account for). Observed on this run (post-rattle, see docstring
-    # above): energy max_abs_diff=2.611e-05 eV, forces
-    # max_abs_diff=5.824e-05 eV/Angstrom, both smoothly distributed
-    # across all 27 atoms (no outlier) -- atol=5e-4 gives a comfortable
-    # ~8.5x margin above the worst observed value without being an
-    # arbitrarily huge, unjustified tolerance. rtol=0.0 for the same
-    # reason as the tight-tolerance Part-A template test in
-    # test_jax_torch_conversion.py: some force components are near
-    # zero, which would otherwise inflate a relative-diff-based check
-    # into a false failure.
+    # NOTE (re-validated as part of the PME-electrostatics-parity-fix
+    # plan's Task 3, .superpowers/sdd/pme-elec-task-3-brief.md): the
+    # numbers/tolerance below were re-measured fresh *after* that plan's
+    # Task 1 fix (.superpowers/sdd/pme-elec-task-1-report.md) landed --
+    # that fix removed a spurious extra 0.5 factor from
+    # PMEElectrostaticInteraction's k-space energy (present for *every*
+    # PME-electrostatics case, not just charged systems) and added the
+    # model's own electrostatic_energy_scale erf-damping to the
+    # real-space residual term, both of which change this Ar test's
+    # k-space contribution too even though Ar is near-neutral. The
+    # previously-documented atol=5e-4 (calibrated against a *pre-fix*
+    # observation of energy max_abs_diff=2.611e-05 eV, forces
+    # max_abs_diff=5.824e-05 eV/Angstrom) is now far looser than
+    # necessary: freshly re-measured post-fix on this exact structure,
+    # energy max_abs_diff=1.310e-06 eV (max_rel_diff=5.312e-08), forces
+    # max_abs_diff=6.534e-09 eV/Angstrom (max_rel_diff=1.122e-06) -- both
+    # roughly an order of magnitude tighter than before, now landing at
+    # the same machine-precision-ceiling order of magnitude as Part A's
+    # kspace-disabled tests and the new charged-NaCl PME tests below.
+    # Switched to check_model_parity's own tightened default tolerance
+    # (atol=1e-5, rtol=1e-4, see the module docstring's Part-A
+    # rationale) instead of a bespoke looser one -- it comfortably covers
+    # the fresh numbers (~7.6x margin on energy, ~1500x on forces)
+    # without carrying forward a tolerance sized for a bug that no longer
+    # exists.
     assert check_model_parity(
         cfg=cfg,
         flax_params=flax_params,
@@ -315,6 +336,211 @@ def test_so3lr_checkpoint_s_pme_enabled_parity(tmp_path):
         r_max=cfg.model.cutoff,
         r_max_lr=cfg.model.cutoff_lr,
         structure_path=str(structure_path),
-        atol=5e-4,
-        rtol=0.0,
+    )
+
+
+# ---------------------------------------------------------------------
+# Part C: charged-system (NaCl) PME parity tests.
+#
+# Parts A/B above never exercise a genuinely charged periodic structure
+# under PME: Part A uses the shipped checkpoints' kspace-disabled
+# default, and Part B's Ar lattice is a single, near-neutral element.
+# The bug this whole plan fixed (see
+# .superpowers/sdd/pme-elec-task-1-report.md/-task-2-report.md) --
+# ``PMEElectrostaticInteraction`` silently missing the model's own
+# ``electrostatic_energy_scale`` erf-damping entirely, plus a spurious
+# extra 0.5 factor halving the k-space electrostatics energy -- affected
+# every PME-electrostatics run, not just charged ones, but a charged
+# rock-salt lattice is exactly the case where getting the long-range
+# electrostatics tail wrong would matter most in practice. This section
+# closes that specific coverage gap with a rattled 2x2x2 NaCl rock-salt
+# supercell (16 atoms, formal +1/-1 ionic charges) -- the exact
+# construction proven during this plan's diagnosis phase (see Task 1's
+# report) and reused (2-atom primitive cell only) by
+# ``test_pme_electrostatics.py``'s own Madelung test.
+# ---------------------------------------------------------------------
+
+
+def _build_rattled_nacl_structure(tmp_path, seed=7):
+    """2x2x2 NaCl rock-salt supercell (16 atoms), rattled to avoid the
+    same periodic-boundary-aligned PME mesh-interpolation edge case
+    documented in Part B's test docstring above (this exact convention
+    -- ``a=5.6402``, ``repeat((2, 2, 2))``,
+    ``rattle(stdev=0.05, seed=7)`` -- is the setup used during this
+    plan's diagnosis phase; see
+    ``.superpowers/sdd/pme-elec-task-1-report.md``)."""
+    from ase.build import bulk
+    from ase.io import write as ase_write
+
+    nacl = bulk("NaCl", crystalstructure="rocksalt", a=5.6402).repeat(
+        (2, 2, 2)
+    )
+    nacl.rattle(stdev=0.05, seed=seed)
+    structure_path = tmp_path / "nacl_pme.xyz"
+    ase_write(str(structure_path), nacl)
+    return str(structure_path)
+
+
+def _pme_hyperparams(raw_hyperparams: dict, **model_overrides) -> dict:
+    """Deep-copy a checkpoint's raw ``hyperparameters.json`` dict, force
+    PME kspace electrostatics (and, per ``get_model_settings_flax_to_
+    torch``'s single shared ``kspace_electrostatics`` flag, PME
+    dispersion too) on -- same convention as Part B's test above --
+    override ``cutoff_lr`` down to 10.0 for the same real-space
+    neighbor-list-explosion reason documented in Part B's module-level
+    comment, and apply any additional per-test ``model`` overrides (e.g.
+    ``electrostatic_energy_bool=False`` to isolate dispersion)."""
+    modified = copy.deepcopy(raw_hyperparams)
+    modified["model"]["kspace_electrostatics"] = "pme"
+    modified["model"]["kspace_smearing"] = 0.5
+    modified["model"]["kspace_spacing"] = 0.25
+    modified["model"]["cutoff_lr"] = 10.0
+    modified["model"].update(model_overrides)
+    return modified
+
+
+def _check_checkpoint_pme_parity_on_structure(
+    size: str,
+    structure_path: str,
+    tmp_path,
+    label: str,
+    **model_overrides,
+) -> bool:
+    """Build the torch model for real checkpoint ``size`` with PME
+    kspace forced on (plus any ``model_overrides``, e.g. to isolate
+    dispersion) and check parity against JAX on ``structure_path``, at
+    ``check_model_parity``'s own tightened default tolerance
+    (``atol=1e-5, rtol=1e-4``) -- see the calling test functions'
+    docstrings below for the real observed numbers that justify relying
+    on the default here rather than a custom looser one."""
+    params_path, _hp_path, flax_params, _cfg_unused = _load_checkpoint(size)
+    with open(params_path.replace("params.pkl", "hyperparameters.json")) as f:
+        raw_hyperparams = json.load(f)
+
+    modified_hyperparams = _pme_hyperparams(raw_hyperparams, **model_overrides)
+    modified_hyperparams_path = (
+        tmp_path / f"hyperparameters_pme_{size}_{label}.json"
+    )
+    with open(modified_hyperparams_path, "w") as f:
+        json.dump(modified_hyperparams, f)
+
+    torch_model = convert_flax_to_torch(
+        path_to_flax_params=params_path,
+        path_to_flax_hyperparams=str(modified_hyperparams_path),
+        dtype=torch.float64,
+    )
+    cfg = config_dict.ConfigDict(modified_hyperparams)
+
+    return check_model_parity(
+        cfg=cfg,
+        flax_params=flax_params,
+        torch_model=torch_model,
+        r_max=cfg.model.cutoff,
+        r_max_lr=cfg.model.cutoff_lr,
+        structure_path=structure_path,
+    )
+
+
+def test_so3lr_checkpoint_s_pme_electrostatics_charged_parity(tmp_path):
+    """Charged-system PME electrostatics(+dispersion) parity, cheapest
+    real checkpoint (2 layers, 128 features), on the rattled 2x2x2 NaCl
+    supercell.
+
+    Both ``electrostatic_energy_bool`` and ``dispersion_energy_bool``
+    are left at the checkpoint's own (both ``True``) default -- unlike
+    the isolated-dispersion regression test below, this is a combined
+    check, which is fine: it is electrostatics specifically that this
+    plan's Task 1 fix changed, and this rattled charged lattice is
+    exactly the structure most sensitive to that fix's k-space erf-
+    damping/0.5-factor corrections.
+
+    Freshly observed (post-fix), via ``check_model_parity``'s printed
+    report: energy max_abs_diff=1.280e-06 eV (max_rel_diff=2.585e-08),
+    forces max_abs_diff=2.877e-08 eV/Angstrom
+    (max_rel_diff=5.769e-06) -- comfortably inside
+    ``check_model_parity``'s own default tolerance (``atol=1e-5,
+    rtol=1e-4``, ~7.8x margin on energy, ~350x on forces), at the same
+    order of magnitude as this file's kspace-disabled Part-A tests and
+    Part B's re-validated Ar test. No custom ``atol``/``rtol`` override
+    needed.
+    """
+    structure_path = _build_rattled_nacl_structure(tmp_path)
+    assert _check_checkpoint_pme_parity_on_structure(
+        "s", structure_path, tmp_path, "electro"
+    )
+
+
+def test_so3lr_checkpoint_m_pme_electrostatics_charged_parity(tmp_path):
+    """Same as the ``-s`` test above, mid-size checkpoint (3 layers,
+    128 features).
+
+    Freshly observed: energy max_abs_diff=7.269e-07 eV
+    (max_rel_diff=1.442e-08), forces max_abs_diff=8.521e-08
+    eV/Angstrom (max_rel_diff=9.416e-06) -- again comfortably inside
+    the default ``atol=1e-5, rtol=1e-4`` tolerance (~14x margin on
+    energy, ~117x on forces).
+    """
+    structure_path = _build_rattled_nacl_structure(tmp_path)
+    assert _check_checkpoint_pme_parity_on_structure(
+        "m", structure_path, tmp_path, "electro"
+    )
+
+
+def test_so3lr_checkpoint_l_pme_electrostatics_charged_parity(tmp_path):
+    """Same as the ``-s``/``-m`` tests above, largest checkpoint (3
+    layers, 256 features, doubled degrees).
+
+    Freshly observed: energy max_abs_diff=4.059e-07 eV
+    (max_rel_diff=8.307e-09), forces max_abs_diff=9.448e-08
+    eV/Angstrom (max_rel_diff=8.175e-06) -- comfortably inside the
+    default ``atol=1e-5, rtol=1e-4`` tolerance (~25x margin on energy,
+    ~106x on forces). Runtime is not materially higher than ``-s``/
+    ``-m`` for this small 16-atom structure (~20s per test, dominated
+    by JAX JIT compilation, not model size) -- so unlike some other
+    per-checkpoint-size cost tradeoffs in this codebase, there was no
+    reason to skip ``-m``/``-l`` here.
+    """
+    structure_path = _build_rattled_nacl_structure(tmp_path)
+    assert _check_checkpoint_pme_parity_on_structure(
+        "l", structure_path, tmp_path, "electro"
+    )
+
+
+def test_so3lr_checkpoint_s_pme_dispersion_charged_regression(tmp_path):
+    """PME-dispersion-only regression check on the same charged rattled
+    NaCl supercell (cheapest checkpoint only -- this closes a coverage
+    gap, it is not re-validating a fix: dispersion's PME real-space
+    residual formula is already believed correct, per this plan's own
+    empirical finding recorded in
+    ``.superpowers/sdd/pme-elec-task-1-report.md``/plan docs; no code
+    change was needed or made to the dispersion path).
+
+    Isolates dispersion by setting ``electrostatic_energy_bool=False``
+    in the hyperparameters override (rather than keeping both terms on
+    and treating it as a combined check, as the electrostatics tests
+    above do) -- ``get_model_settings_flax_to_torch`` reads
+    ``cfg.model.electrostatic_energy_bool``/``dispersion_energy_bool``
+    directly from the (here, modified) hyperparameters dict on both the
+    JAX-model-construction side (``make_so3krates_sparse_from_config``)
+    and the torch side, so this cleanly removes electrostatics from
+    both models' energy rather than merely occluding it -- a strictly
+    stronger isolation than "keep both on".
+
+    Freshly observed: energy max_abs_diff=1.302e-06 eV
+    (max_rel_diff=3.302e-08), forces max_abs_diff=1.727e-08
+    eV/Angstrom (max_rel_diff=7.474e-07) -- comfortably inside the
+    default ``atol=1e-5, rtol=1e-4`` tolerance (~7.7x margin on energy,
+    ~580x on forces), confirming the already-correct PME-dispersion
+    real-space/k-space split holds up on a genuinely charged structure
+    too (charge only matters here insofar as it changes which atoms'
+    Hirshfeld ratios/C6 coefficients get evaluated at which positions,
+    not the dispersion formula itself).
+    """
+    structure_path = _build_rattled_nacl_structure(tmp_path)
+    assert _check_checkpoint_pme_parity_on_structure(
+        "s",
+        structure_path,
+        tmp_path,
+        "disp_only",
+        electrostatic_energy_bool=False,
     )
