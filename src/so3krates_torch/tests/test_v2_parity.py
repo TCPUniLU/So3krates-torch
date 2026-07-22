@@ -544,3 +544,48 @@ def test_so3lr_checkpoint_s_pme_dispersion_charged_regression(tmp_path):
         "disp_only",
         electrostatic_energy_bool=False,
     )
+
+
+def test_so3lr_checkpoint_s_pme_electrostatics_only_charged_parity(
+    tmp_path,
+):
+    """PME-electrostatics-only (``dispersion_energy_bool=False``)
+    numeric JAX parity check on the charged rattled NaCl supercell --
+    closes a whole-branch-review-flagged gap left by Task 3's other new
+    tests.
+
+    Every other new charged-system test in this file (the three
+    ``_electrostatics_charged_parity`` tests above, and the
+    ``_dispersion_charged_regression`` test) leaves
+    ``dispersion_energy_bool=True``, which independently forces
+    ``self.use_lr=True`` in ``models.py`` via dispersion's own gate --
+    so none of them can distinguish "the electrostatics ``use_lr`` gate
+    fix genuinely works" from "the long-range neighbor list happened to
+    be populated anyway because dispersion needed it too". Task 2's
+    synthetic ``test_pme_electrostatics_only_no_dispersion``
+    (``test_pme_electrostatics.py``) exercises exactly this
+    ``use_pme=True, dispersion_energy_bool=False`` configuration but
+    only asserts finite/non-NaN output, not a numeric reference. This
+    test closes that gap with a real JAX cross-check: same rattled NaCl
+    structure and PME settings as the other charged-system tests, same
+    real ``so3lr-s`` weights, but ``dispersion_energy_bool=False`` so
+    the long-range neighbor list is populated *solely* by electrostatics'
+    own (fixed) gate.
+
+    Freshly observed: energy max_abs_diff=1.233e-06 eV
+    (max_rel_diff=2.519e-08), forces max_abs_diff=3.383e-08
+    eV/Angstrom (max_rel_diff=5.538e-06) -- comfortably inside the
+    default ``atol=1e-5, rtol=1e-4`` tolerance (~8.1x margin on energy,
+    ~296x on forces), at the same order of magnitude as every other
+    charged-system test in this file -- confirms the ``use_lr`` gating
+    fix produces numerically correct results in exactly the
+    configuration it changed, not merely that it avoids a crash.
+    """
+    structure_path = _build_rattled_nacl_structure(tmp_path)
+    assert _check_checkpoint_pme_parity_on_structure(
+        "s",
+        structure_path,
+        tmp_path,
+        "electro_only",
+        dispersion_energy_bool=False,
+    )
