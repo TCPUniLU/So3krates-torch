@@ -44,6 +44,13 @@ argparser.add_argument("--save_path", type=str, default=None)
 argparser.add_argument("--save_path_traj", type=str, default=None)
 argparser.add_argument("--logger_off", action="store_false", default=True)
 argparser.add_argument("--so3lr", action="store_true", default=False)
+argparser.add_argument(
+    "--so3lr_model",
+    type=str,
+    default="v2-s",
+    choices=["v1", "v2-s", "v2-m", "v2-l"],
+    help="Which bundled pretrained SO3LR checkpoint to use with --so3lr.",
+)
 argparser.add_argument("--dtype", type=str, default="float32")
 args = argparser.parse_args()
 
@@ -58,8 +65,9 @@ if args.model_path is None and not args.so3lr:
 mol = read(args.start_path)
 
 if args.so3lr:
-    print("Using MACE-OFF")
+    print(f"Using SO3LR ({args.so3lr_model})")
     mol.calc = SO3LRCalculator(
+        model=args.so3lr_model,
         r_max_lr=args.r_max_lr,
         compute_stress=args.compute_stress,
         dispersion_energy_cutoff_lr_damping=args.dispersion_energy_cutoff_lr_damping,

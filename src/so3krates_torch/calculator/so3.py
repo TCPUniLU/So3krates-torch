@@ -8,13 +8,89 @@ from typing import Optional, Union, List
 from pathlib import Path
 from glob import glob
 import torch
+import yaml
 from ase.calculators.calculator import Calculator, all_changes
 from ase.stress import full_3x3_to_voigt_6_stress
 import numpy as np
 from so3krates_torch.data.atomic_data import AtomicData as So3Data
 from so3krates_torch.tools import torch_geometric, torch_tools, utils
 from so3krates_torch.data.utils import KeySpecification, config_from_atoms
+from so3krates_torch.modules.models import SO3LR
 import importlib.resources as resources
+
+
+# Maps a pretrained-model keyword to its (subdirectory, file stem)
+# under ``pretrained/so3lr/`` -- e.g. "v2-s" -> so3lr/v2/so3lr-s.pt +
+# so3lr/v2/so3lr-s_settings.yaml. "v1" is the original architecture
+# (single checkpoint, no size variants); "v2-{s,m,l}" are the three
+# sizes of the newer architecture.
+_PRETRAINED_SO3LR_MODELS = {
+    "v1": ("v1", "so3lr"),
+    "v2-s": ("v2", "so3lr-s"),
+    "v2-m": ("v2", "so3lr-m"),
+    "v2-l": ("v2", "so3lr-l"),
+}
+
+
+def load_pretrained_so3lr(
+    model: str,
+    device: str = "cpu",
+    **architecture_overrides,
+) -> torch.nn.Module:
+    """Build a bundled pretrained SO3LR model from its converted
+    ``state_dict`` + ``settings.yaml`` (``pretrained/so3lr/{v1,v2}/``).
+
+    ``model`` selects which checkpoint to load: ``"v1"`` (the original,
+    single checkpoint) or ``"v2-s"``/``"v2-m"``/``"v2-l"`` (the three
+    sizes of the newer v2 architecture).
+
+    ``architecture_overrides`` are merged into the checkpoint's saved
+    ``ARCHITECTURE`` settings before construction -- e.g. pass
+    ``use_pme=True, pme_smearing=..., pme_mesh_spacing=...`` to enable
+    PME electrostatics/dispersion (every saved checkpoint has PME off
+    by default). PME introduces zero new *learned* parameters (only
+    ``torch-pme``'s own internal, non-learned buffers --
+    ``smearing``/``prefactor``/``exponent``), so the state_dict is
+    loaded with ``strict=False`` and only those specific buffer keys
+    are allowed to be missing; anything else missing or any unexpected
+    key raises.
+    """
+    if model not in _PRETRAINED_SO3LR_MODELS:
+        raise ValueError(
+            f"Unknown pretrained SO3LR model {model!r}. Must be one "
+            f"of {sorted(_PRETRAINED_SO3LR_MODELS)}."
+        )
+    subdir, stem = _PRETRAINED_SO3LR_MODELS[model]
+    base = resources.files("so3krates_torch.pretrained.so3lr") / subdir
+
+    with resources.as_file(base / f"{stem}_settings.yaml") as yaml_path:
+        with open(yaml_path) as f:
+            settings = yaml.safe_load(f)["ARCHITECTURE"]
+    settings = dict(settings)
+    settings.pop("device", None)
+    settings.update(architecture_overrides)
+
+    torch_model = SO3LR(**settings)
+
+    with resources.as_file(base / f"{stem}.pt") as pt_path:
+        state_dict = torch.load(
+            pt_path, map_location=device, weights_only=False
+        )
+
+    missing, unexpected = torch_model.load_state_dict(state_dict, strict=False)
+    if unexpected:
+        raise RuntimeError(
+            f"Unexpected keys loading pretrained {model!r} checkpoint: "
+            f"{unexpected}"
+        )
+    bad_missing = [k for k in missing if "pme_" not in k]
+    if bad_missing:
+        raise RuntimeError(
+            f"Missing non-PME keys loading pretrained {model!r} "
+            f"checkpoint: {bad_missing}"
+        )
+    torch_model.to(device)
+    return torch_model
 
 
 def get_model_dtype(model: torch.nn.Module) -> torch.dtype:
@@ -469,12 +545,18 @@ class TorchkratesCalculator(Calculator):
 
 
 class SO3LRCalculator(TorchkratesCalculator):
-    """Calculator for SO3LR models"""
+    """Calculator for the bundled pretrained SO3LR models.
+
+    ``model`` selects which of the bundled, converted checkpoints to
+    load: ``"v1"`` (the original architecture, single checkpoint) or
+    ``"v2-s"``/``"v2-m"``/``"v2-l"`` (the three sizes of the newer v2
+    architecture). See ``load_pretrained_so3lr`` for how the
+    checkpoint is resolved and constructed.
+    """
 
     def __init__(
         self,
-        model_paths: Union[list, str, None] = None,
-        models: Union[List[torch.nn.Module], torch.nn.Module, None] = None,
+        model: str,
         r_max_lr: Optional[float] = 12.0,
         dispersion_energy_cutoff_lr_damping: Optional[float] = 2.0,
         compute_stress: bool = False,
@@ -485,12 +567,33 @@ class SO3LRCalculator(TorchkratesCalculator):
         charges_key="Qs",
         key_specification=None,
         theory_level: int = 0,
+        use_pme: Optional[bool] = None,
+        pme_smearing: Optional[float] = None,
+        pme_mesh_spacing: Optional[float] = None,
+        use_pme_dispersion: Optional[bool] = None,
+        pme_dispersion_smearing: Optional[float] = None,
+        pme_dispersion_mesh_spacing: Optional[float] = None,
         **kwargs,
     ):
-        models = [self._load_model(device)]
-        model_paths = None  # No need for model paths in this case
+        architecture_overrides = {
+            k: v
+            for k, v in {
+                "use_pme": use_pme,
+                "pme_smearing": pme_smearing,
+                "pme_mesh_spacing": pme_mesh_spacing,
+                "use_pme_dispersion": use_pme_dispersion,
+                "pme_dispersion_smearing": pme_dispersion_smearing,
+                "pme_dispersion_mesh_spacing": pme_dispersion_mesh_spacing,
+            }.items()
+            if v is not None
+        }
+        models = [
+            load_pretrained_so3lr(
+                model, device=device, **architecture_overrides
+            )
+        ]
         super().__init__(
-            model_paths=model_paths,
+            model_paths=None,
             models=models,
             r_max_lr=r_max_lr,
             dispersion_energy_cutoff_lr_damping=dispersion_energy_cutoff_lr_damping,
@@ -505,15 +608,6 @@ class SO3LRCalculator(TorchkratesCalculator):
             theory_level=theory_level,
             **kwargs,
         )
-
-    def _load_model(self, device: str = "cpu") -> torch.nn.Module:
-        with resources.path(
-            "so3krates_torch.pretrained.so3lr", "so3lr.model"
-        ) as model_path:
-            model = torch.load(
-                model_path, map_location=device, weights_only=False
-            )
-        return model
 
 
 class MultiHeadSO3LRCalculator(TorchkratesCalculator):

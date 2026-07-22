@@ -71,7 +71,12 @@ issues = "https://github.com/tohenkes/So3krates-torch/issues"
 where = ["src"]
 
 [tool.setuptools.package-data]
-so3krates_torch = ["pretrained/so3lr/so3lr.model"]
+so3krates_torch = [
+    "pretrained/so3lr/v1/*.pt",
+    "pretrained/so3lr/v1/*.yaml",
+    "pretrained/so3lr/v2/*.pt",
+    "pretrained/so3lr/v2/*.yaml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["src/so3krates_torch/tests"]
