@@ -82,6 +82,7 @@ def model_to_lora(
             qk_non_linearity = (
                 transformer.euclidean_attention_block.qk_non_linearity
             )
+            qk_norm = transformer.euclidean_attention_block.qk_norm
             avg_num_neighbors = (
                 transformer.euclidean_attention_block.avg_num_neighbors
             )
@@ -103,6 +104,7 @@ def model_to_lora(
                     scaling_to_one=scaling_to_one,
                     message_normalization=message_normalization,
                     qk_non_linearity=qk_non_linearity,
+                    qk_norm=qk_norm,
                     avg_num_neighbors=avg_num_neighbors,
                     device=device,
                 )
@@ -147,6 +149,7 @@ def model_to_lora(
                     lora_alpha=alpha,
                     message_normalization=message_normalization,
                     qk_non_linearity=qk_non_linearity,
+                    qk_norm=qk_norm,
                     avg_num_neighbors=avg_num_neighbors,
                     device=device,
                 )
@@ -162,6 +165,7 @@ def model_to_lora(
                     freeze_A=freeze_A,
                     message_normalization=message_normalization,
                     qk_non_linearity=qk_non_linearity,
+                    qk_norm=qk_norm,
                     avg_num_neighbors=avg_num_neighbors,
                     device=device,
                 )

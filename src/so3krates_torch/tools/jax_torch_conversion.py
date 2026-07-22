@@ -790,7 +790,7 @@ def convert_flax_to_torch(
         trainable_rbf=trainable_rbf,
         dtype=dtype,
     )
-    if hasattr(cfg.data, "energy_shifts"):
+    if use_defined_shifts and hasattr(cfg.data, "energy_shifts"):
         energy_shifts_dict = cfg.data.energy_shifts.to_dict()
         # turn keys in to float, sort and then back to str
 
@@ -803,11 +803,25 @@ def convert_flax_to_torch(
 
     if save_torch_settings:
         serializable_settings = torch_model_settings.copy()
-        serializable_settings["dtype"] = str(
-            dtype
-        )  # Convert torch.dtype to string
+        # Convert torch.dtype to the bare name (e.g. "float32") rather
+        # than "torch.float32" -- the latter isn't a valid `getattr(torch,
+        # ...)` lookup, which is how this value gets consumed on reload
+        # (both here in `So3krates.__init__` and in `model_setup.py`'s
+        # `DTYPE_MAP`).
+        serializable_settings["dtype"] = str(dtype).rsplit(".", 1)[-1]
 
-        if hasattr(cfg.data, "energy_shifts"):
+        # Only override `atomic_type_shifts` here when it was actually
+        # used to build `torch_model` below (`use_defined_shifts=True`)
+        # -- otherwise `torch_model_settings["atomic_type_shifts"]` is
+        # already `None` (the real value construction used), and
+        # unconditionally overwriting it here made the saved settings
+        # inconsistent with the real model (and, for
+        # `num_theory_levels > 1` checkpoints, reloading from these
+        # settings would build a wrongly-shaped `energy_shifts` param
+        # that can't accept the real state dict at all -- see
+        # `AtomicEnergyOutputHead.__init__`'s dict branch, which always
+        # collapses to a 1-D shift regardless of `num_theory_levels`).
+        if use_defined_shifts and hasattr(cfg.data, "energy_shifts"):
             serializable_settings["atomic_type_shifts"] = energy_shifts_dict
 
         settings_to_save = {"ARCHITECTURE": serializable_settings}

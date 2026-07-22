@@ -46,3 +46,5 @@ CLAUDE.md
 /.plans
 /.claude
 .worktrees/
+
+/src/so3krates_torch/pretrained/so3lr/v2/
