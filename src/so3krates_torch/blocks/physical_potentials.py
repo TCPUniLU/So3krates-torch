@@ -573,6 +573,95 @@ def _coulomb_erf_shifted_force_smooth_energy(
     return torch.where(inside, energy, torch.zeros_like(energy))
 
 
+def _coulomb_erf_shift_and_force_shift_pme(
+    cutoff: float, sigma: float, smearing: float
+):
+    """Potential and its (negated) derivative evaluated at the cutoff for
+    the PME-aware erf-damped Coulomb potential -- the model's own
+    `sigma`-damped term minus the Ewald long-range complement
+    `erf(r/(smearing*sqrt(2)))/r` (which the separate k-space
+    contribution adds back) -- used to shift-and-force-shift smoothly to
+    zero at the cutoff. Mirrors so3lr_dev's
+    `coulomb_erf_shifted_force_smooth_pme`.
+
+    Pure Python scalar math: `cutoff`/`sigma`/`smearing` are fixed,
+    non-trainable floats, so no gradient ever flows through this
+    computation.
+    """
+    r = max(cutoff, 1e-12)
+    _smearing = smearing * math.sqrt(2.0)
+
+    def _term_and_deriv(width: float):
+        val = math.erf(r / width) / r
+        deriv = (
+            2
+            * r
+            * math.exp(-((r / width) ** 2))
+            / (math.sqrt(math.pi) * width)
+            - math.erf(r / width)
+        ) / (r**2)
+        return val, deriv
+
+    val_sigma, deriv_sigma = _term_and_deriv(sigma)
+    val_smear, deriv_smear = _term_and_deriv(_smearing)
+    shift = val_sigma - val_smear
+    force_shift = deriv_sigma - deriv_smear
+    return shift, force_shift
+
+
+def _coulomb_erf_shifted_force_smooth_pme_energy(
+    q: torch.Tensor,
+    rij: torch.Tensor,
+    senders: torch.Tensor,
+    receivers: torch.Tensor,
+    ke,
+    sigma,
+    cutoff,
+    cuton,
+    smearing,
+    c,
+) -> torch.Tensor:
+    """PME-aware Coulomb erf energy: the model's own `sigma`-damped erf
+    term minus the Ewald long-range complement (which the separate
+    k-space contribution -- see `PMEElectrostaticInteraction` -- adds
+    back), with the same smooth shifted-force cutoff in [cuton, cutoff]
+    as `_coulomb_erf_shifted_force_smooth_energy`. Mirrors so3lr_dev's
+    `coulomb_erf_shifted_force_smooth_pme` exactly.
+
+    `ke`/`sigma`/`cutoff`/`cuton`/`smearing`/`c` may be plain floats or
+    0-dim tensors.
+    """
+    if q.dim() == 2 and q.size(-1) == 1:
+        q = q.squeeze(-1)
+    if rij.dim() == 2 and rij.size(-1) == 1:
+        rij = rij.squeeze(-1)
+
+    f = switching_fn(rij, cuton, cutoff)
+
+    r_safe = rij.clamp_min(1e-12)
+    _smearing = smearing * (2.0**0.5)
+    pairwise = (
+        torch.erf(r_safe / sigma) / r_safe
+        - torch.erf(r_safe / _smearing) / r_safe
+    )
+    shift, force_shift = _coulomb_erf_shift_and_force_shift_pme(
+        float(cutoff), float(sigma), float(smearing)
+    )
+    shifted_potential = pairwise - shift - force_shift * (rij - cutoff)
+    qi = q[receivers]
+    qj = q[senders]
+
+    inside = rij < cutoff
+    energy = (
+        c
+        * ke
+        * qi
+        * qj
+        * (f * (pairwise - shift) + (1 - f) * shifted_potential)
+    )
+    return torch.where(inside, energy, torch.zeros_like(energy))
+
+
 class CoulombErfShiftedForceSmooth(nn.Module):
     """Coulomb erf with smooth shifted-force cutoff in [cuton, cutoff].
 
@@ -830,6 +919,8 @@ class ElectrostaticInteraction(nn.Module):
         num_nodes: int,
         cutoff_lr: float | None = None,
         electrostatic_energy_scale: float = 1.0,
+        use_pme: bool = False,
+        pme_smearing: Optional[float] = None,
     ) -> torch.Tensor:
         """Compute per-node electrostatic energy.
 
@@ -839,6 +930,18 @@ class ElectrostaticInteraction(nn.Module):
             receivers_lr: (E,) target indices (i).
             lengths_lr: (E,) or (E,1) edge distances.
             num_nodes: number of nodes to scatter to.
+            use_pme: when True, this is the real-space *residual* of a
+                combined PME calculation -- the model's own
+                `electrostatic_energy_scale`-damped erf term minus the
+                Ewald long-range complement, so that adding
+                `PMEElectrostaticInteraction`'s k-space contribution on
+                top recovers the correct total (mirrors
+                `DispersionInteraction`'s PME-aware real-space residual).
+                Requires `cutoff_lr`/`pme_smearing` to be set. Defaults to
+                `False`, which preserves this function's original
+                (non-PME) behavior exactly.
+            pme_smearing: the PME/Ewald smearing width. Required when
+                `use_pme=True`, ignored otherwise.
 
         Returns:
             (N,1) atomic electrostatic energies.
@@ -852,7 +955,29 @@ class ElectrostaticInteraction(nn.Module):
         if lengths_lr.dim() == 2 and lengths_lr.size(-1) == 1:
             lengths_lr = lengths_lr.squeeze(-1)
 
-        if cutoff_lr is not None:
+        if use_pme:
+            if cutoff_lr is None:
+                raise ValueError("use_pme=True requires cutoff_lr to be set.")
+            if pme_smearing is None:
+                raise ValueError(
+                    "use_pme=True requires pme_smearing to be set "
+                    "(got None)."
+                )
+            cutoff = float(cutoff_lr)
+            cuton = 0.45 * cutoff
+            edge_e = _coulomb_erf_shifted_force_smooth_pme_energy(
+                partial_charges,
+                lengths_lr,
+                senders_lr,
+                receivers_lr,
+                self.ke,
+                electrostatic_energy_scale,
+                cutoff,
+                cuton,
+                pme_smearing,
+                c,
+            )
+        elif cutoff_lr is not None:
             cutoff = float(cutoff_lr)
             cuton = 0.45 * cutoff
             edge_e = _coulomb_erf_shifted_force_smooth_energy(
@@ -892,11 +1017,26 @@ class ElectrostaticInteraction(nn.Module):
 
 
 class PMEElectrostaticInteraction(nn.Module):
-    """Electrostatic energy via Particle Mesh Ewald (torch-pme).
+    """K-space-ONLY electrostatic energy via Particle Mesh Ewald (torch-pme).
 
-    The real-space sum uses the SR neighbor list (cutoff = r_max); the
-    reciprocal-space mesh captures the long-range tail for periodic
-    systems. Parameters follow the torch-pme ML-potential convention:
+    The model's own `electrostatic_energy_scale`-damped real-space term
+    is computed separately by `ElectrostaticInteraction` (called with
+    `use_pme=True`, over the LR neighbor list) -- its PME-aware residual
+    formula already subtracts the Ewald long-range complement that this
+    class's k-space contribution adds back, so the two must always be
+    added together (mirrors `DispersionInteraction`/
+    `PMEDispersionInteraction`'s real-space-residual + k-space split).
+    This class alone is NOT the full PME electrostatic energy.
+
+    Calls `torchpme.PMECalculator._compute_kspace(...)` directly rather
+    than `.forward(...)` -- `_compute_kspace` already returns the
+    reciprocal-space potential together with the standard Ewald
+    self-energy and neutralizing-background corrections (halved, per
+    torch-pme's own double-counting convention), exactly matching the
+    JAX reference's k-space-only contribution. No additional self-energy
+    term or `0.5` factor should be applied on top of its output.
+
+    Parameters follow the torch-pme ML-potential convention:
         smearing     = r_max / 5
         mesh_spacing = smearing / 2
 
@@ -928,8 +1068,6 @@ class PMEElectrostaticInteraction(nn.Module):
         partial_charges: torch.Tensor,  # (N,)
         positions: torch.Tensor,  # (N, 3)
         cell: torch.Tensor,  # (N_graphs, 3, 3)
-        edge_index: torch.Tensor,  # (2, E_sr) — SR neighbor list
-        lengths: torch.Tensor,  # (E_sr,)
         batch_segments: torch.Tensor,  # (N,)
         num_graphs: int,
         num_nodes: int,
@@ -957,28 +1095,19 @@ class PMEElectrostaticInteraction(nn.Module):
                     "use use_pme=False for non-periodic systems."
                 )
 
-            # SR edges within graph g
-            edge_mask = atom_mask[edge_index[0]]
-            idx_g = edge_index[:, edge_mask]  # (2, E_g)
-            # lengths has shape [E,1] (keepdim=True in prepare_graph);
-            # torchpme expects 1-D distances [E_g].
-            d_g = lengths[edge_mask].squeeze(-1)  # (E_g,)
-
-            # Renumber to local indices 0..N_g-1
-            offset = atom_mask.nonzero(as_tuple=False)[0, 0]
-            local_idx = idx_g - offset  # (2, E_g)
-
-            # charges: (N_g, 1); output: (N_g, 1)
-            potentials_g = self.calculator.forward(
+            # K-space-only contribution (self-energy + background/
+            # neutrality correction already included, halved -- see the
+            # class docstring). Do NOT apply an extra external 0.5 here.
+            kspace_potentials_g = self.calculator._compute_kspace(
                 charges=q_g.unsqueeze(1),
                 cell=cell_g,
                 positions=pos_g,
-                neighbor_indices=local_idx.T,  # (E_g, 2)
-                neighbor_distances=d_g,
+                periodic=None,
+                node_mask=None,
+                kvectors=None,
             )
 
-            # E_i = 0.5 * ke * q_i * phi_i
-            e_g = 0.5 * self.ke * q_g.unsqueeze(1) * potentials_g
+            e_g = self.ke * q_g.unsqueeze(1) * kspace_potentials_g
             atomic_e[atom_mask] = e_g
 
         return atomic_e

@@ -636,7 +636,12 @@ class SO3LR(So3krates):
         # to jax back and forth ... its ugly and wasteful, i know.
 
         # Electrostatics
-        if self.electrostatic_energy_bool and not use_pme:
+        # `use_pme` no longer excludes this gate: PME electrostatics adds
+        # a k-space correction on top of `ElectrostaticInteraction`'s
+        # PME-aware real-space residual (mirrors the dispersion gate
+        # below), so the long-range neighbor list is always needed when
+        # electrostatics is enabled, whether or not PME is on.
+        if self.electrostatic_energy_bool:
             self.use_lr = True
         self.partial_charges_output_block = PartialChargesOutputHead(
             num_features=self.num_features,
@@ -659,13 +664,12 @@ class SO3LR(So3krates):
             )
 
         # Dispersion
-        # NOTE: unlike electrostatics' `use_pme` (which fully replaces the
-        # real-space+long-range Coulomb calculation), PME dispersion only
-        # *adds* a k-space correction on top of DispersionInteraction's
-        # real-space residual + C8/C10 terms — those always need the
-        # long-range neighbor list, whether or not use_pme_dispersion is
-        # set. So this gate stays unconditional (no `and not
-        # use_pme_dispersion`), unlike the electrostatics gate above.
+        # Like electrostatics above, PME dispersion only *adds* a
+        # k-space correction on top of DispersionInteraction's real-space
+        # residual + C8/C10 terms — those always need the long-range
+        # neighbor list, whether or not use_pme_dispersion is set. So
+        # this gate stays unconditional (no `and not
+        # use_pme_dispersion`), matching the electrostatics gate above.
         if self.dispersion_energy_bool:
             self.use_lr = True
 
@@ -928,15 +932,31 @@ class SO3LR(So3krates):
                 num_graphs=self.num_graphs,
             )
             if getattr(self, "use_pme", False):
-                electrostatic_energies = self.pme_electrostatic_potential(
+                electrostatic_energies = self.electrostatic_potential(
                     partial_charges=partial_charges,
-                    positions=self.positions,
-                    cell=self.cell,
-                    edge_index=data["edge_index"],
-                    lengths=self.lengths,
-                    batch_segments=self.batch_segments,
-                    num_graphs=self.num_graphs,
+                    senders_lr=self.senders_lr,
+                    receivers_lr=self.receivers_lr,
+                    lengths_lr=self.lengths_lr,
                     num_nodes=inv_features.shape[0],
+                    cutoff_lr=self.r_max_lr,
+                    electrostatic_energy_scale=(
+                        self.electrostatic_energy_scale
+                    ),
+                    use_pme=True,
+                    pme_smearing=getattr(self, "pme_smearing", None),
+                )
+                kspace_electrostatic_energies = (
+                    self.pme_electrostatic_potential(
+                        partial_charges=partial_charges,
+                        positions=self.positions,
+                        cell=self.cell,
+                        batch_segments=self.batch_segments,
+                        num_graphs=self.num_graphs,
+                        num_nodes=inv_features.shape[0],
+                    )
+                )
+                electrostatic_energies = (
+                    electrostatic_energies + kspace_electrostatic_energies
                 )
             else:
                 electrostatic_energies = self.electrostatic_potential(
