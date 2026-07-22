@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 import torch
 from so3krates_torch.blocks.physical_potentials import (
+    ElectrostaticInteraction,
     PMEElectrostaticInteraction,
 )
 
@@ -41,14 +42,27 @@ def build_nl(positions_np, cell_np, cutoff):
 
 
 def test_pme_madelung_nacl():
-    """PME total energy of NaCl primitive cell matches Madelung reference.
+    """Combined PME (real-space residual + k-space) energy of the NaCl
+    primitive cell matches the Madelung reference.
 
     The analytical Madelung energy per ion pair for rock-salt NaCl is
-        E = -ke * M / a
-    where M = 1.7476 is the NaCl Madelung constant and a = 5.6402 Å.
+        E = -ke * M / r0
+    where M = 1.7476 is the NaCl Madelung constant and r0 = a/2 is the
+    nearest-neighbor distance, a = 5.6402 Å the conventional cubic
+    lattice constant. So E_ref = -ke * M / r0 = -2 * ke * M / a.
     The FCC primitive cell (2 atoms) with cell vectors [0,a/2,a/2],
     [a/2,0,a/2], [a/2,a/2,0] is used — this is the minimal periodic
     cell of the rock-salt structure.
+
+    `PMEElectrostaticInteraction` alone is only the k-space contribution
+    of a PME split; to recover the bare-Coulomb (Madelung) limit, it
+    must be added to `ElectrostaticInteraction(use_pme=True, ...)`'s
+    real-space residual, using a vanishingly small
+    `electrostatic_energy_scale` so the model's own erf-damped term
+    collapses to bare 1/r (leaving only the standard Ewald real-space
+    erfc complement as the residual) -- mirrors the combined call
+    pattern in `SO3LR.forward()`.
+
     Tolerance is 0.05 eV to account for finite mesh / smearing errors.
     """
     from ase.build import bulk
@@ -58,7 +72,8 @@ def test_pme_madelung_nacl():
     ke = 14.399645351950548  # eV·Å/e²
     a = 5.6402  # Å, NaCl conventional cubic lattice constant
     M = 1.7476  # Madelung constant for NaCl rock-salt
-    E_ref = -ke * M / a  # eV (negative: binding)
+    r0 = a / 2.0  # Å, nearest-neighbor distance
+    E_ref = -ke * M / r0  # eV (negative: binding); == -2*ke*M/a
 
     # Smearing must be small enough (~d_nn/5 ≈ 0.56 Å) that the real-
     # space sum converges within the cutoff.  mesh_spacing = smearing/2
@@ -67,7 +82,14 @@ def test_pme_madelung_nacl():
     mesh_spacing = 0.25  # Å
     cutoff = a  # Å (nearest-neighbor cutoff suffices)
 
-    pme = PMEElectrostaticInteraction(
+    # Vanishingly small electrostatic_energy_scale so the model's own
+    # sigma-damped erf term approximates bare 1/r (erf(r/sigma) -> 1 for
+    # all physically relevant r), leaving only the Ewald real-space
+    # erfc residual -- the bare-Coulomb PME split.
+    electrostatic_energy_scale = 1e-6
+
+    electrostatic_potential = ElectrostaticInteraction(ke=ke)
+    pme_electrostatic_potential = PMEElectrostaticInteraction(
         smearing=smearing,
         mesh_spacing=mesh_spacing,
         ke=ke,
@@ -85,20 +107,33 @@ def test_pme_madelung_nacl():
     positions = torch.tensor(positions_np, dtype=dtype)
     charges = torch.tensor([1.0, -1.0], dtype=dtype)
     cell = torch.tensor(cell_np, dtype=dtype).unsqueeze(0)  # (1, 3, 3)
-    edge_index = torch.tensor(edge_index_np, dtype=torch.long)
-    lengths = torch.tensor(lengths_np, dtype=dtype)
+    # models.py convention: edge_index[0] -> receivers, edge_index[1] -> senders
+    receivers_lr = torch.tensor(edge_index_np[0], dtype=torch.long)
+    senders_lr = torch.tensor(edge_index_np[1], dtype=torch.long)
+    lengths_lr = torch.tensor(lengths_np, dtype=dtype)
     batch_segments = torch.zeros(2, dtype=torch.long)
 
-    atomic_e = pme(
+    real_space_e = electrostatic_potential(
+        partial_charges=charges,
+        senders_lr=senders_lr,
+        receivers_lr=receivers_lr,
+        lengths_lr=lengths_lr,
+        num_nodes=2,
+        cutoff_lr=cutoff,
+        electrostatic_energy_scale=electrostatic_energy_scale,
+        use_pme=True,
+        pme_smearing=smearing,
+    )
+    kspace_e = pme_electrostatic_potential(
         partial_charges=charges,
         positions=positions,
         cell=cell,
-        edge_index=edge_index,
-        lengths=lengths,
         batch_segments=batch_segments,
         num_graphs=1,
         num_nodes=2,
     )
+
+    atomic_e = real_space_e + kspace_e
 
     E_pme = atomic_e.sum().item()
     assert abs(E_pme - E_ref) < 0.05, (
@@ -113,18 +148,21 @@ def test_pme_madelung_nacl():
 
 
 def test_pme_gradcheck():
-    """Verify PME energy gradients w.r.t. positions via gradcheck.
+    """Verify PME (k-space-only) energy gradients w.r.t. positions via
+    gradcheck.
 
     Uses a small 4-atom periodic box with charge-neutral configuration.
     torch.autograd.gradcheck confirms analytic vs. numeric Jacobians agree
-    to within atol=1e-4.
+    to within atol=1e-4. `PMEElectrostaticInteraction` no longer takes a
+    neighbor list (edge_index/lengths) -- it is k-space-only and depends
+    solely on positions/cell/charges.
     """
     dtype = torch.float64
     torch.manual_seed(0)
 
     ke = 14.399645351950548
     box = 5.0  # Å, cubic cell side
-    cutoff = 3.5  # Å, SR cutoff
+    cutoff = 3.5  # Å, used only to derive smearing/mesh_spacing
 
     smearing = cutoff / 5.0
     mesh_spacing = smearing / 2.0
@@ -143,38 +181,18 @@ def test_pme_gradcheck():
     rng = np.random.default_rng(42)
     positions_np = rng.uniform(0.5, box - 0.5, size=(4, 3))
 
-    edge_index_np, lengths_np = build_nl(positions_np, cell_np, cutoff)
-
     charges = torch.tensor(charges_np, dtype=dtype)
     cell = torch.tensor(cell_np, dtype=dtype).unsqueeze(0)  # (1, 3, 3)
-    edge_index = torch.tensor(edge_index_np, dtype=torch.long)
     batch_segments = torch.zeros(4, dtype=torch.long)
 
     # positions must require grad for gradcheck
     positions = torch.tensor(positions_np, dtype=dtype, requires_grad=True)
 
     def energy_fn(pos):
-        # Recompute lengths from current positions for gradcheck.
-        # We pass the pre-built neighbor list topology but recompute
-        # distances so the computation graph flows through pos.
-        src = edge_index[0]
-        dst = edge_index[1]
-        # Minimum-image distances under the periodic box
-        cell_mat = cell[0]
-        inv_cell = torch.linalg.inv(cell_mat)
-        dr = pos[dst] - pos[src]  # (E, 3)
-        # Fractional displacements, wrap to [-0.5, 0.5]
-        dr_frac = dr @ inv_cell
-        dr_frac = dr_frac - torch.round(dr_frac)
-        dr_cart = dr_frac @ cell_mat
-        d = torch.linalg.norm(dr_cart, dim=1)  # (E,)
-
         return pme(
             partial_charges=charges,
             positions=pos,
             cell=cell,
-            edge_index=edge_index,
-            lengths=d,
             batch_segments=batch_segments,
             num_graphs=1,
             num_nodes=4,
@@ -201,6 +219,8 @@ def test_pme_batch_isolation():
 
     Stacking both systems into a single batch and calling PME once
     must produce the same per-atom energies as two separate calls.
+    `PMEElectrostaticInteraction` is k-space-only (no neighbor list),
+    so only positions/cell/charges/batch_segments are needed.
     """
     from ase.build import bulk
 
@@ -211,27 +231,21 @@ def test_pme_batch_isolation():
     a_A = 5.6402
     smearing_A = a_A / 5.0
     mesh_spacing_A = smearing_A / 2.0
-    cutoff_A = a_A
 
     nacl = bulk("NaCl", crystalstructure="rocksalt", a=a_A)
     pos_A_np = nacl.positions
     cell_A_np = nacl.cell.array
     charges_A_np = np.array([1.0, -1.0])
 
-    ei_A_np, d_A_np = build_nl(pos_A_np, cell_A_np, cutoff_A)
-
     # --- System B: 3-atom cell ---
     a_B = 4.0
     smearing_B = a_B / 5.0
     mesh_spacing_B = smearing_B / 2.0
-    cutoff_B = a_B
 
     rng = np.random.default_rng(7)
     pos_B_np = rng.uniform(0.3, a_B - 0.3, size=(3, 3))
     cell_B_np = np.diag([a_B, a_B, a_B])
     charges_B_np = np.array([0.5, -0.5, 0.0])
-
-    ei_B_np, d_B_np = build_nl(pos_B_np, cell_B_np, cutoff_B)
 
     # Use a common smearing / mesh_spacing (average) for the shared PME
     # module; individual calls also use this same module for consistency.
@@ -245,26 +259,22 @@ def test_pme_batch_isolation():
     )
 
     # --- Individual calls ---
-    def _call_single(pos_np, cell_np, charges_np, ei_np, d_np, n):
+    def _call_single(pos_np, cell_np, charges_np, n):
         pos = torch.tensor(pos_np, dtype=dtype)
         cell = torch.tensor(cell_np, dtype=dtype).unsqueeze(0)
         charges = torch.tensor(charges_np, dtype=dtype)
-        edge_index = torch.tensor(ei_np, dtype=torch.long)
-        lengths = torch.tensor(d_np, dtype=dtype)
         batch_seg = torch.zeros(n, dtype=torch.long)
         return pme(
             partial_charges=charges,
             positions=pos,
             cell=cell,
-            edge_index=edge_index,
-            lengths=lengths,
             batch_segments=batch_seg,
             num_graphs=1,
             num_nodes=n,
         )
 
-    e_A = _call_single(pos_A_np, cell_A_np, charges_A_np, ei_A_np, d_A_np, n=2)
-    e_B = _call_single(pos_B_np, cell_B_np, charges_B_np, ei_B_np, d_B_np, n=3)
+    e_A = _call_single(pos_A_np, cell_A_np, charges_A_np, n=2)
+    e_B = _call_single(pos_B_np, cell_B_np, charges_B_np, n=3)
 
     # --- Batched call ---
     n_A, n_B = 2, 3
@@ -272,11 +282,6 @@ def test_pme_batch_isolation():
 
     pos_batch_np = np.concatenate([pos_A_np, pos_B_np], axis=0)
     charges_batch_np = np.concatenate([charges_A_np, charges_B_np])
-
-    # Shift B indices by n_A
-    ei_B_shifted = ei_B_np + n_A
-    ei_batch_np = np.concatenate([ei_A_np, ei_B_shifted], axis=1)
-    d_batch_np = np.concatenate([d_A_np, d_B_np])
 
     cell_batch_np = np.stack([cell_A_np, cell_B_np], axis=0)  # (2, 3, 3)
 
@@ -290,15 +295,11 @@ def test_pme_batch_isolation():
     pos_batch = torch.tensor(pos_batch_np, dtype=dtype)
     charges_batch = torch.tensor(charges_batch_np, dtype=dtype)
     cell_batch = torch.tensor(cell_batch_np, dtype=dtype)  # (2, 3, 3)
-    edge_index_batch = torch.tensor(ei_batch_np, dtype=torch.long)
-    lengths_batch = torch.tensor(d_batch_np, dtype=dtype)
 
     e_batch = pme(
         partial_charges=charges_batch,
         positions=pos_batch,
         cell=cell_batch,
-        edge_index=edge_index_batch,
-        lengths=lengths_batch,
         batch_segments=batch_seg,
         num_graphs=2,
         num_nodes=n_total,
@@ -438,6 +439,137 @@ def test_pme_electrostatics_plus_vdw_dispersion():
     assert torch.allclose(
         out2["energy"], energy.detach()
     ), "Energy is not deterministic across two identical forward passes"
+
+
+# ============================================================
+# Test 4b: regression for the `use_lr` gating fix -- PME
+# electrostatics-only (no dispersion) must still populate the LR
+# neighbor list.
+# ============================================================
+
+
+def test_pme_electrostatics_only_no_dispersion():
+    """PME electrostatics with dispersion disabled must still work.
+
+    Regression test for a `models.py.__init__` gating bug: before the
+    fix, `self.use_lr` was only set to `True` for electrostatics when
+    `not use_pme` (`if self.electrostatic_energy_bool and not use_pme`),
+    so `use_pme=True, dispersion_energy_bool=False` never populated
+    `self.senders_lr`/`self.receivers_lr`/`self.lengths_lr` -- yet the
+    PME-aware real-space residual computed by `ElectrostaticInteraction`
+    needs exactly that LR neighbor list. The
+    `test_pme_electrostatics_plus_vdw_dispersion` test above has
+    `dispersion_energy_bool=True`, which independently forces
+    `use_lr=True` via the dispersion gate and therefore masks this
+    specific gap. This test isolates the electrostatics-only PME path
+    (`dispersion_energy_bool=False`) to exercise it directly -- it would
+    raise an AttributeError on `self.senders_lr` before the fix.
+
+    Builds a minimal SO3LR with use_pme=True, dispersion_energy_bool=False
+    on the same NaCl rock-salt primitive cell (2 atoms, a=5.6402 Å) as the
+    combined-mode test above. Verifies that:
+      - The forward pass (with force computation, i.e. forward+backward)
+        completes without error.
+      - Energy is finite and non-NaN.
+      - Forces are finite and non-NaN.
+    """
+    from ase.build import bulk
+    from matscipy.neighbours import neighbour_list as matscipy_nl
+    from so3krates_torch.modules.models import SO3LR
+
+    torch.set_default_dtype(torch.float64)
+    dtype = torch.float64
+    device = torch.device("cpu")
+
+    r_max = 4.5
+    r_max_lr = 8.0
+    a = 5.6402
+
+    model = SO3LR(
+        r_max=r_max,
+        r_max_lr=r_max_lr,
+        num_radial_basis_fn=8,
+        degrees=[1, 2],
+        num_features=16,
+        num_heads=2,
+        num_layers=1,
+        num_elements=20,
+        energy_regression_dim=16,
+        seed=42,
+        device=device,
+        dtype="float64",
+        use_pme=True,
+        pme_smearing=0.5,
+        pme_mesh_spacing=0.25,
+        electrostatic_energy_bool=True,
+        dispersion_energy_bool=False,
+        zbl_repulsion_bool=True,
+    )
+
+    nacl = bulk("NaCl", crystalstructure="rocksalt", a=a)
+    pos_np = nacl.positions
+    cell_np = nacl.cell.array
+
+    def _build_edges(cutoff):
+        i, j, S = matscipy_nl(
+            "ijS",
+            cutoff=cutoff,
+            positions=pos_np,
+            cell=cell_np,
+            pbc=[True, True, True],
+        )
+        edge_index = torch.tensor(np.stack([i, j]), dtype=torch.long)
+        shifts = torch.tensor((S @ cell_np).astype(np.float64), dtype=dtype)
+        unit_shifts = torch.tensor(S.astype(np.float64), dtype=dtype)
+        return edge_index, shifts, unit_shifts
+
+    ei_sr, shifts_sr, us_sr = _build_edges(r_max)
+    ei_lr, shifts_lr, us_lr = _build_edges(r_max_lr)
+
+    # Na=11, Cl=17; use indices 10, 16 into a 20-element table
+    node_attrs = torch.zeros(2, 20, dtype=dtype)
+    node_attrs[0, 10] = 1.0
+    node_attrs[1, 16] = 1.0
+    atomic_numbers = torch.tensor([11, 17], dtype=torch.long)
+
+    positions = torch.tensor(pos_np, dtype=dtype)
+    cell = torch.tensor(cell_np, dtype=dtype)
+
+    data = {
+        "positions": positions,
+        "cell": cell,
+        "edge_index": ei_sr,
+        "edge_index_lr": ei_lr,
+        "shifts": shifts_sr,
+        "shifts_lr": shifts_lr,
+        "unit_shifts": us_sr,
+        "unit_shifts_lr": us_lr,
+        "node_attrs": node_attrs,
+        "atomic_numbers": atomic_numbers,
+        "batch": torch.zeros(2, dtype=torch.long),
+        "ptr": torch.tensor([0, 2], dtype=torch.long),
+        "total_charge": torch.zeros(1, dtype=dtype),
+        "total_spin": torch.zeros(1, dtype=dtype),
+        "weight": torch.ones(1, dtype=dtype),
+        "head": torch.zeros(2, dtype=torch.long),
+    }
+
+    # Forward pass with forces (forward + backward through PME).
+    # Before the `use_lr` gating fix, this raised an AttributeError:
+    # 'SO3LR' object has no attribute 'senders_lr' (never set because
+    # dispersion_energy_bool=False no longer forced use_lr=True and the
+    # old `and not use_pme` guard suppressed electrostatics' own gate).
+    out = model(data, compute_force=True)
+
+    energy = out["energy"]
+    forces = out["forces"]
+
+    assert energy is not None, "Energy is None"
+    assert forces is not None, "Forces is None"
+    assert torch.isfinite(energy).all(), f"Energy is not finite: {energy}"
+    assert torch.isfinite(
+        forces
+    ).all(), f"Forces contain non-finite values: {forces}"
 
 
 # ============================================================
