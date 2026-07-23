@@ -65,7 +65,7 @@ print(atoms.get_potential_energy())
 print(atoms.get_forces())
 ```
 
-`model` is a required keyword selecting which bundled checkpoint to load. The remaining constructor keywords cover general calculator settings (`compute_stress`, `device`, `energy_units_to_eV`, `length_units_to_A`, `default_dtype`, `charges_key`, `key_specification`, `theory_level`) plus PME electrostatics/dispersion (`use_pme`, `pme_smearing`, `pme_mesh_spacing`, `use_pme_dispersion`, `pme_dispersion_smearing`, `pme_dispersion_mesh_spacing` — all `None`/off by default; see [PME Electrostatics](#pme-electrostatics-particle-mesh-ewald) below for what each one does). For example, to enable PME on a periodic system:
+`model` is a required keyword selecting which bundled checkpoint to load. The remaining constructor keywords cover general calculator settings (`r_max_lr` (default `12.0`, long-range cutoff for electrostatics/dispersion), `dispersion_energy_cutoff_lr_damping` (default `2.0`, damping cutoff for the TS dispersion damping function), `compute_stress`, `device`, `energy_units_to_eV`, `length_units_to_A`, `default_dtype`, `charges_key`, `key_specification`, `theory_level`) plus PME electrostatics/dispersion (`use_pme`, `pme_smearing`, `pme_mesh_spacing`, `use_pme_dispersion`, `pme_dispersion_smearing`, `pme_dispersion_mesh_spacing` — all `None`/off by default; see [PME Electrostatics](#pme-electrostatics-particle-mesh-ewald) below for what each one does). For example, to enable PME on a periodic system:
 
 ```python
 from ase.build import bulk
@@ -264,6 +264,7 @@ torchkrates-eval --model_path v1 --data_path my_data.xyz \
 
 torchkrates-eval --model_path my_checkpoint.pt \
     --data_path my_data.xyz --device cpu --dtype float32 \
+    --r_max_lr 12.0 --dispersion_energy_cutoff_lr_damping 2.0 \
     --multispecies \
     --output_file results_my_checkpoint.h5
 ```
