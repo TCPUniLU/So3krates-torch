@@ -15,7 +15,7 @@ Implementation of the So3krates + SO3LR model in pytorch.
 6. (Optional) PME electrostatics/dispersion support: `pip install ".[pme]"` (installs `torch-pme>=0.5`)
 
 #### Implemented features:
-1. ASE calculator for MD (including pre-trained SO3LR)
+1. ASE calculator for MD (including pre-trained SO3LR — see [Pretrained SO3LR Models](#pretrained-so3lr-models-ase-calculator) below)
 2. Inference over ase readable datasets: `torchkrates-eval`
 3. Error metrics over ase readable datasets: `torchkrates-metric`
 4. Transforming pyTorch and JAX parameter formates: `torchkrates-jax2torch` or `torchkrates-torch2jax` (for these you need to install jax, flax, and the `so3lr_dev` package (this repo's JAX v2 reference implementation))
@@ -28,6 +28,85 @@ Implementation of the So3krates + SO3LR model in pytorch.
 
 > [!IMPORTANT]
 > Number 4 means that you can transform the weights from this pytorch version into the JAX version and vice versa. Inference and training is much faster (*at least 1 order of magnitude at the moment*) in the JAX version. This implementation is mostly for prototyping and compatability with other packages.
+
+---
+
+## Pretrained SO3LR Models (ASE Calculator)
+
+Bundled, converted checkpoints live under `src/so3krates_torch/pretrained/so3lr/`:
+
+```
+pretrained/so3lr/
+├── v1/
+│   ├── so3lr.pt              # state_dict
+│   └── so3lr_settings.yaml   # ARCHITECTURE block used to rebuild the model
+└── v2/
+    ├── so3lr-s.pt / so3lr-s_settings.yaml
+    ├── so3lr-m.pt / so3lr-m_settings.yaml
+    └── so3lr-l.pt / so3lr-l_settings.yaml
+```
+
+Each `<stem>.pt` is a plain `torch.save`d `state_dict` (**not** a pickled whole-model object) with a sibling `<stem>_settings.yaml` holding the `ARCHITECTURE` block needed to reconstruct the model before its weights are loaded. The older pickled `pretrained/so3lr/so3lr.model` has been removed entirely — use one of the four keywords below (`"v1"`, `"v2-s"`, `"v2-m"`, `"v2-l"`) instead.
+
+### `SO3LRCalculator` — ASE calculator
+
+```python
+from ase.build import molecule
+from so3krates_torch.calculator.so3 import SO3LRCalculator
+
+atoms = molecule("H2O")
+atoms.calc = SO3LRCalculator(
+    model="v2-s",       # "v1", "v2-s", "v2-m", or "v2-l"
+    device="cpu",
+    r_max_lr=12.0,
+    dispersion_energy_cutoff_lr_damping=2.0,
+)
+print(atoms.get_potential_energy())
+print(atoms.get_forces())
+```
+
+`model` is a required keyword selecting which bundled checkpoint to load. The remaining constructor keywords cover general calculator settings (`compute_stress`, `device`, `energy_units_to_eV`, `length_units_to_A`, `default_dtype`, `charges_key`, `key_specification`, `theory_level`) plus PME electrostatics/dispersion (`use_pme`, `pme_smearing`, `pme_mesh_spacing`, `use_pme_dispersion`, `pme_dispersion_smearing`, `pme_dispersion_mesh_spacing` — all `None`/off by default; see [PME Electrostatics](#pme-electrostatics-particle-mesh-ewald) below for what each one does). For example, to enable PME on a periodic system:
+
+```python
+from ase.build import bulk
+from so3krates_torch.calculator.so3 import SO3LRCalculator
+
+atoms = bulk("NaCl", "rocksalt", a=5.64) * (2, 2, 2)
+atoms.calc = SO3LRCalculator(
+    model="v2-s",
+    device="cpu",
+    use_pme=True,
+    pme_smearing=1.18,
+    pme_mesh_spacing=0.59,
+)
+print(atoms.get_potential_energy())
+```
+
+See [`examples/md/simple_md.py`](examples/md/simple_md.py) for a full MD example driven by `SO3LRCalculator`; it exposes `--so3lr_model {v1,v2-s,v2-m,v2-l}` and `--use_pme` flags directly (e.g. `python examples/md/simple_md.py --so3lr --so3lr_model v2-s --use_pme --device cpu`).
+
+### `load_pretrained_so3lr` — for fine-tuning/scripting
+
+For use cases that need the raw `torch.nn.Module` rather than an ASE calculator (e.g. fine-tuning), use `load_pretrained_so3lr` directly:
+
+```python
+from so3krates_torch.calculator.so3 import load_pretrained_so3lr
+
+model = load_pretrained_so3lr(
+    "v2-s",
+    device="cpu",
+    r_max_lr=12.0,
+    dispersion_energy_cutoff_lr_damping=2.0,
+)
+```
+
+Any extra keyword arguments are merged into the checkpoint's saved `ARCHITECTURE` settings before construction, e.g. to enable PME the same way as above (`use_pme=True, pme_smearing=..., pme_mesh_spacing=...`). See [`examples/finetuning/finetune_pretrained_so3lr.py`](examples/finetuning/finetune_pretrained_so3lr.py) for a full LoRA fine-tuning example built on this function:
+
+```bash
+python examples/finetuning/finetune_pretrained_so3lr.py --model v1
+python examples/finetuning/finetune_pretrained_so3lr.py --model v2-s --use_pme
+```
+
+To warm-start plain (non-LoRA) training from one of these checkpoints instead of fine-tuning, see the `pretrained_weights` option under [Pre-trained Models](#pre-trained-models) below, and its documented example in [`examples/training/train_settings_example.yaml`](examples/training/train_settings_example.yaml).
 
 ---
 
@@ -172,9 +251,28 @@ Run inference over an ASE-readable dataset.
 torchkrates-eval --model_path my_model.model --data_path test_set.xyz
 ```
 
+`--model_path` also accepts, in addition to the `.model`-file/directory form above:
+- one of the 4 bundled pretrained keywords directly: `v1`, `v2-s`, `v2-m`, `v2-l`.
+- a path ending in `.pt` with a sibling `<stem>_settings.yaml` (the same naming convention used by the bundled checkpoints under `pretrained/so3lr/{v1,v2}/`) — this is how a checkpoint produced by `torchkrates-jax2torch --save_state_dict_path my_checkpoint.pt --save_settings_path my_checkpoint_settings.yaml` gets loaded here.
+
+```bash
+torchkrates-eval --model_path v1 --data_path my_data.xyz \
+    --device cpu --dtype float32 --r_max_lr 12.0 \
+    --dispersion_energy_cutoff_lr_damping 2.0 \
+    --multispecies \
+    --output_file results_v1.h5
+
+torchkrates-eval --model_path my_checkpoint.pt \
+    --data_path my_data.xyz --device cpu --dtype float32 \
+    --multispecies \
+    --output_file results_my_checkpoint.h5
+```
+
+`--multispecies` is needed whenever the dataset's structures don't all share the same number of atoms (as above) — see the flag table below.
+
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model_path` | *required* | Path to a single `.model` file, or a directory of `.model` files (use with `--ensemble_size N` for ensemble inference) |
+| `--model_path` | *required* | Path to a single `.model` file, a directory of `.model` files (use with `--ensemble_size N` for ensemble inference), one of the 4 pretrained keywords (`v1`/`v2-s`/`v2-m`/`v2-l`), or a `.pt` state_dict checkpoint with a sibling `<stem>_settings.yaml` |
 | `--data_path` | *required* | ASE-readable dataset (xyz, extxyz, HDF5) |
 | `--output_file` | `results.h5` | Output HDF5 file |
 | `--ensemble_size` | `1` | Number of models to load from a directory |
@@ -182,6 +280,7 @@ torchkrates-eval --model_path my_model.model --data_path test_set.xyz
 | `--batch_size` | `5` | Structures per batch |
 | `--dtype` | `float32` | `float32` or `float64` |
 | `--multihead_model` | `False` | Enable multi-head model support |
+| `--multispecies` | `False` | Required when the dataset's structures don't all share the same atom count (allows batches/results to be ragged instead of stacked into one array) |
 | `--compute_dipole` | `False` | Compute dipole predictions |
 | `--compute_stress` | `False` | Compute stress predictions |
 | `--compute_hirshfeld` | `False` | Compute Hirshfeld ratio predictions |
@@ -204,9 +303,25 @@ Compute error metrics over an ASE-readable dataset. Prints a table with MAE and 
 torchkrates-metric --models my_model.model --data test_set.xyz
 ```
 
+`--models` accepts the same two additional forms as `torchkrates-eval`'s `--model_path` above (a pretrained keyword, or a `.pt` + sibling `<stem>_settings.yaml`), on top of the original `.model`-file/directory form:
+
+```bash
+torchkrates-metric --models v1 --data test_set.xyz \
+    --device cpu --r_max_lr 12.0 \
+    --dispersion_energy_cutoff_lr_damping 2.0 \
+    --batch_size 1 --output_args energy forces
+
+torchkrates-metric --models my_checkpoint.pt --data test_set.xyz \
+    --device cpu --r_max_lr 12.0 \
+    --dispersion_energy_cutoff_lr_damping 2.0 \
+    --batch_size 1 --output_args energy forces
+```
+
+Note there is no `--multispecies` flag here (unlike `torchkrates-eval`); use `--batch_size 1` instead if the dataset's structures don't all share the same atom count.
+
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--models` | *required* | Path to a model file or a directory of model files |
+| `--models` | *required* | Path to a model file or a directory of model files, one of the 4 pretrained keywords (`v1`/`v2-s`/`v2-m`/`v2-l`), or a `.pt` state_dict checkpoint with a sibling `<stem>_settings.yaml` |
 | `--data` | *required* | Dataset path (must contain reference values) |
 | `--output_args` | `energy forces` | Properties to evaluate. Can include `stress`, `dipole`, `hirshfeld_ratios`, etc. |
 | `--batch_size` | `16` | Structures per batch |
@@ -615,6 +730,8 @@ The loss function is automatically determined based on which weights are non-zer
 | `pretrained_weights` | `str` | `None` | Path to pre-trained weights (state dict). Weights are loaded into the model defined by the `ARCHITECTURE` section. Cannot be combined with `pretrained_model`. |
 | `ft_update_avg_num_neighbors` | `bool` | `False` | Recompute the average number of neighbors from the new training data instead of keeping the value from the pre-trained model. |
 | `force_use_average_shifts` | `bool` | `False` | Use E0 shifts computed from the new training data instead of the pre-trained model's shifts. |
+
+`pretrained_weights` also accepts a converted checkpoint's `.pt` state_dict directly, e.g. `pretrained/so3lr/v2/so3lr-s.pt` (one of the bundled checkpoints described in [Pretrained SO3LR Models](#pretrained-so3lr-models-ase-calculator) above) or your own `torchkrates-jax2torch`-converted checkpoint following the same `<stem>.pt` + `<stem>_settings.yaml` naming convention. `ARCHITECTURE` in this config must match the checkpoint's architecture (copy from its sibling `*_settings.yaml`) — see the annotated example and caveats in [`examples/training/train_settings_example.yaml`](examples/training/train_settings_example.yaml) (near `TRAINING.patience`). This is plain warm-started training; for LoRA/DoRA/VeRA fine-tuning of a bundled checkpoint instead, see [`examples/finetuning/finetune_pretrained_so3lr.py`](examples/finetuning/finetune_pretrained_so3lr.py).
 
 #### Fine-Tuning Strategy
 
