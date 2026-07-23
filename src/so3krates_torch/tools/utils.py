@@ -417,9 +417,9 @@ def load_results_hdf5(filename, is_ensemble: bool = False):
                                     key_grp = item_grp[key_type]
                                     att_dict[key_type] = {}
                                     for layer_idx in key_grp.keys():
-                                        att_dict[key_type][int(layer_idx)] = (
-                                            key_grp[layer_idx][()]
-                                        )
+                                        att_dict[key_type][
+                                            int(layer_idx)
+                                        ] = key_grp[layer_idx][()]
 
                             # Load 'senders' and 'receivers' tensors
                             for key_type in ["senders", "receivers"]:
@@ -453,9 +453,9 @@ def load_results_hdf5(filename, is_ensemble: bool = False):
                                 key_grp = item_grp[key_type]
                                 att_dict[key_type] = {}
                                 for layer_idx in key_grp.keys():
-                                    att_dict[key_type][int(layer_idx)] = (
-                                        key_grp[layer_idx][()]
-                                    )
+                                    att_dict[key_type][
+                                        int(layer_idx)
+                                    ] = key_grp[layer_idx][()]
 
                         # Load 'senders' and 'receivers' tensors
                         for key_type in ["senders", "receivers"]:
