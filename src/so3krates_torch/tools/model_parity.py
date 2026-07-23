@@ -304,6 +304,67 @@ def _with_final_bias_bool(cfg, torch_model: torch.nn.Module):
     return cfg
 
 
+# Third gap in the same family as the two above, this time in the JAX
+# *params* (not the cfg): the real bundled v1 checkpoint
+# (``so3lr_dev``'s ``models/so3lr/params.pkl``) stores
+# ``observables_0/energy_offset`` and ``observables_0/atomic_scales`` as
+# 1-D ``(zmax + 1,)`` arrays -- the layout an older ``EnergySparse``
+# used before multi-theory-level support was added. The currently
+# installed ``so3lr_dev``'s ``EnergySparse.__call__``
+# (``mlff/nn/observable/observable_sparse.py``, the ``self.param(
+# 'energy_offset', ..., (self.zmax + 1, num_theory_levels))`` /
+# ``'atomic_scales'`` declarations) now always declares both with shape
+# ``(zmax + 1, num_theory_levels)``, so binding the 1-D checkpoint leaf
+# to that 2-D declaration raises ``flax.errors.ScopeParamShapeError``
+# ((119,) vs (119, 1)) at ``model.apply`` time -- a pure params-shape
+# version drift, unrelated to any cfg flag (``legacy_so3lr_bool`` /
+# ``energy_learn_atomic_type_shifts`` / ``use_final_bias_bool`` are all
+# already set correctly in the v1 checkpoint's hyperparameters). This is
+# a v1-only mismatch: all three real v2 so3lr-s/-m/-l checkpoints ship a
+# genuinely 16-theory-level (119, 16) 2-D layout that already matches.
+# Since a v1 model has exactly one theory level, reshaping ``(zmax + 1,)``
+# -> ``(zmax + 1, 1)`` is byte-for-byte value-preserving (no data is
+# invented or dropped -- it is a pure trailing-unit-axis insertion). Done
+# on the JAX side only, against a copy; the torch side reads the same 1-D
+# leaf via its own converter (jax_torch_conversion.py) and is unaffected.
+_LEGACY_ENERGY_HEAD_LEAVES = ("energy_offset", "atomic_scales")
+
+
+def _reshape_legacy_energy_head_params(
+    flax_params: dict, num_theory_levels: int
+) -> dict:
+    """Copy of ``flax_params`` with any 1-D ``observables_0/energy_offset``
+    /``atomic_scales`` leaf reshaped to ``(zmax + 1, num_theory_levels)``
+    -- see the module comment above for why this is needed.
+
+    A clean no-op (returns ``flax_params`` unchanged, no copy made) unless
+    (a) ``num_theory_levels == 1`` -- the only case where a value-
+    preserving reshape from a 1-D leaf is unambiguous -- and (b) at least
+    one of the two leaves is actually 1-D (i.e. genuinely the legacy
+    layout). Always a no-op for the real v2 checkpoints (already 2-D) and
+    for anything without the exact ``params/observables_0`` path.
+    """
+    if num_theory_levels != 1:
+        return flax_params
+    params = flax_params.get("params", flax_params)
+    obs0 = params.get("observables_0")
+    if not isinstance(obs0, dict):
+        return flax_params
+    if not any(
+        hasattr(obs0.get(name), "ndim") and obs0[name].ndim == 1
+        for name in _LEGACY_ENERGY_HEAD_LEAVES
+    ):
+        return flax_params
+    flax_params = copy.deepcopy(flax_params)
+    params = flax_params.get("params", flax_params)
+    obs0 = params["observables_0"]
+    for name in _LEGACY_ENERGY_HEAD_LEAVES:
+        leaf = obs0.get(name)
+        if hasattr(leaf, "ndim") and leaf.ndim == 1:
+            obs0[name] = leaf.reshape(leaf.shape[0], num_theory_levels)
+    return flax_params
+
+
 def _build_torch_batch(
     r_max: float,
     r_max_lr,
@@ -498,6 +559,13 @@ def check_model_parity(
     from ``cfg.model`` (see ``_with_final_bias_bool``/
     ``_detect_final_layer_bias`` above) -- a no-op for cfgs that already
     set it explicitly (true for all real shipped so3lr_dev checkpoints).
+
+    A legacy 1-D ``observables_0/energy_offset``/``atomic_scales`` layout
+    in ``flax_params`` (the real bundled v1 checkpoint) is reshaped to
+    the 2-D ``(zmax + 1, num_theory_levels)`` layout the installed
+    ``so3lr_dev`` ``EnergySparse`` now declares (see
+    ``_reshape_legacy_energy_head_params`` above) -- a value-preserving
+    no-op for the already-2-D v2 checkpoints.
     """
     import jax
 
@@ -512,6 +580,9 @@ def check_model_parity(
     cfg = _with_final_bias_bool(cfg, torch_model)
 
     num_theory_levels = _detect_num_theory_levels(flax_params)
+    flax_params = _reshape_legacy_energy_head_params(
+        flax_params, num_theory_levels
+    )
     inputs_jax = _match_theory_levels(
         jax_input_builder(cfg, structure_path, index), num_theory_levels
     )
