@@ -51,6 +51,14 @@ argparser.add_argument(
     choices=["v1", "v2-s", "v2-m", "v2-l"],
     help="Which bundled pretrained SO3LR checkpoint to use with --so3lr.",
 )
+argparser.add_argument(
+    "--use_pme",
+    action="store_true",
+    default=False,
+    help="Use PME (k-space) electrostatics instead of the default "
+    "real-space Coulomb sum. Requires torch-pme and a periodic "
+    "--start_path structure (a cell). Only applies with --so3lr.",
+)
 argparser.add_argument("--dtype", type=str, default="float32")
 args = argparser.parse_args()
 
@@ -62,10 +70,23 @@ if args.model_path is None and not args.so3lr:
     raise ValueError("Must provide either model_path or use SO3LR")
 
 
-mol = read(args.start_path)
+if os.path.exists(args.start_path):
+    mol = read(args.start_path)
+else:
+    # No --start_path given (or it doesn't exist): fall back to a small,
+    # bundled, self-contained periodic structure so this example can be
+    # run out of the box, e.g. to smoke-test --use_pme (PME requires a
+    # periodic cell) across all 4 --so3lr_model checkpoints.
+    from ase.build import bulk
+
+    print(
+        f"--start_path {args.start_path!r} not found; falling back to a "
+        "small bundled NaCl bulk structure (2x2x2 rocksalt supercell)."
+    )
+    mol = bulk("NaCl", "rocksalt", a=5.64) * (2, 2, 2)
 
 if args.so3lr:
-    print(f"Using SO3LR ({args.so3lr_model})")
+    print(f"Using SO3LR ({args.so3lr_model}), use_pme={args.use_pme}")
     mol.calc = SO3LRCalculator(
         model=args.so3lr_model,
         r_max_lr=args.r_max_lr,
@@ -73,6 +94,7 @@ if args.so3lr:
         dispersion_energy_cutoff_lr_damping=args.dispersion_energy_cutoff_lr_damping,
         device=args.device,
         default_dtype=args.dtype,
+        use_pme=args.use_pme,
     )
 
 else:

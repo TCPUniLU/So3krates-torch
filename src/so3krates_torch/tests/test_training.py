@@ -314,6 +314,28 @@ def test_create_model_accepts_valid_lr_config(device):
     assert model.r_max_lr == 10.0
 
 
+def test_create_model_honors_final_layer_bias_false(device):
+    """Regression: ``final_layer_bias`` in ARCHITECTURE must reach the
+    model. Several bundled v2 checkpoints (e.g. so3lr-s/-m/-l) save
+    ``final_layer_bias: false`` -- if ``create_model`` silently dropped
+    this key (defaulting to ``True``), a model built from such a
+    checkpoint's own settings for ``pretrained_weights`` warm-starting
+    would have an extra ``atomic_energy_output_block.final_layer.bias``
+    parameter absent from the checkpoint's state_dict, which is a real
+    (non-PME) missing key rather than an intentional PME buffer."""
+    config = {
+        "GENERAL": {"seed": 42, "default_dtype": "float32"},
+        "ARCHITECTURE": {
+            "degrees": [1, 2],
+            "r_max": 5.0,
+            "r_max_lr": 10.0,
+            "final_layer_bias": False,
+        },
+    }
+    model = create_model(config, device)
+    assert model.atomic_energy_output_block.final_layer.bias is None
+
+
 def test_setup_optimizer_and_scheduler_adam(default_model_config):
     from so3krates_torch.tools.training_setup import (
         setup_optimizer_and_scheduler,

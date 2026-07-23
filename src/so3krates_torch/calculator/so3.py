@@ -32,6 +32,83 @@ _PRETRAINED_SO3LR_MODELS = {
 }
 
 
+def _build_so3lr_from_settings_and_state_dict(
+    settings_path: Union[str, Path],
+    state_dict_path: Union[str, Path],
+    device: str = "cpu",
+    error_label: Optional[str] = None,
+    **architecture_overrides,
+) -> torch.nn.Module:
+    """Construct a ``SO3LR`` model from a ``*_settings.yaml``
+    ``ARCHITECTURE`` block and a matching ``state_dict`` ``.pt`` file,
+    then load the weights into it.
+
+    This is the shared read-YAML/``SO3LR(**settings)``/
+    ``load_state_dict`` path used both by ``load_pretrained_so3lr``
+    (for the bundled pretrained checkpoints) and by CLI tools that
+    accept a user-supplied ``<stem>.pt`` + sibling
+    ``<stem>_settings.yaml`` pair following the same naming
+    convention.
+
+    ``architecture_overrides`` are merged into the checkpoint's saved
+    ``ARCHITECTURE`` settings before construction -- e.g. pass
+    ``use_pme=True, pme_smearing=..., pme_mesh_spacing=...`` to enable
+    PME electrostatics/dispersion (every saved checkpoint has PME off
+    by default). PME introduces zero new *learned* parameters (only
+    ``torch-pme``'s own internal, non-learned buffers --
+    ``smearing``/``prefactor``/``exponent``), so the state_dict is
+    loaded with ``strict=False`` and only those specific buffer keys
+    are allowed to be missing; anything else missing or any unexpected
+    key raises.
+    """
+    with open(settings_path) as f:
+        settings = yaml.safe_load(f)["ARCHITECTURE"]
+    settings = dict(settings)
+    settings.pop("device", None)
+    settings.update(architecture_overrides)
+
+    torch_model = SO3LR(**settings)
+
+    state_dict = torch.load(
+        state_dict_path, map_location=device, weights_only=False
+    )
+
+    label = error_label if error_label is not None else str(state_dict_path)
+    missing, unexpected = torch_model.load_state_dict(state_dict, strict=False)
+    if unexpected:
+        raise RuntimeError(
+            f"Unexpected keys loading checkpoint {label!r}: {unexpected}"
+        )
+    bad_missing = [k for k in missing if "pme_" not in k]
+    if bad_missing:
+        raise RuntimeError(
+            f"Missing non-PME keys loading checkpoint {label!r}: "
+            f"{bad_missing}"
+        )
+    torch_model.to(device)
+    return torch_model
+
+
+def settings_path_for_checkpoint(state_dict_path: Union[str, Path]) -> Path:
+    """Resolve the sibling ``<stem>_settings.yaml`` for a ``.pt``
+    state_dict checkpoint, following the same naming convention used
+    by the bundled pretrained checkpoints (e.g. ``so3lr-s.pt`` ->
+    ``so3lr-s_settings.yaml``, in the same directory).
+    """
+    state_dict_path = Path(state_dict_path)
+    settings_path = state_dict_path.with_name(
+        state_dict_path.stem + "_settings.yaml"
+    )
+    if not settings_path.exists():
+        raise FileNotFoundError(
+            f"No settings YAML found for checkpoint {state_dict_path}: "
+            f"expected {settings_path} (matching the "
+            "'<stem>.pt' + '<stem>_settings.yaml' naming convention "
+            "used by the bundled pretrained checkpoints)."
+        )
+    return settings_path
+
+
 def load_pretrained_so3lr(
     model: str,
     device: str = "cpu",
@@ -48,12 +125,8 @@ def load_pretrained_so3lr(
     ``ARCHITECTURE`` settings before construction -- e.g. pass
     ``use_pme=True, pme_smearing=..., pme_mesh_spacing=...`` to enable
     PME electrostatics/dispersion (every saved checkpoint has PME off
-    by default). PME introduces zero new *learned* parameters (only
-    ``torch-pme``'s own internal, non-learned buffers --
-    ``smearing``/``prefactor``/``exponent``), so the state_dict is
-    loaded with ``strict=False`` and only those specific buffer keys
-    are allowed to be missing; anything else missing or any unexpected
-    key raises.
+    by default). See ``_build_so3lr_from_settings_and_state_dict`` for
+    details on how missing/unexpected keys are handled.
     """
     if model not in _PRETRAINED_SO3LR_MODELS:
         raise ValueError(
@@ -63,34 +136,17 @@ def load_pretrained_so3lr(
     subdir, stem = _PRETRAINED_SO3LR_MODELS[model]
     base = resources.files("so3krates_torch.pretrained.so3lr") / subdir
 
-    with resources.as_file(base / f"{stem}_settings.yaml") as yaml_path:
-        with open(yaml_path) as f:
-            settings = yaml.safe_load(f)["ARCHITECTURE"]
-    settings = dict(settings)
-    settings.pop("device", None)
-    settings.update(architecture_overrides)
-
-    torch_model = SO3LR(**settings)
-
-    with resources.as_file(base / f"{stem}.pt") as pt_path:
-        state_dict = torch.load(
-            pt_path, map_location=device, weights_only=False
+    with (
+        resources.as_file(base / f"{stem}_settings.yaml") as yaml_path,
+        resources.as_file(base / f"{stem}.pt") as pt_path,
+    ):
+        return _build_so3lr_from_settings_and_state_dict(
+            yaml_path,
+            pt_path,
+            device=device,
+            error_label=f"pretrained {model!r}",
+            **architecture_overrides,
         )
-
-    missing, unexpected = torch_model.load_state_dict(state_dict, strict=False)
-    if unexpected:
-        raise RuntimeError(
-            f"Unexpected keys loading pretrained {model!r} checkpoint: "
-            f"{unexpected}"
-        )
-    bad_missing = [k for k in missing if "pme_" not in k]
-    if bad_missing:
-        raise RuntimeError(
-            f"Missing non-PME keys loading pretrained {model!r} "
-            f"checkpoint: {bad_missing}"
-        )
-    torch_model.to(device)
-    return torch_model
 
 
 def get_model_dtype(model: torch.nn.Module) -> torch.dtype:

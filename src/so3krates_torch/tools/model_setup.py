@@ -81,6 +81,7 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
         "qk_non_linearity": arch_config.get("qk_non_linearity", "identity"),
         "qk_norm": arch_config.get("qk_norm", False),
         "use_residual_scalars": arch_config.get("use_residual_scalars", False),
+        "final_layer_bias": arch_config.get("final_layer_bias", True),
         "cutoff_fn": arch_config.get("cutoff_fn", "cosine"),
         "activation_fn": arch_config.get("activation_fn", "silu"),
         "energy_activation_fn": arch_config.get(

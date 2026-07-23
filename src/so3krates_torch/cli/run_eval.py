@@ -1,3 +1,28 @@
+"""``torchkrates-eval``: run a model over an ASE-readable dataset.
+
+``--model_path`` accepts (see ``run_evaluation`` below for details):
+  - a bundled pretrained keyword: ``v1``, ``v2-s``, ``v2-m``, ``v2-l``.
+  - a converted checkpoint: a ``<stem>.pt`` state_dict with a sibling
+    ``<stem>_settings.yaml`` (e.g. produced by ``torchkrates-jax2torch
+    --save_state_dict_path my_checkpoint.pt``, which also writes
+    ``my_checkpoint_settings.yaml``).
+  - a single pickled ``.model`` file, or a directory of them (original
+    behavior, produced by ``torchkrates-train``).
+
+Example invocations::
+
+    torchkrates-eval --model_path v1 --data_path my_data.xyz \\
+        --device cpu --dtype float32 --r_max_lr 12.0 \\
+        --dispersion_energy_cutoff_lr_damping 2.0 \\
+        --output_file results_v1.h5
+
+    torchkrates-eval --model_path my_checkpoint.pt \\
+        --data_path my_data.xyz --device cpu --dtype float32 \\
+        --output_file results_my_checkpoint.h5
+
+``torchkrates-metric --models ...`` accepts the same two new forms.
+"""
+
 import argparse
 import logging
 from typing import Optional
@@ -12,6 +37,12 @@ from so3krates_torch.tools.load_descriptors import (
 )
 from ase.io import read
 import torch
+from so3krates_torch.calculator.so3 import (
+    _PRETRAINED_SO3LR_MODELS,
+    _build_so3lr_from_settings_and_state_dict,
+    load_pretrained_so3lr,
+    settings_path_for_checkpoint,
+)
 from so3krates_torch.data.utils import KeySpecification
 from pathlib import Path
 import os
@@ -50,9 +81,20 @@ def run_evaluation(
     compile: bool = False,
     fullgraph: Optional[bool] = None,
 ):
-    """Load models from `model_path` (single .model or directory of .model),
-    read data from `data_path`, run evaluation or ensemble prediction and
-    return (result, is_ensemble).
+    """Load models from `model_path`, read data from `data_path`, run
+    evaluation or ensemble prediction and return (result, is_ensemble).
+
+    `model_path` accepts:
+      - one of the 4 bundled pretrained keywords (``"v1"``, ``"v2-s"``,
+        ``"v2-m"``, ``"v2-l"``) -- loaded via ``load_pretrained_so3lr``.
+      - a path ending in ``.pt`` -- a raw ``state_dict`` checkpoint with
+        a sibling ``<stem>_settings.yaml`` (same convention as the
+        bundled checkpoints), constructed+loaded via the same shared
+        helper as ``load_pretrained_so3lr``.
+      - a single ``.model`` file (a pickled whole-model object, as
+        produced by training) -- unchanged original behavior.
+      - a directory -- globbed for ``*.model`` files and loaded as an
+        ensemble -- unchanged original behavior.
 
     This function mirrors the original inline logic but uses explicit
     function arguments instead of relying on an argparse Namespace.
@@ -66,19 +108,35 @@ def run_evaluation(
     else:
         raise ValueError(f"Unsupported dtype: {dtype}")
 
-    # check if path ends with .model or is dir
-    if model_path.endswith(".model"):
-        model_paths = [model_path]
-    else:
-        model_paths = list(Path(model_path).glob("*.model"))
+    torch_dtype = torch.float32 if dtype == "float32" else torch.float64
 
-    models = []
-    for mp in model_paths:
-        model = torch.load(mp, map_location=device, weights_only=False).to(
-            torch.float32 if dtype == "float32" else torch.float64
+    if model_path in _PRETRAINED_SO3LR_MODELS:
+        model = load_pretrained_so3lr(model_path, device=device).to(
+            torch_dtype
         )
         model.return_mean = False
-        models.append(model)
+        models = [model]
+    elif model_path.endswith(".pt"):
+        settings_path = settings_path_for_checkpoint(model_path)
+        model = _build_so3lr_from_settings_and_state_dict(
+            settings_path, model_path, device=device
+        ).to(torch_dtype)
+        model.return_mean = False
+        models = [model]
+    else:
+        # check if path ends with .model or is dir
+        if model_path.endswith(".model"):
+            model_paths = [model_path]
+        else:
+            model_paths = list(Path(model_path).glob("*.model"))
+
+        models = []
+        for mp in model_paths:
+            model = torch.load(mp, map_location=device, weights_only=False).to(
+                torch_dtype
+            )
+            model.return_mean = False
+            models.append(model)
     logging.info("Loaded %d model(s) from %s", len(models), model_path)
 
     data_suffix = Path(data_path).suffix.lower()

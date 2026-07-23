@@ -417,9 +417,9 @@ def load_results_hdf5(filename, is_ensemble: bool = False):
                                     key_grp = item_grp[key_type]
                                     att_dict[key_type] = {}
                                     for layer_idx in key_grp.keys():
-                                        att_dict[key_type][
-                                            int(layer_idx)
-                                        ] = key_grp[layer_idx][()]
+                                        att_dict[key_type][int(layer_idx)] = (
+                                            key_grp[layer_idx][()]
+                                        )
 
                             # Load 'senders' and 'receivers' tensors
                             for key_type in ["senders", "receivers"]:
@@ -453,9 +453,9 @@ def load_results_hdf5(filename, is_ensemble: bool = False):
                                 key_grp = item_grp[key_type]
                                 att_dict[key_type] = {}
                                 for layer_idx in key_grp.keys():
-                                    att_dict[key_type][
-                                        int(layer_idx)
-                                    ] = key_grp[layer_idx][()]
+                                    att_dict[key_type][int(layer_idx)] = (
+                                        key_grp[layer_idx][()]
+                                    )
 
                         # Load 'senders' and 'receivers' tensors
                         for key_type in ["senders", "receivers"]:
@@ -691,14 +691,45 @@ def ensemble_from_folder(path_to_models: str, device: str, dtype: str) -> dict:
     """
     Load an ensemble of models from a folder.
 
+    ``path_to_models`` also accepts, additively to the folder-of-models
+    behavior below:
+      - one of the 4 bundled pretrained keywords (``"v1"``, ``"v2-s"``,
+        ``"v2-m"``, ``"v2-l"``) -- loaded via ``load_pretrained_so3lr``.
+      - a path ending in ``.pt`` -- a raw ``state_dict`` checkpoint with
+        a sibling ``<stem>_settings.yaml`` (same convention as the
+        bundled checkpoints), constructed+loaded via the same shared
+        helper as ``load_pretrained_so3lr``.
+
     Args:
-        path_to_models (str): Path to the folder containing the models.
+        path_to_models (str): Path to the folder containing the models
+            (or one of the special forms above).
         device (str): Device to load the models on.
         dtype (str): Data type to load the models as.
 
     Returns:
         dict: Dictionary of models.
     """
+    # Local import: calculator.so3 imports this module (tools.utils) at
+    # module level, so importing it back at module level here would be
+    # circular. A function-local import breaks the cycle.
+    from so3krates_torch.calculator.so3 import (
+        _PRETRAINED_SO3LR_MODELS,
+        _build_so3lr_from_settings_and_state_dict,
+        load_pretrained_so3lr,
+        settings_path_for_checkpoint,
+    )
+
+    if path_to_models in _PRETRAINED_SO3LR_MODELS:
+        model = load_pretrained_so3lr(path_to_models, device=device).to(dtype)
+        return {path_to_models: model}
+
+    if path_to_models.endswith(".pt"):
+        settings_path = settings_path_for_checkpoint(path_to_models)
+        model = _build_so3lr_from_settings_and_state_dict(
+            settings_path, path_to_models, device=device
+        ).to(dtype)
+        stem = os.path.splitext(os.path.basename(path_to_models))[0]
+        return {stem: model}
 
     assert os.path.exists(path_to_models)
     assert os.listdir(Path(path_to_models))

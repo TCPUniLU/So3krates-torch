@@ -118,6 +118,26 @@ TRAINING:
   valid_ratio: 0.1
   clip_grad: 10.0
   patience: 50
+  # --- Warm-starting from a converted pretrained v1/v2 checkpoint ---
+  # pretrained_weights: pretrained/so3lr/v2/so3lr-s.pt
+  #   Path to a converted checkpoint's raw state_dict .pt file (produced
+  #   by `torchkrates-jax2torch`; the bundled v1/v2 checkpoints under
+  #   `pretrained/so3lr/{v1,v2}/` follow the same convention). Loaded via
+  #   `load_pretrained_weights()` with strict=False into a model built
+  #   fresh from this file's own ARCHITECTURE section below -- so
+  #   ARCHITECTURE must match the checkpoint's architecture (see its
+  #   sibling `*_settings.yaml`, e.g. `pretrained/so3lr/v2/
+  #   so3lr-s_settings.yaml`, for the exact values to copy in). Enabling
+  #   PME here on top of a checkpoint trained without it (`use_pme: true`
+  #   + `pme_smearing`/`pme_mesh_spacing` above) is fine even so: PME
+  #   introduces no new *learned* parameters, only its own non-learned
+  #   buffers, which is exactly what strict=False allows to be missing.
+  #   Mutually exclusive with `pretrained_model` (a pickled whole-model
+  #   `.model` file) below -- use one or the other.
+  # pretrained_model: /path/to/model.model  # complete pickled model object
+  # For LoRA/DoRA/VeRA fine-tuning of a bundled pretrained checkpoint
+  # instead of plain warm-started training, see
+  # examples/finetuning/finetune_pretrained_so3lr.py.
   # lazy_loading: false       # on-the-fly preprocessing from raw HDF5 (default: false)
   # num_workers: 4            # DataLoader worker processes (only with lazy_loading)
   # prefetch_factor: 2        # batches prefetched per worker (only with lazy_loading)
