@@ -27,6 +27,9 @@ import numpy as np
 import torch
 from ase.io import read as ase_read
 
+from so3krates_torch.calculator.so3 import load_pretrained_so3lr
+from so3krates_torch.tools.model_parity import _build_torch_batch
+
 _CHECKPOINT_DIRS = {
     "v1": "so3lr",
     "v2-s": "so3lr-s",
@@ -119,3 +122,56 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repeats", type=int, default=50)
     parser.add_argument("--output", default=None)
     return parser
+
+
+def _build_torch_model(args: argparse.Namespace) -> torch.nn.Module:
+    overrides = dict(
+        r_max_lr=args.r_max_lr,
+        dispersion_energy_cutoff_lr_damping=(
+            args.dispersion_energy_cutoff_lr_damping
+        ),
+    )
+    if args.use_pme:
+        overrides.update(
+            use_pme=True,
+            pme_smearing=args.pme_smearing,
+            pme_mesh_spacing=args.pme_mesh_spacing,
+        )
+    model = load_pretrained_so3lr(args.model, device=args.device, **overrides)
+    dtype = getattr(torch, args.dtype)
+    return model.to(dtype).to(args.device).eval()
+
+
+def _time_torch_eager(
+    model: torch.nn.Module, batch, warmup: int, repeats: int, device: str
+) -> np.ndarray:
+    is_cuda = str(device).startswith("cuda")
+    batch = batch.clone()
+    batch.positions.requires_grad_(True)
+    batch_dict = batch.to_dict()
+
+    def _call():
+        return model(batch_dict, compute_stress=False)
+
+    for _ in range(warmup):
+        _call()
+    if is_cuda:
+        torch.cuda.synchronize()
+
+    times = np.empty(repeats, dtype=np.float64)
+    for i in range(repeats):
+        if is_cuda:
+            torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        _call()
+        if is_cuda:
+            torch.cuda.synchronize()
+        times[i] = time.perf_counter() - t0
+    return times
+
+
+def _time_torch_compiled(
+    model: torch.nn.Module, batch, warmup: int, repeats: int, device: str
+) -> np.ndarray:
+    compiled = torch.compile(model, dynamic=True, fullgraph=True)
+    return _time_torch_eager(compiled, batch, warmup, repeats, device)
