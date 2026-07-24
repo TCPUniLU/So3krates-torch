@@ -29,6 +29,14 @@ from ase.io import read as ase_read
 
 from so3krates_torch.calculator.so3 import load_pretrained_so3lr
 from so3krates_torch.tools.model_parity import _build_torch_batch
+from so3krates_torch.tools.model_parity import (
+    _build_jax_inputs,
+    _detect_num_theory_levels,
+    _match_theory_levels,
+    _reshape_legacy_energy_head_params,
+    _theory_level_index,
+    _with_final_bias_bool,
+)
 
 _CHECKPOINT_DIRS = {
     "v1": "so3lr",
@@ -175,3 +183,102 @@ def _time_torch_compiled(
 ) -> np.ndarray:
     compiled = torch.compile(model, dynamic=True, fullgraph=True)
     return _time_torch_eager(compiled, batch, warmup, repeats, device)
+
+
+def _configure_jax_environment(device: str) -> None:
+    """Must run before any ``jax`` import (this script's own JAX imports
+    are all lazy/local for exactly this reason)."""
+    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    if device == "cpu":
+        os.environ["JAX_PLATFORMS"] = "cpu"
+
+
+def _configure_jax_precision(dtype: str) -> None:
+    import jax
+
+    jax.config.update("jax_enable_x64", dtype == "float64")
+
+
+def _load_jax_checkpoint(
+    model_key: str,
+    r_max_lr: float,
+    damping: float,
+    use_pme: bool,
+    pme_smearing: float,
+    pme_mesh_spacing: float,
+):
+    """Mutates the raw ``hyperparameters.json`` dict *before* wrapping it
+    in a ``ConfigDict`` (not after) -- matching
+    ``tests/test_v1_parity.py``'s/``tests/test_v2_parity.py``'s
+    ``_v1_hyperparams``/``_pme_hyperparams`` convention exactly, so a key
+    like ``kspace_electrostatics`` that may not exist at all in a
+    checkpoint shipped with PME off can still be set without relying on
+    ``ConfigDict``'s new-attribute/type-locking semantics.
+    """
+    from importlib.resources import files
+
+    from ml_collections import config_dict
+
+    checkpoint_dir = files("so3lr") / "models" / _CHECKPOINT_DIRS[model_key]
+    with open(str(checkpoint_dir / "params.pkl"), "rb") as f:
+        flax_params = pickle.load(f)
+    with open(str(checkpoint_dir / "hyperparameters.json")) as f:
+        raw_hyperparams = json.load(f)
+
+    raw_hyperparams["model"]["cutoff_lr"] = r_max_lr
+    raw_hyperparams["model"]["dispersion_energy_cutoff_lr_damping"] = damping
+    if use_pme:
+        raw_hyperparams["model"]["kspace_electrostatics"] = "pme"
+        raw_hyperparams["model"]["kspace_smearing"] = pme_smearing
+        raw_hyperparams["model"]["kspace_spacing"] = pme_mesh_spacing
+
+    cfg = config_dict.ConfigDict(raw_hyperparams)
+    return cfg, flax_params
+
+
+def _cast_pytree_floats(tree, dtype: np.dtype):
+    import jax
+    import jax.numpy as jnp
+
+    def _cast(x):
+        if hasattr(x, "dtype") and jnp.issubdtype(x.dtype, jnp.floating):
+            return x.astype(dtype)
+        return x
+
+    return jax.tree_util.tree_map(_cast, tree)
+
+
+def _time_jax_jit(
+    cfg,
+    flax_params: dict,
+    jax_inputs: dict,
+    model_factory,
+    warmup: int,
+    repeats: int,
+) -> np.ndarray:
+    import jax
+
+    model = model_factory(cfg)
+    graph_mask = jax_inputs["graph_mask"]
+
+    def energy_fn(positions):
+        inputs_r = dict(jax_inputs, positions=positions)
+        out = model.apply(flax_params, inputs_r)
+        return (out["energy"] * graph_mask).sum()
+
+    value_and_grad_fn = jax.jit(jax.value_and_grad(energy_fn))
+    positions = jax_inputs["positions"]
+
+    for _ in range(warmup):
+        energy, grad = value_and_grad_fn(positions)
+        energy.block_until_ready()
+        grad.block_until_ready()
+
+    times = np.empty(repeats, dtype=np.float64)
+    for i in range(repeats):
+        t0 = time.perf_counter()
+        energy, grad = value_and_grad_fn(positions)
+        energy.block_until_ready()
+        grad.block_until_ready()
+        times[i] = time.perf_counter() - t0
+    return times
