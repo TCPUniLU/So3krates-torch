@@ -282,3 +282,215 @@ def _time_jax_jit(
         grad.block_until_ready()
         times[i] = time.perf_counter() - t0
     return times
+
+
+def run_benchmark(args: argparse.Namespace) -> dict:
+    _configure_jax_environment(args.device)
+    _configure_jax_precision(args.dtype)
+
+    from so3lr.mlff.config import make_so3krates_sparse_from_config
+
+    torch_model = _build_torch_model(args)
+    cfg, flax_params = _load_jax_checkpoint(
+        args.model,
+        args.r_max_lr,
+        args.dispersion_energy_cutoff_lr_damping,
+        args.use_pme,
+        args.pme_smearing,
+        args.pme_mesh_spacing,
+    )
+    cfg = _with_final_bias_bool(cfg, torch_model)
+    num_theory_levels = _detect_num_theory_levels(flax_params)
+    flax_params = _reshape_legacy_energy_head_params(
+        flax_params, num_theory_levels
+    )
+    dtype_np = np.dtype(args.dtype)
+    flax_params = _cast_pytree_floats(flax_params, dtype_np)
+    torch_dtype = getattr(torch, args.dtype)
+
+    structures = _discover_structures(args.data_dir)
+    if not structures:
+        raise ValueError(f"No readable structures found in {args.data_dir}")
+
+    records = []
+    for path, n_atoms in structures:
+        print(f"\n=== {os.path.basename(path)} ({n_atoms} atoms) ===")
+
+        batch = None
+        try:
+            batch = _build_torch_batch(
+                r_max=torch_model.r_max,
+                r_max_lr=torch_model.r_max_lr,
+                structure_path=path,
+                index=0,
+                dtype=torch_dtype,
+                theory_level=_theory_level_index(num_theory_levels),
+            ).to(args.device)
+        except Exception as exc:
+            print(f"WARNING: failed to build torch batch for {path}: {exc}")
+            records.append(
+                _make_record(
+                    path, n_atoms, "torch-eager", "failed", error=str(exc)
+                )
+            )
+            if args.device != "cpu":
+                records.append(
+                    _make_record(
+                        path,
+                        n_atoms,
+                        "torch-compiled",
+                        "failed",
+                        error=str(exc),
+                    )
+                )
+
+        if batch is not None:
+            try:
+                eager_model = copy.deepcopy(torch_model)
+                times = _time_torch_eager(
+                    eager_model,
+                    batch,
+                    args.warmup,
+                    args.repeats,
+                    args.device,
+                )
+                records.append(
+                    _make_record(path, n_atoms, "torch-eager", "ok", times)
+                )
+            except Exception as exc:
+                records.append(
+                    _make_record(
+                        path,
+                        n_atoms,
+                        "torch-eager",
+                        "failed",
+                        error=str(exc),
+                    )
+                )
+
+            if args.device == "cpu":
+                print(
+                    "WARNING: skipping torch-compiled on CPU -- "
+                    "torch.compile is unsupported on CPU for long-range "
+                    "SO3LR models (Inductor crashes on the ZBL/"
+                    "electrostatics/dispersion scatter-reductions). Run "
+                    "on --device cuda to benchmark torch-compiled."
+                )
+            else:
+                try:
+                    compiled_model = copy.deepcopy(torch_model)
+                    times = _time_torch_compiled(
+                        compiled_model,
+                        batch,
+                        args.warmup,
+                        args.repeats,
+                        args.device,
+                    )
+                    records.append(
+                        _make_record(
+                            path, n_atoms, "torch-compiled", "ok", times
+                        )
+                    )
+                except Exception as exc:
+                    records.append(
+                        _make_record(
+                            path,
+                            n_atoms,
+                            "torch-compiled",
+                            "failed",
+                            error=str(exc),
+                        )
+                    )
+
+        try:
+            jax_inputs = _match_theory_levels(
+                _build_jax_inputs(cfg, path, 0), num_theory_levels
+            )
+            jax_inputs = _cast_pytree_floats(jax_inputs, dtype_np)
+            times = _time_jax_jit(
+                cfg,
+                flax_params,
+                jax_inputs,
+                make_so3krates_sparse_from_config,
+                args.warmup,
+                args.repeats,
+            )
+            records.append(_make_record(path, n_atoms, "jax-jit", "ok", times))
+        except Exception as exc:
+            records.append(
+                _make_record(
+                    path, n_atoms, "jax-jit", "failed", error=str(exc)
+                )
+            )
+
+    return {"config": vars(args), "records": records}
+
+
+def print_table(results: dict) -> None:
+    config = results["config"]
+    pme_state = "on" if config["use_pme"] else "off"
+    print(
+        f"\nModel: {config['model']}   Device: {config['device']}   "
+        f"dtype: {config['dtype']}   PME: {pme_state}"
+    )
+    header = (
+        f"{'n_atoms':>8} {'backend':<16} {'mean(ms)':>10} {'std(ms)':>9} "
+        f"{'atoms/s':>10} {'ms/(atom*step)':>15} {'speedup':>9}"
+    )
+    sep = "=" * len(header)
+    print(sep)
+    print(header)
+    print("-" * len(header))
+
+    by_size: Dict[int, Dict[str, dict]] = {}
+    for r in results["records"]:
+        by_size.setdefault(r["n_atoms"], {})[r["backend"]] = r
+
+    for n_atoms in sorted(by_size):
+        baseline = by_size[n_atoms].get("torch-eager")
+        baseline_mean = (
+            baseline["mean_s"]
+            if baseline and baseline["status"] == "ok"
+            else None
+        )
+        for backend in BACKENDS:
+            r = by_size[n_atoms].get(backend)
+            if r is None:
+                continue
+            if r["status"] != "ok":
+                print(
+                    f"{n_atoms:>8} {backend:<16} "
+                    f"{'FAILED':>10} {r['error']}"
+                )
+                continue
+            speedup = (
+                f"{baseline_mean / r['mean_s']:.2f}x"
+                if baseline_mean and r["mean_s"] > 0
+                else "n/a"
+            )
+            print(
+                f"{n_atoms:>8} {backend:<16} {r['mean_s'] * 1000:>10.2f} "
+                f"{r['std_s'] * 1000:>9.2f} {r['atoms_per_s']:>10.0f} "
+                f"{r['ms_per_atom_step']:>15.4f} {speedup:>9}"
+            )
+    print(sep)
+
+
+def save_results(results: dict, output_path: str) -> None:
+    np.savez(output_path, results=results)
+    print(f"\nSaved results to {output_path}")
+
+
+def main() -> None:
+    parser = build_arg_parser()
+    args = parser.parse_args()
+    if args.output is None:
+        args.output = f"benchmark_{args.model}_{args.device}.npz"
+
+    results = run_benchmark(args)
+    print_table(results)
+    save_results(results, args.output)
+
+
+if __name__ == "__main__":
+    main()
