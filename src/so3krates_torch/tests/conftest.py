@@ -320,3 +320,60 @@ def example_preprocessed_hdf5(tmp_path):
         z_table=z_table,
     )
     return str(hdf5_path)
+
+
+@pytest.fixture
+def example_preprocessed_hdf5_full_keyspec(tmp_path):
+    """Preprocessed HDF5 file built the way the real training pipeline
+    builds it: every property in DefaultKeys is registered in the
+    KeySpecification (as data_setup.py does via DefaultKeys.keydict()),
+    but only energy/forces are actually populated on the atoms. Every
+    other property therefore ends up correctly weighted 0.0 (registered
+    but absent), unlike a hand-picked partial KeySpecification where an
+    unregistered property misleadingly defaults to weight 1.0."""
+    from ase.build import molecule
+    from so3krates_torch.data.hdf5_utils import save_preprocessed_hdf5
+    from so3krates_torch.data.utils import (
+        KeySpecification,
+        config_from_atoms,
+        update_keyspec_from_kwargs,
+    )
+    from so3krates_torch.data.atomic_data import AtomicData
+    from so3krates_torch.tools.default_keys import DefaultKeys
+    from so3krates_torch.tools.utils import AtomicNumberTable
+
+    atoms_list = []
+    for mol_name in ["H2O", "NH3", "CH4"]:
+        atoms = molecule(mol_name)
+        atoms.info["REF_energy"] = -10.0 * len(atoms)
+        atoms.arrays["REF_forces"] = np.random.randn(len(atoms), 3) * 0.1
+        atoms_list.append(atoms)
+
+    keyspec = update_keyspec_from_kwargs(
+        KeySpecification(), DefaultKeys.keydict()
+    )
+    configs = [config_from_atoms(atoms, keyspec) for atoms in atoms_list]
+
+    all_zs = set()
+    for config in configs:
+        all_zs.update(config.atomic_numbers)
+    z_table = AtomicNumberTable(sorted(list(all_zs)))
+
+    r_max = 5.0
+    r_max_lr = None
+    data_list = [
+        AtomicData.from_config(
+            config, z_table=z_table, cutoff=r_max, cutoff_lr=r_max_lr
+        )
+        for config in configs
+    ]
+
+    hdf5_path = tmp_path / "test_preprocessed_full_keyspec.h5"
+    save_preprocessed_hdf5(
+        data_list,
+        str(hdf5_path),
+        r_max=r_max,
+        r_max_lr=r_max_lr,
+        z_table=z_table,
+    )
+    return str(hdf5_path)

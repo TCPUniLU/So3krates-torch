@@ -6,6 +6,11 @@ import numpy as np
 from ase import Atoms
 from so3krates_torch.data.atomic_data import AtomicData
 from so3krates_torch.data.neighborhood import get_neighborhood
+from so3krates_torch.data.utils import (
+    KeySpecification,
+    property_presence_from_configs,
+    raise_if_properties_missing,
+)
 from so3krates_torch.tools.torch_geometric import Batch
 
 
@@ -588,3 +593,63 @@ class TestAtomicDataEdgeCases:
         assert data_periodic.edge_index.shape[1] >= (
             data_nonperiodic.edge_index.shape[1]
         )
+
+
+class TestRequiredPropertyPresence:
+    """Tests for the loss-property presence check used to stop
+    training early when a requested property is missing/misnamed
+    in the data file, instead of silently zero-filling it."""
+
+    @staticmethod
+    def _config(property_weights):
+        from so3krates_torch.data.utils import Configuration
+
+        return Configuration(
+            atomic_numbers=np.array([1]),
+            positions=np.zeros((1, 3)),
+            properties={},
+            property_weights=property_weights,
+        )
+
+    def test_presence_true_when_any_config_has_nonzero_weight(self):
+        configs = [
+            self._config({"hirshfeld_ratios": 0.0}),
+            self._config({"hirshfeld_ratios": 1.0}),
+        ]
+        presence = property_presence_from_configs(
+            configs, ["hirshfeld_ratios", "energy"]
+        )
+        assert presence["hirshfeld_ratios"] is True
+        # "energy" was never in property_weights -> absent
+        assert presence["energy"] is False
+
+    def test_presence_false_when_all_configs_zero_weight(self):
+        configs = [
+            self._config({"hirshfeld_ratios": 0.0}),
+            self._config({"hirshfeld_ratios": 0.0}),
+        ]
+        presence = property_presence_from_configs(
+            configs, ["hirshfeld_ratios"]
+        )
+        assert presence["hirshfeld_ratios"] is False
+
+    def test_raise_if_properties_missing_names_key_and_property(self):
+        keyspec = KeySpecification(
+            arrays_keys={"hirshfeld_ratios": "REF_hirsh_ratios"}
+        )
+        with pytest.raises(ValueError) as exc_info:
+            raise_if_properties_missing(
+                {"hirshfeld_ratios": False, "energy": True},
+                keyspec,
+                "data.xyz",
+            )
+        message = str(exc_info.value)
+        assert "hirshfeld_ratios" in message
+        assert "REF_hirsh_ratios" in message
+        assert "data.xyz" in message
+        assert "energy" not in message.split("\n")[1]
+
+    def test_raise_if_properties_missing_noop_when_all_present(self):
+        presence = {"energy": True, "forces": True}
+        # Should not raise.
+        raise_if_properties_missing(presence, KeySpecification(), "data.xyz")

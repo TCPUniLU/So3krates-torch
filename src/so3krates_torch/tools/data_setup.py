@@ -15,17 +15,22 @@ from so3krates_torch.data.utils import (
     KeySpecification,
     compute_average_E0s,
     compute_average_E0s_from_dataset,
+    property_presence_from_configs,
+    raise_if_properties_missing,
     update_keyspec_from_kwargs,
 )
 from so3krates_torch.data.hdf5_utils import (
     detect_file_format,
     load_atoms_from_hdf5,
     PreprocessedHDF5Dataset,
+    raise_if_preprocessed_properties_missing,
+    scan_preprocessed_hdf5_property_presence,
     scan_raw_hdf5_statistics,
     validate_preprocessed_hdf5,
 )
 from so3krates_torch.data.lazy_dataset import LazyAtomicDataset
 from so3krates_torch.tools.default_keys import DefaultKeys
+from so3krates_torch.tools.training_setup import get_loss_property_weights
 from so3krates_torch.tools.utils import (
     AtomicNumberTable,
     compute_avg_num_neighbors,
@@ -66,6 +71,7 @@ def _load_training_dataset(
     r_max: float,
     r_max_lr: float,
     keyspec,
+    required_properties: Optional[List[str]] = None,
 ) -> tuple:
     """Load training data.
 
@@ -110,6 +116,11 @@ def _load_training_dataset(
             expected_r_max=r_max,
             expected_r_max_lr=r_max_lr,
         )
+        if required_properties and len(dataset) > 0:
+            presence = scan_preprocessed_hdf5_property_presence(
+                train_path, required_properties
+            )
+            raise_if_preprocessed_properties_missing(presence, train_path)
         avg_num_neighbors = dataset.metadata.get("avg_num_neighbors", None)
         num_elements = dataset.metadata.get("num_elements", None)
         return dataset, None, avg_num_neighbors, num_elements, None
@@ -127,6 +138,7 @@ def _load_training_dataset(
             r_max_lr=r_max_lr,
             keyspec=keyspec,
             num_neighbor_samples=num_neighbor_samples,
+            required_properties=required_properties,
         )
         dataset = LazyAtomicDataset(
             hdf5_path=train_path,
@@ -174,6 +186,11 @@ def _load_training_dataset(
         key_specification=keyspec,
         config_type_weights=config_type_weights,
     )
+    if required_properties and train_configs:
+        presence = property_presence_from_configs(
+            train_configs, required_properties
+        )
+        raise_if_properties_missing(presence, keyspec, train_path)
     n_weighted = sum(1 for c in train_configs if c.weight != 1.0)
     if n_weighted > 0:
         logging.info(
@@ -353,6 +370,7 @@ def _load_validation_loader(
     is_train_preprocessed: bool,
     val_split_from_train=None,
     valid_subset=None,
+    required_properties: Optional[List[str]] = None,
 ):
     """Return a DataLoader for validation data."""
     val_data_path = config["TRAINING"].get("path_to_val_data")
@@ -385,6 +403,13 @@ def _load_validation_loader(
                 expected_r_max=r_max,
                 expected_r_max_lr=r_max_lr,
             )
+            if required_properties and len(valid_dataset) > 0:
+                presence = scan_preprocessed_hdf5_property_presence(
+                    val_data_path, required_properties
+                )
+                raise_if_preprocessed_properties_missing(
+                    presence, val_data_path
+                )
             return create_dataloader_from_data(
                 config_list=valid_dataset,
                 batch_size=valid_batch_size,
@@ -396,6 +421,21 @@ def _load_validation_loader(
         elif val_data_path.endswith((".h5", ".hdf5")):
             lazy_loading = config["TRAINING"].get("lazy_loading", False)
             if lazy_loading:
+                if required_properties:
+                    lazy_atoms_list = load_atoms_from_hdf5(
+                        val_data_path, index=None
+                    )
+                    lazy_configs = create_configs_from_list(
+                        atoms_list=lazy_atoms_list,
+                        key_specification=keyspec,
+                    )
+                    if lazy_configs:
+                        presence = property_presence_from_configs(
+                            lazy_configs, required_properties
+                        )
+                        raise_if_properties_missing(
+                            presence, keyspec, val_data_path
+                        )
                 num_workers = config["TRAINING"].get("num_workers", 4)
                 prefetch_factor = config["TRAINING"].get("prefetch_factor", 2)
                 valid_dataset = LazyAtomicDataset(
@@ -423,6 +463,17 @@ def _load_validation_loader(
             raise ValueError(
                 f"Unsupported validation file format: {val_data_path}"
             )
+
+        if required_properties:
+            val_configs = create_configs_from_list(
+                atoms_list=val_data,
+                key_specification=keyspec,
+            )
+            if val_configs:
+                presence = property_presence_from_configs(
+                    val_configs, required_properties
+                )
+                raise_if_properties_missing(presence, keyspec, val_data_path)
 
         config_type_weights = config["TRAINING"].get(
             "config_type_weights", None
@@ -486,8 +537,12 @@ def _setup_multihead_data_loaders(
     r_max = config["ARCHITECTURE"].get("r_max", None)
     r_max_lr = config["ARCHITECTURE"].get("r_max_lr", None)
 
+    loss_weights = get_loss_property_weights(config)
+    required_properties = [name for name, w in loss_weights.items() if w > 0]
+
     heads = config["TRAINING"]["heads"]
     train_configs = []
+    val_configs = []
     val_data = {}
     for head_name, head_config in heads.items():
         head_data = read(head_config["path_to_train_data"], index=":")
@@ -521,6 +576,16 @@ def _setup_multihead_data_loaders(
         )
         train_configs.extend(head_config_list_train)
 
+        if required_properties:
+            val_configs.extend(
+                create_configs_from_list(
+                    atoms_list=head_val_data,
+                    key_specification=keyspec,
+                    head_name=head_name,
+                    config_type_weights=head_ctw,
+                )
+            )
+
         head_config_list_val = create_data_from_list(
             head_val_data,
             r_max=r_max,
@@ -535,6 +600,24 @@ def _setup_multihead_data_loaders(
             batch_size=valid_batch_size,
             shuffle=False,
         )
+
+    if required_properties:
+        all_head_paths = ", ".join(
+            head_config["path_to_train_data"] for head_config in heads.values()
+        )
+        if train_configs:
+            train_presence = property_presence_from_configs(
+                train_configs, required_properties
+            )
+            raise_if_properties_missing(
+                train_presence, keyspec, all_head_paths
+            )
+
+        if val_configs:
+            val_presence = property_presence_from_configs(
+                val_configs, required_properties
+            )
+            raise_if_properties_missing(val_presence, keyspec, all_head_paths)
 
     # Find elements actually present in data
     present_zs = set()
@@ -620,13 +703,22 @@ def _setup_singlehead_data_loaders(
     valid_batch_size = config["TRAINING"]["valid_batch_size"]
     valid_loader: Optional[DataLoader] = None
 
+    loss_weights = get_loss_property_weights(config)
+    required_properties = [name for name, w in loss_weights.items() if w > 0]
+
     (
         train_atomic_data,
         train_configs,
         avg_num_neighbors,
         num_elements,
         val_split,
-    ) = _load_training_dataset(config, r_max, r_max_lr, keyspec)
+    ) = _load_training_dataset(
+        config,
+        r_max,
+        r_max_lr,
+        keyspec,
+        required_properties=required_properties,
+    )
 
     is_preprocessed = isinstance(train_atomic_data, PreprocessedHDF5Dataset)
     is_lazy = isinstance(train_atomic_data, LazyAtomicDataset)
@@ -844,6 +936,7 @@ def _setup_singlehead_data_loaders(
         is_train_preprocessed=(is_preprocessed or is_lazy),
         val_split_from_train=val_split,
         valid_subset=valid_subset,
+        required_properties=required_properties,
     )
 
     logging.info(f"Training set size: {len(train_loader.dataset)}")

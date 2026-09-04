@@ -30,8 +30,11 @@ from so3krates_torch.data.hdf5_utils import (
     load_atoms_from_hdf5,
     merge_preprocessed_hdf5_files,
     merge_raw_hdf5_files,
+    raise_if_preprocessed_properties_missing,
     save_atoms_to_hdf5,
     save_preprocessed_hdf5,
+    scan_preprocessed_hdf5_property_presence,
+    scan_raw_hdf5_statistics,
     validate_preprocessed_hdf5,
 )
 from so3krates_torch.data.utils import (
@@ -261,6 +264,72 @@ class TestPreprocessedHDF5:
         loaded = dataset[0]
         assert loaded.edge_index_lr is not None
         assert loaded.edge_index_lr.shape[1] > 0
+
+
+class TestRequiredPropertyPresenceHDF5:
+    """Tests for the loss-property presence checks used by the raw
+    (lazy) and preprocessed HDF5 loading paths."""
+
+    def test_preprocessed_presence_detects_missing_property(
+        self, example_preprocessed_hdf5_full_keyspec
+    ):
+        # Fixture only populates energy/forces on the atoms; every other
+        # DefaultKeys property is registered but absent.
+        presence = scan_preprocessed_hdf5_property_presence(
+            example_preprocessed_hdf5_full_keyspec,
+            ["energy", "hirshfeld_ratios"],
+        )
+        assert presence["energy"] is True
+        assert presence["hirshfeld_ratios"] is False
+
+        with pytest.raises(ValueError, match="hirshfeld_ratios"):
+            raise_if_preprocessed_properties_missing(
+                presence, example_preprocessed_hdf5_full_keyspec
+            )
+
+    def test_preprocessed_presence_noop_when_all_present(
+        self, example_preprocessed_hdf5
+    ):
+        presence = scan_preprocessed_hdf5_property_presence(
+            example_preprocessed_hdf5, ["energy"]
+        )
+        # Should not raise.
+        raise_if_preprocessed_properties_missing(
+            presence, example_preprocessed_hdf5
+        )
+
+    def test_scan_raw_hdf5_statistics_raises_for_missing_property(
+        self, example_raw_hdf5
+    ):
+        keyspec = KeySpecification(
+            info_keys={"energy": "REF_energy"},
+            arrays_keys={
+                "forces": "REF_forces",
+                "hirshfeld_ratios": "REF_hirsh_ratios",
+            },
+        )
+        with pytest.raises(ValueError, match="hirshfeld_ratios"):
+            scan_raw_hdf5_statistics(
+                hdf5_path=example_raw_hdf5,
+                r_max=5.0,
+                r_max_lr=None,
+                keyspec=keyspec,
+                required_properties=["energy", "hirshfeld_ratios"],
+            )
+
+    def test_scan_raw_hdf5_statistics_ok_when_present(self, example_raw_hdf5):
+        keyspec = KeySpecification(
+            info_keys={"energy": "REF_energy"},
+            arrays_keys={"forces": "REF_forces"},
+        )
+        # Should not raise.
+        scan_raw_hdf5_statistics(
+            hdf5_path=example_raw_hdf5,
+            r_max=5.0,
+            r_max_lr=None,
+            keyspec=keyspec,
+            required_properties=["energy"],
+        )
 
 
 class TestFormatDetection:

@@ -62,6 +62,8 @@ from so3krates_torch.data.utils import (
     KeySpecification,
     config_from_atoms,
     compute_average_E0s,
+    property_presence_from_configs,
+    raise_if_properties_missing,
 )
 from so3krates_torch.tools.utils import (
     AtomicNumberTable,
@@ -686,6 +688,7 @@ def scan_raw_hdf5_statistics(
     keyspec: "KeySpecification",
     num_neighbor_samples: int = 1000,
     seed: int = 42,
+    required_properties: Optional[List[str]] = None,
 ) -> Tuple[Dict[int, float], int, float]:
     """Scan raw HDF5 to compute statistics needed before training.
 
@@ -701,6 +704,9 @@ def scan_raw_hdf5_statistics(
         num_neighbor_samples: Number of structures to sample for
             avg_num_neighbors estimate.
         seed: Random seed for sampling.
+        required_properties: Property names that must be present
+            (non-zero loss weight) somewhere in the file. Raises
+            ValueError if any of them is absent from every structure.
 
     Returns:
         (e0s_dict, num_elements, avg_num_neighbors) where e0s_dict
@@ -716,6 +722,10 @@ def scan_raw_hdf5_statistics(
         config = config_from_atoms(atoms, key_specification=keyspec)
         configs.append(config)
         all_atomic_numbers.update(config.atomic_numbers.tolist())
+
+    if required_properties and configs:
+        presence = property_presence_from_configs(configs, required_properties)
+        raise_if_properties_missing(presence, keyspec, hdf5_path)
 
     num_elements = len(all_atomic_numbers)
 
@@ -1099,25 +1109,28 @@ def _read_atomic_data_from_hdf5_group(
 
     # Property weights
     weights_grp = group["weights"]
+    # Weights default to None (matching their value's None default)
+    # rather than 1.0 when absent, so a missing property can never be
+    # silently treated as full-weight ground truth.
     energy_weight = (
         torch.from_numpy(np.array(weights_grp["energy_weight"]))
         if "energy_weight" in weights_grp
-        else torch.tensor(1.0)
+        else None
     )
     forces_weight = (
         torch.from_numpy(np.array(weights_grp["forces_weight"]))
         if "forces_weight" in weights_grp
-        else torch.tensor(1.0)
+        else None
     )
     stress_weight = (
         torch.from_numpy(np.array(weights_grp["stress_weight"]))
         if "stress_weight" in weights_grp
-        else torch.tensor(1.0)
+        else None
     )
     virials_weight = (
         torch.from_numpy(np.array(weights_grp["virials_weight"]))
         if "virials_weight" in weights_grp
-        else torch.tensor(1.0)
+        else None
     )
     dipole_weight = (
         torch.from_numpy(np.array(weights_grp["dipole_weight"]))
@@ -1127,12 +1140,12 @@ def _read_atomic_data_from_hdf5_group(
     charges_weight = (
         torch.from_numpy(np.array(weights_grp["charges_weight"]))
         if "charges_weight" in weights_grp
-        else torch.tensor(1.0)
+        else None
     )
     hirshfeld_ratios_weight = (
         torch.from_numpy(np.array(weights_grp["hirshfeld_ratios_weight"]))
         if "hirshfeld_ratios_weight" in weights_grp
-        else torch.tensor(1.0)
+        else None
     )
 
     # Create AtomicData
@@ -1166,6 +1179,57 @@ def _read_atomic_data_from_hdf5_group(
         edge_index_lr=edge_index_lr,
         shifts_lr=shifts_lr,
         unit_shifts_lr=unit_shifts_lr,
+    )
+
+
+def scan_preprocessed_hdf5_property_presence(
+    hdf5_path: str,
+    property_names: Iterable[str],
+) -> Dict[str, bool]:
+    """Check whether each named property has a non-zero weight
+    somewhere in a preprocessed HDF5 file.
+
+    Only reads the small per-config `weights` group of each config
+    (not positions/edges/properties), and stops early once every
+    requested property has been found present at least once.
+    """
+    property_names = list(property_names)
+    presence = {name: False for name in property_names}
+    with h5py.File(hdf5_path, "r") as f:
+        num_configs = int(f.attrs["num_configs"])
+        for i in range(num_configs):
+            if all(presence.values()):
+                break
+            weights_grp = f[f"config_{i}"]["weights"]
+            for name in property_names:
+                if presence[name]:
+                    continue
+                weight_key = f"{name}_weight"
+                if weight_key in weights_grp:
+                    if np.any(np.asarray(weights_grp[weight_key]) != 0.0):
+                        presence[name] = True
+    return presence
+
+
+def raise_if_preprocessed_properties_missing(
+    presence: Dict[str, bool],
+    hdf5_path: str,
+) -> None:
+    """Raise a ValueError listing every property that is missing
+    (presence[name] is False) from a preprocessed HDF5 file."""
+    missing = [name for name, present in presence.items() if not present]
+    if not missing:
+        return
+
+    noun = "property" if len(missing) == 1 else "properties"
+    names = ", ".join(f"'{name}'" for name in missing)
+    raise ValueError(
+        f"The following {noun} have a non-zero loss weight but "
+        f"{'was' if len(missing) == 1 else 'were'} not populated when "
+        f"'{hdf5_path}' was preprocessed: {names}. Re-run preprocessing "
+        "from a source file that contains this data, or set the "
+        "corresponding loss weight to 0 if this property should not be "
+        "used."
     )
 
 

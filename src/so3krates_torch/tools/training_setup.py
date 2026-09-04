@@ -1,5 +1,5 @@
 import logging
-from typing import Optional
+from typing import Dict, Optional
 
 import torch
 
@@ -19,16 +19,30 @@ from so3krates_torch.tools.utils import MetricsLogger
 from torch_ema import ExponentialMovingAverage
 
 
+def get_loss_property_weights(config: dict) -> Dict[str, float]:
+    """Return the configured loss weight for each loss-relevant
+    property, using the same defaults as setup_loss_function."""
+    loss_config = config["TRAINING"]
+    return {
+        "energy": loss_config.get("energy_weight", 1.0),
+        "forces": loss_config.get("forces_weight", 1000.0),
+        "dipole": loss_config.get("dipole_weight", 0.0),
+        "hirshfeld_ratios": loss_config.get("hirshfeld_weight", 0.0),
+        "charges": loss_config.get("charges_weight", 0.0),
+    }
+
+
 def setup_loss_function(config: dict) -> torch.nn.Module:
     """Setup loss function based on configuration."""
     loss_config = config["TRAINING"]
 
     # Get loss weights
-    energy_w = loss_config.get("energy_weight", 1.0)
-    forces_w = loss_config.get("forces_weight", 1000.0)
-    dipole_w = loss_config.get("dipole_weight", 0.0)
-    hirshfeld_w = loss_config.get("hirshfeld_weight", 0.0)
-    charges_w = loss_config.get("charges_weight", 0.0)
+    weights = get_loss_property_weights(config)
+    energy_w = weights["energy"]
+    forces_w = weights["forces"]
+    dipole_w = weights["dipole"]
+    hirshfeld_w = weights["hirshfeld_ratios"]
+    charges_w = weights["charges"]
 
     # Check if explicit loss type is specified
     loss_type = loss_config.get("loss_type", "auto")

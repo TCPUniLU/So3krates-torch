@@ -576,6 +576,202 @@ def test_setup_loss_function_invalid_type_raises():
         setup_loss_function(config)
 
 
+def test_get_loss_property_weights_defaults():
+    from so3krates_torch.tools.training_setup import (
+        get_loss_property_weights,
+    )
+
+    weights = get_loss_property_weights(
+        {"TRAINING": {"hirshfeld_weight": 3.0}}
+    )
+    assert weights == {
+        "energy": 1.0,
+        "forces": 1000.0,
+        "dipole": 0.0,
+        "hirshfeld_ratios": 3.0,
+        "charges": 0.0,
+    }
+
+
+def _singlehead_config(train_path, **training_overrides):
+    config = {
+        "GENERAL": {},
+        "ARCHITECTURE": {"r_max": 5.0, "r_max_lr": None},
+        "TRAINING": {
+            "path_to_train_data": str(train_path),
+            "batch_size": 2,
+            "valid_batch_size": 2,
+        },
+    }
+    config["TRAINING"].update(training_overrides)
+    return config
+
+
+def test_missing_loss_property_raises_for_raw_xyz(example_xyz_with_data):
+    """A loss weight configured for a property absent from the training
+    file must stop with a clear error instead of silently zero-filling."""
+    from so3krates_torch.tools.data_setup import (
+        _setup_singlehead_data_loaders,
+    )
+
+    config = _singlehead_config(example_xyz_with_data, hirshfeld_weight=1.0)
+    with pytest.raises(ValueError, match="hirshfeld_ratios"):
+        _setup_singlehead_data_loaders(config)
+
+
+def test_missing_loss_property_raises_for_lazy_raw_hdf5(example_raw_hdf5):
+    from so3krates_torch.tools.data_setup import (
+        _setup_singlehead_data_loaders,
+    )
+
+    config = _singlehead_config(
+        example_raw_hdf5,
+        hirshfeld_weight=1.0,
+        lazy_loading=True,
+    )
+    with pytest.raises(ValueError, match="hirshfeld_ratios"):
+        _setup_singlehead_data_loaders(config)
+
+
+def test_missing_loss_property_raises_for_preprocessed_hdf5(
+    example_preprocessed_hdf5_full_keyspec,
+):
+    from so3krates_torch.tools.data_setup import (
+        _setup_singlehead_data_loaders,
+    )
+
+    config = _singlehead_config(
+        example_preprocessed_hdf5_full_keyspec,
+        hirshfeld_weight=1.0,
+        data_preprocessed=True,
+    )
+    with pytest.raises(ValueError, match="hirshfeld_ratios"):
+        _setup_singlehead_data_loaders(config)
+
+
+def test_missing_loss_property_raises_for_multihead(tmp_path):
+    """Aggregate multi-head check: a loss-required property absent from
+    every head's data must still raise."""
+    import numpy as np
+    from ase.build import molecule
+    import ase.io
+    from so3krates_torch.tools.data_setup import (
+        _setup_multihead_data_loaders,
+    )
+
+    def make_xyz(path):
+        atoms_list = []
+        for mol_name in ["H2O", "NH3", "CH4"]:
+            atoms = molecule(mol_name)
+            atoms.info["REF_energy"] = -10.0 * len(atoms)
+            atoms.arrays["REF_forces"] = np.random.randn(len(atoms), 3) * 0.1
+            atoms_list.append(atoms)
+        ase.io.write(path, atoms_list)
+
+    path_a = tmp_path / "a.xyz"
+    path_b = tmp_path / "b.xyz"
+    make_xyz(path_a)
+    make_xyz(path_b)
+
+    config = {
+        "GENERAL": {},
+        "ARCHITECTURE": {"r_max": 5.0, "r_max_lr": None},
+        "TRAINING": {
+            "batch_size": 2,
+            "valid_batch_size": 2,
+            "hirshfeld_weight": 1.0,
+            "heads": {
+                "head_a": {"path_to_train_data": str(path_a)},
+                "head_b": {"path_to_train_data": str(path_b)},
+            },
+        },
+    }
+    with pytest.raises(ValueError, match="hirshfeld_ratios"):
+        _setup_multihead_data_loaders(config)
+
+
+def test_heterogeneous_multihead_property_does_not_raise(tmp_path):
+    """A property present in only one of several heads must NOT raise
+    (legitimate mixed-dataset multi-head training), since presence is
+    checked in aggregate across all heads, not per head."""
+    import numpy as np
+    from ase.build import molecule
+    import ase.io
+    from so3krates_torch.tools.data_setup import (
+        _setup_multihead_data_loaders,
+    )
+
+    def make_xyz(path, with_hirshfeld):
+        atoms_list = []
+        for mol_name in ["H2O", "NH3", "CH4"]:
+            atoms = molecule(mol_name)
+            atoms.info["REF_energy"] = -10.0 * len(atoms)
+            atoms.arrays["REF_forces"] = np.random.randn(len(atoms), 3) * 0.1
+            if with_hirshfeld:
+                atoms.arrays["REF_hirsh_ratios"] = np.ones(len(atoms))
+            atoms_list.append(atoms)
+        ase.io.write(path, atoms_list)
+
+    path_a = tmp_path / "a.xyz"
+    path_b = tmp_path / "b.xyz"
+    make_xyz(path_a, with_hirshfeld=True)
+    make_xyz(path_b, with_hirshfeld=False)
+
+    config = {
+        "GENERAL": {},
+        "ARCHITECTURE": {"r_max": 5.0, "r_max_lr": None},
+        "TRAINING": {
+            "batch_size": 2,
+            "valid_batch_size": 2,
+            "hirshfeld_weight": 1.0,
+            "heads": {
+                "head_a": {
+                    "path_to_train_data": str(path_a),
+                    "num_valid": 1,
+                },
+                "head_b": {
+                    "path_to_train_data": str(path_b),
+                    "num_valid": 1,
+                },
+            },
+        },
+    }
+    # Should not raise.
+    _setup_multihead_data_loaders(config)
+
+
+def test_missing_loss_property_raises_with_empty_validation_split(
+    example_xyz_with_data,
+):
+    """An empty validation split (e.g. too few structures for the
+    default valid_ratio) must not cause every property to look
+    spuriously 'missing' -- the train-set check should still fire
+    correctly for a genuinely absent property."""
+    from so3krates_torch.tools.data_setup import (
+        _setup_singlehead_data_loaders,
+    )
+
+    config = _singlehead_config(
+        example_xyz_with_data,
+        hirshfeld_weight=1.0,
+        valid_ratio=0.0,
+    )
+    with pytest.raises(ValueError, match="hirshfeld_ratios"):
+        _setup_singlehead_data_loaders(config)
+
+
+def test_present_loss_property_does_not_raise(example_xyz_with_data):
+    """Sanity check: the new validation must not fire for properties
+    that are actually present (e.g. energy/forces, always required)."""
+    from so3krates_torch.tools.data_setup import (
+        _setup_singlehead_data_loaders,
+    )
+
+    config = _singlehead_config(example_xyz_with_data)
+    # Should not raise.
+    _setup_singlehead_data_loaders(config)
+
+
 def test_select_valid_subset_split_ratio():
     from so3krates_torch.tools.data_setup import select_valid_subset
 

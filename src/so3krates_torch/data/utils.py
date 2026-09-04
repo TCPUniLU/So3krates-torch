@@ -209,6 +209,55 @@ def config_from_atoms(
     )
 
 
+def property_presence_from_configs(
+    configs: "Configurations",
+    property_names: Sequence[str],
+) -> Dict[str, bool]:
+    """Check whether each named property is present (non-zero weight)
+    in at least one of the given configs."""
+    return {
+        name: any(
+            (c.property_weights.get(name, 0.0) or 0.0) != 0.0 for c in configs
+        )
+        for name in property_names
+    }
+
+
+def raise_if_properties_missing(
+    presence: Dict[str, bool],
+    key_specification: KeySpecification,
+    file_path: str,
+) -> None:
+    """Raise a ValueError listing every property that is missing
+    from presence (i.e. presence[name] is False), naming the key
+    that was looked up for it in the data file."""
+    missing = [name for name, present in presence.items() if not present]
+    if not missing:
+        return
+
+    lines = []
+    for name in missing:
+        key = key_specification.info_keys.get(
+            name
+        ) or key_specification.arrays_keys.get(name)
+        key_desc = f"key '{key}'" if key else "its configured key"
+        lines.append(f"  - '{name}': looked for {key_desc}")
+
+    if len(missing) == 1:
+        noun, verb = "property", "has"
+    else:
+        noun, verb = "properties", "have"
+    raise ValueError(
+        f"The following {noun} {verb} a non-zero loss weight but "
+        f"{'was' if len(missing) == 1 else 'were'} not found in "
+        f"'{file_path}':\n"
+        + "\n".join(lines)
+        + "\nCheck that the corresponding '<name>_key' under TRAINING.keys "
+        "matches the column name actually used in your data file, or set "
+        "the loss weight to 0 if this property should not be used."
+    )
+
+
 def test_config_types(
     test_configs: Configurations,
 ) -> List[Tuple[str, List[Configuration]]]:
