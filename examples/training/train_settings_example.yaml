@@ -46,6 +46,16 @@ ARCHITECTURE:
   # dispersion_energy_cutoff_lr_damping are still required for dispersion.
   # Dispersion converges as 1/r_max_lr^3; real-space is accurate without PME.
   compute_avg_num_neighbors: True
+  # --- Custom atomic energy shifts (E0s) ---
+  # From scratch: overrides values computed from training data (unlisted
+  # elements default to 0.0). When fine-tuning from a pretrained model
+  # (pretrained_weights/pretrained_model set below): unlisted elements keep
+  # the pretrained checkpoint's own shifts; mutually exclusive with
+  # TRAINING.force_use_average_shifts.
+  # atomic_energy_shifts:
+  #   1: -13.6    # H
+  #   6: -1027.0  # C
+  #   8: -2042.0  # O
 
 TRAINING:
   batch_size: 5

@@ -335,6 +335,7 @@ def set_atomic_energy_shifts_in_model(
 
 def process_config_atomic_energies(
     atomic_shifts_config: dict,
+    default_shifts: Optional[torch.Tensor] = None,
 ):
     atomic_energy_shifts = {}
     # turn keys to str if they are int
@@ -342,9 +343,60 @@ def process_config_atomic_energies(
     for z in range(1, 119):
         if str(z) in atomic_shifts_config:
             atomic_energy_shifts[z] = atomic_shifts_config[str(z)]
+        elif default_shifts is not None:
+            atomic_energy_shifts[z] = float(default_shifts[z - 1].item())
         else:
             atomic_energy_shifts[z] = 0.0
     return atomic_energy_shifts
+
+
+def resolve_atomic_energy_shifts(
+    config: dict,
+    model: Union[SO3LR, MultiHeadSO3LR],
+    warm_start: bool,
+    average_atomic_energy_shifts: torch.Tensor,
+) -> Union[dict, torch.Tensor]:
+    atomic_shifts_config = config["ARCHITECTURE"].get(
+        "atomic_energy_shifts", None
+    )
+    force_use_average_shifts = config["TRAINING"].get(
+        "force_use_average_shifts", False
+    )
+
+    if warm_start:
+        if atomic_shifts_config is not None and force_use_average_shifts:
+            raise ValueError(
+                "ARCHITECTURE.atomic_energy_shifts and "
+                "TRAINING.force_use_average_shifts cannot both be set "
+                "when fine-tuning from a pretrained model."
+            )
+        if atomic_shifts_config is not None:
+            logging.info(
+                "Using provided atomic energy shifts for specified "
+                "elements; retaining pretrained shifts for the rest."
+            )
+            return process_config_atomic_energies(
+                atomic_shifts_config,
+                default_shifts=model.atomic_energy_output_block.energy_shifts,
+            )
+        if force_use_average_shifts:
+            logging.info(
+                "Forcing use of average atomic energy shifts "
+                "computed from training data for training."
+            )
+            return average_atomic_energy_shifts
+        return model.atomic_energy_output_block.energy_shifts
+    else:
+        if atomic_shifts_config is not None:
+            logging.info(
+                "Using provided atomic energy shifts for " "training."
+            )
+            return process_config_atomic_energies(atomic_shifts_config)
+        logging.info(
+            "Using average atomic energy shifts computed "
+            "from training data for training."
+        )
+        return average_atomic_energy_shifts
 
 
 def set_dtype_model(model: torch.nn.Module, dtype_str: str) -> None:
