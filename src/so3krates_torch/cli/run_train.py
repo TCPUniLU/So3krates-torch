@@ -19,7 +19,7 @@ from so3krates_torch.tools.model_setup import (
     _setup_model_for_training,
     set_avg_num_neighbors_in_model,
     set_atomic_energy_shifts_in_model,
-    process_config_atomic_energies,
+    resolve_atomic_energy_shifts,
     set_dtype_model,
     handle_finetuning,
 )
@@ -179,31 +179,12 @@ def run_training(config: dict) -> None:
                 "pretrained model for fine-tuning."
             )
             avg_num_neighbors = model.avg_num_neighbors
-        atomic_energy_shifts = model.atomic_energy_output_block.energy_shifts
-        if config["TRAINING"].get("force_use_average_shifts", False):
-            atomic_energy_shifts = average_atomic_energy_shifts
-            logging.info(
-                "Forcing use of average atomic energy shifts "
-                "computed from training data for training."
-            )
     else:
         model.avg_num_neighbors = avg_num_neighbors
-        atomic_shifts_config = config["ARCHITECTURE"].get(
-            "atomic_energy_shifts", None
-        )
-        if atomic_shifts_config is not None:
-            atomic_energy_shifts = process_config_atomic_energies(
-                atomic_shifts_config
-            )
-            logging.info(
-                "Using provided atomic energy shifts for " "training."
-            )
-        else:
-            atomic_energy_shifts = average_atomic_energy_shifts
-            logging.info(
-                "Using average atomic energy shifts computed "
-                "from training data for training."
-            )
+
+    atomic_energy_shifts = resolve_atomic_energy_shifts(
+        config, model, warm_start, average_atomic_energy_shifts
+    )
 
     # Setup finetuning if specified
     if config["TRAINING"].get("finetune_choice", None):

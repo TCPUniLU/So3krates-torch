@@ -396,6 +396,22 @@ def test_process_config_atomic_energies_str_keys():
     assert shifts[6] == -1027.0
 
 
+def test_process_config_atomic_energies_with_default_shifts():
+    from so3krates_torch.tools.model_setup import (
+        process_config_atomic_energies,
+    )
+
+    default_shifts = torch.arange(1, 119, dtype=torch.float64) * -0.01
+    shifts = process_config_atomic_energies(
+        {6: -1027.0}, default_shifts=default_shifts
+    )
+    # overridden element uses the provided value
+    assert shifts[6] == -1027.0
+    # unspecified elements fall back to default_shifts, not 0.0
+    assert abs(shifts[1] - default_shifts[0].item()) < 1e-12
+    assert abs(shifts[7] - default_shifts[6].item()) < 1e-12
+
+
 def test_set_avg_num_neighbors_in_model(default_model_config):
     from so3krates_torch.tools.model_setup import (
         set_avg_num_neighbors_in_model,
@@ -424,6 +440,87 @@ def test_set_atomic_energy_shifts_in_model(default_model_config, device):
     # shifts dict is sorted by key (z), so index 0 -> z=1 (H), index 5 -> z=6 (C)
     assert abs(stored[0].item() - (-0.1)) < 1e-9
     assert abs(stored[5].item() - (-0.6)) < 1e-9
+
+
+def test_resolve_atomic_energy_shifts_warm_start_merge(
+    default_model_config, device
+):
+    from so3krates_torch.tools.model_setup import (
+        resolve_atomic_energy_shifts,
+        set_atomic_energy_shifts_in_model,
+    )
+
+    model = So3krates(**default_model_config).to(device)
+    pretrained_shifts = {z: float(z) * -0.1 for z in range(1, 119)}
+    set_atomic_energy_shifts_in_model(model, pretrained_shifts)
+
+    config = {
+        "ARCHITECTURE": {"atomic_energy_shifts": {6: -999.0}},
+        "TRAINING": {},
+    }
+    average_atomic_energy_shifts = torch.zeros(118, dtype=torch.float64)
+
+    result = resolve_atomic_energy_shifts(
+        config,
+        model,
+        warm_start=True,
+        average_atomic_energy_shifts=average_atomic_energy_shifts,
+    )
+
+    # overridden element uses the provided value
+    assert result[6] == -999.0
+    # unspecified elements retain the pretrained checkpoint's own shifts
+    assert abs(result[1] - pretrained_shifts[1]) < 1e-9
+    assert abs(result[7] - pretrained_shifts[7]) < 1e-9
+
+
+def test_resolve_atomic_energy_shifts_warm_start_mutually_exclusive_raises(
+    default_model_config, device
+):
+    from so3krates_torch.tools.model_setup import (
+        resolve_atomic_energy_shifts,
+    )
+
+    model = So3krates(**default_model_config).to(device)
+    config = {
+        "ARCHITECTURE": {"atomic_energy_shifts": {6: -999.0}},
+        "TRAINING": {"force_use_average_shifts": True},
+    }
+    average_atomic_energy_shifts = torch.zeros(118, dtype=torch.float64)
+
+    with pytest.raises(ValueError, match="mutually exclusive|cannot both"):
+        resolve_atomic_energy_shifts(
+            config,
+            model,
+            warm_start=True,
+            average_atomic_energy_shifts=average_atomic_energy_shifts,
+        )
+
+
+def test_resolve_atomic_energy_shifts_cold_start_unchanged(
+    default_model_config, device
+):
+    from so3krates_torch.tools.model_setup import (
+        resolve_atomic_energy_shifts,
+    )
+
+    model = So3krates(**default_model_config).to(device)
+    config = {
+        "ARCHITECTURE": {"atomic_energy_shifts": {6: -1027.0}},
+        "TRAINING": {},
+    }
+    average_atomic_energy_shifts = torch.zeros(118, dtype=torch.float64)
+
+    result = resolve_atomic_energy_shifts(
+        config,
+        model,
+        warm_start=False,
+        average_atomic_energy_shifts=average_atomic_energy_shifts,
+    )
+
+    assert result[6] == -1027.0
+    # cold start still zero-fills unspecified elements
+    assert result[1] == 0.0
 
 
 def test_set_dtype_model_float32(default_model_config):
