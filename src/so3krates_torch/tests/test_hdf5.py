@@ -34,6 +34,7 @@ from so3krates_torch.data.hdf5_utils import (
     save_atoms_to_hdf5,
     save_preprocessed_hdf5,
     scan_preprocessed_hdf5_property_presence,
+    scan_raw_hdf5_property_presence,
     scan_raw_hdf5_statistics,
     validate_preprocessed_hdf5,
 )
@@ -279,8 +280,11 @@ class TestRequiredPropertyPresenceHDF5:
             example_preprocessed_hdf5_full_keyspec,
             ["energy", "hirshfeld_ratios"],
         )
-        assert presence["energy"] is True
-        assert presence["hirshfeld_ratios"] is False
+        energy_count, energy_total = presence["energy"]
+        assert energy_count == energy_total
+        assert energy_total > 0
+        hirshfeld_count, _ = presence["hirshfeld_ratios"]
+        assert hirshfeld_count == 0
 
         with pytest.raises(ValueError, match="hirshfeld_ratios"):
             raise_if_preprocessed_properties_missing(
@@ -293,10 +297,56 @@ class TestRequiredPropertyPresenceHDF5:
         presence = scan_preprocessed_hdf5_property_presence(
             example_preprocessed_hdf5, ["energy"]
         )
+        count, total = presence["energy"]
+        assert count == total > 0
         # Should not raise.
         raise_if_preprocessed_properties_missing(
             presence, example_preprocessed_hdf5
         )
+
+    def test_preprocessed_presence_partial_coverage_detected(self, tmp_path):
+        """A property present in some but not all configs of a
+        (possibly merged) preprocessed HDF5 file must be flagged
+        distinctly from 'absent everywhere' — this is what would
+        otherwise crash downstream in batch collation."""
+        atoms_with = molecule("H2O")
+        atoms_with.info["REF_energy"] = -10.0
+        atoms_with.arrays["REF_forces"] = np.random.randn(3, 3)
+        atoms_with.arrays["REF_hirsh_ratios"] = np.ones(3)
+
+        atoms_without = molecule("NH3")
+        atoms_without.info["REF_energy"] = -10.0
+        atoms_without.arrays["REF_forces"] = np.random.randn(4, 3)
+
+        keyspec = KeySpecification(
+            info_keys={"energy": "REF_energy"},
+            arrays_keys={
+                "forces": "REF_forces",
+                "hirshfeld_ratios": "REF_hirsh_ratios",
+            },
+        )
+        z_table = AtomicNumberTable([1, 7, 8])
+        data_list = [
+            AtomicData.from_config(
+                config_from_atoms(atoms, keyspec),
+                z_table=z_table,
+                cutoff=5.0,
+                cutoff_lr=None,
+            )
+            for atoms in (atoms_with, atoms_without)
+        ]
+        out_path = str(tmp_path / "partial_coverage.h5")
+        save_preprocessed_hdf5(
+            data_list, out_path, r_max=5.0, r_max_lr=None, z_table=z_table
+        )
+
+        presence = scan_preprocessed_hdf5_property_presence(
+            out_path, ["hirshfeld_ratios"]
+        )
+        assert presence["hirshfeld_ratios"] == (1, 2)
+
+        with pytest.raises(ValueError, match="hirshfeld_ratios"):
+            raise_if_preprocessed_properties_missing(presence, out_path)
 
     def test_scan_raw_hdf5_statistics_raises_for_missing_property(
         self, example_raw_hdf5
@@ -330,6 +380,25 @@ class TestRequiredPropertyPresenceHDF5:
             keyspec=keyspec,
             required_properties=["energy"],
         )
+
+    def test_scan_raw_hdf5_property_presence_matches_full_scan(
+        self, example_raw_hdf5
+    ):
+        """The cheap group-key scan must agree with the full-file-load
+        presence check for both a present and an absent property."""
+        keyspec = KeySpecification(
+            info_keys={"energy": "REF_energy"},
+            arrays_keys={
+                "forces": "REF_forces",
+                "hirshfeld_ratios": "REF_hirsh_ratios",
+            },
+        )
+        presence = scan_raw_hdf5_property_presence(
+            example_raw_hdf5, keyspec, ["energy", "forces", "hirshfeld_ratios"]
+        )
+        assert presence["energy"] is True
+        assert presence["forces"] is True
+        assert presence["hirshfeld_ratios"] is False
 
 
 class TestFormatDetection:
@@ -546,6 +615,74 @@ class TestHDF5Merge:
             # Groups config_0 … config_5 must all be present
             for i in range(6):
                 assert f"config_{i}" in f
+
+    def test_merge_preprocessed_heterogeneous_property_coverage_raises(
+        self, tmp_path
+    ):
+        """Merging preprocessed files that don't all carry the same
+        properties must be caught by the presence/consistency check
+        on the merged file, rather than silently passing and crashing
+        later during batch collation with a confusing error."""
+        from ase.build import molecule
+
+        from so3krates_torch.data.atomic_data import AtomicData
+        from so3krates_torch.data.utils import (
+            KeySpecification,
+            config_from_atoms,
+        )
+        from so3krates_torch.tools.utils import AtomicNumberTable
+
+        keyspec = KeySpecification(
+            info_keys={"energy": "REF_energy"},
+            arrays_keys={
+                "forces": "REF_forces",
+                "hirshfeld_ratios": "REF_hirsh_ratios",
+            },
+        )
+        z_table = AtomicNumberTable([1, 8])
+
+        atoms_with = molecule("H2O")
+        atoms_with.info["REF_energy"] = -10.0
+        atoms_with.arrays["REF_forces"] = np.random.randn(3, 3)
+        atoms_with.arrays["REF_hirsh_ratios"] = np.ones(3)
+        data_with = AtomicData.from_config(
+            config_from_atoms(atoms_with, keyspec),
+            z_table=z_table,
+            cutoff=5.0,
+            cutoff_lr=None,
+        )
+        path_with = str(tmp_path / "with_hirshfeld.h5")
+        save_preprocessed_hdf5(
+            [data_with], path_with, r_max=5.0, r_max_lr=None, z_table=z_table
+        )
+
+        atoms_without = molecule("H2O")
+        atoms_without.info["REF_energy"] = -10.0
+        atoms_without.arrays["REF_forces"] = np.random.randn(3, 3)
+        data_without = AtomicData.from_config(
+            config_from_atoms(atoms_without, keyspec),
+            z_table=z_table,
+            cutoff=5.0,
+            cutoff_lr=None,
+        )
+        path_without = str(tmp_path / "without_hirshfeld.h5")
+        save_preprocessed_hdf5(
+            [data_without],
+            path_without,
+            r_max=5.0,
+            r_max_lr=None,
+            z_table=z_table,
+        )
+
+        merged_path = str(tmp_path / "merged_heterogeneous.h5")
+        merge_preprocessed_hdf5_files([path_with, path_without], merged_path)
+
+        presence = scan_preprocessed_hdf5_property_presence(
+            merged_path, ["hirshfeld_ratios"]
+        )
+        assert presence["hirshfeld_ratios"] == (1, 2)
+        with pytest.raises(ValueError, match="hirshfeld_ratios"):
+            raise_if_preprocessed_properties_missing(presence, merged_path)
 
     def test_merge_format_mismatch_raises(
         self, example_raw_hdf5, example_preprocessed_hdf5, tmp_path

@@ -690,10 +690,11 @@ def test_missing_loss_property_raises_for_multihead(tmp_path):
         _setup_multihead_data_loaders(config)
 
 
-def test_heterogeneous_multihead_property_does_not_raise(tmp_path):
-    """A property present in only one of several heads must NOT raise
-    (legitimate mixed-dataset multi-head training), since presence is
-    checked in aggregate across all heads, not per head."""
+def test_heterogeneous_multihead_property_raises_by_default(tmp_path):
+    """A property present in only one of several heads must raise by
+    default: presence is checked per head, not in aggregate, so a
+    property missing from an entire head is no longer silently
+    tolerated just because another head happens to have it."""
     import numpy as np
     from ase.build import molecule
     import ase.io
@@ -736,7 +737,59 @@ def test_heterogeneous_multihead_property_does_not_raise(tmp_path):
             },
         },
     }
-    # Should not raise.
+    with pytest.raises(ValueError, match="hirshfeld_ratios"):
+        _setup_multihead_data_loaders(config)
+
+
+def test_heterogeneous_multihead_property_excluded_does_not_raise(tmp_path):
+    """A head can opt out of a globally-required property via
+    `exclude_loss_properties`, for legitimately heterogeneous
+    multi-head setups (e.g. a head that's an energy/forces-only
+    ensemble member)."""
+    import numpy as np
+    from ase.build import molecule
+    import ase.io
+    from so3krates_torch.tools.data_setup import (
+        _setup_multihead_data_loaders,
+    )
+
+    def make_xyz(path, with_hirshfeld):
+        atoms_list = []
+        for mol_name in ["H2O", "NH3", "CH4"]:
+            atoms = molecule(mol_name)
+            atoms.info["REF_energy"] = -10.0 * len(atoms)
+            atoms.arrays["REF_forces"] = np.random.randn(len(atoms), 3) * 0.1
+            if with_hirshfeld:
+                atoms.arrays["REF_hirsh_ratios"] = np.ones(len(atoms))
+            atoms_list.append(atoms)
+        ase.io.write(path, atoms_list)
+
+    path_a = tmp_path / "a.xyz"
+    path_b = tmp_path / "b.xyz"
+    make_xyz(path_a, with_hirshfeld=True)
+    make_xyz(path_b, with_hirshfeld=False)
+
+    config = {
+        "GENERAL": {},
+        "ARCHITECTURE": {"r_max": 5.0, "r_max_lr": None},
+        "TRAINING": {
+            "batch_size": 2,
+            "valid_batch_size": 2,
+            "hirshfeld_weight": 1.0,
+            "heads": {
+                "head_a": {
+                    "path_to_train_data": str(path_a),
+                    "num_valid": 1,
+                },
+                "head_b": {
+                    "path_to_train_data": str(path_b),
+                    "num_valid": 1,
+                    "exclude_loss_properties": ["hirshfeld_ratios"],
+                },
+            },
+        },
+    }
+    # Should not raise: head_b explicitly opted out.
     _setup_multihead_data_loaders(config)
 
 
@@ -770,6 +823,193 @@ def test_present_loss_property_does_not_raise(example_xyz_with_data):
     config = _singlehead_config(example_xyz_with_data)
     # Should not raise.
     _setup_singlehead_data_loaders(config)
+
+
+def test_present_property_with_explicit_zero_weight_does_not_raise(
+    tmp_path,
+):
+    """A deliberate per-structure `config_<name>_weight=0` override on
+    data that IS present must not be mistaken for the property being
+    absent (false-positive regression test, end-to-end)."""
+    import numpy as np
+    from ase.build import molecule
+    import ase.io
+    from so3krates_torch.tools.data_setup import (
+        _setup_singlehead_data_loaders,
+    )
+
+    atoms_list = []
+    for mol_name in ["H2O", "NH3", "CH4"]:
+        atoms = molecule(mol_name)
+        atoms.info["REF_energy"] = -10.0 * len(atoms)
+        atoms.arrays["REF_forces"] = np.random.randn(len(atoms), 3) * 0.1
+        atoms.arrays["REF_hirsh_ratios"] = np.ones(len(atoms))
+        # Data is present, but every structure explicitly downweights
+        # this loss term to zero.
+        atoms.info["config_hirshfeld_ratios_weight"] = 0.0
+        atoms_list.append(atoms)
+    train_path = tmp_path / "zero_weight_override.xyz"
+    ase.io.write(train_path, atoms_list)
+
+    config = _singlehead_config(train_path, hirshfeld_weight=1.0)
+    # Should not raise: the data is present, only its weight is zero.
+    _setup_singlehead_data_loaders(config)
+
+
+def test_missing_loss_property_raises_for_lazy_raw_hdf5_validation(
+    tmp_path, example_raw_hdf5
+):
+    """The lazy_loading validation-data path must fail fast when a
+    required property is missing from the validation file, and must
+    do so without eagerly loading the whole file into ase.Atoms
+    (regression test for the lazy-loading validation-loader fix)."""
+    from unittest import mock
+
+    import numpy as np
+    from ase.build import molecule
+    import ase.io
+    from so3krates_torch.tools.data_setup import (
+        _setup_singlehead_data_loaders,
+    )
+
+    # Training data DOES have hirshfeld_ratios, so only the
+    # validation path (example_raw_hdf5, which lacks it) is what
+    # triggers the error here.
+    atoms_list = []
+    for mol_name in ["H2O", "NH3", "CH4"]:
+        atoms = molecule(mol_name)
+        atoms.info["REF_energy"] = -10.0 * len(atoms)
+        atoms.arrays["REF_forces"] = np.random.randn(len(atoms), 3) * 0.1
+        atoms.arrays["REF_hirsh_ratios"] = np.ones(len(atoms))
+        atoms_list.append(atoms)
+    train_path = tmp_path / "train_with_hirshfeld.xyz"
+    ase.io.write(train_path, atoms_list)
+
+    config = _singlehead_config(
+        train_path,
+        hirshfeld_weight=1.0,
+        path_to_val_data=example_raw_hdf5,
+        lazy_loading=True,
+    )
+
+    with mock.patch(
+        "so3krates_torch.tools.data_setup.load_atoms_from_hdf5"
+    ) as mock_load:
+        with pytest.raises(ValueError, match="hirshfeld_ratios"):
+            _setup_singlehead_data_loaders(config)
+    mock_load.assert_not_called()
+
+
+def test_replay_dataset_missing_property_raises_raw(tmp_path):
+    """Fine-tuning with a raw/XYZ replay dataset missing a required
+    property must fail fast, the same as the main train/val data."""
+    import numpy as np
+    from ase.build import molecule
+    import ase.io
+    from so3krates_torch.tools.data_setup import (
+        _setup_singlehead_data_loaders,
+    )
+
+    def make_xyz(path, with_hirshfeld):
+        atoms_list = []
+        for mol_name in ["H2O", "NH3", "CH4"]:
+            atoms = molecule(mol_name)
+            atoms.info["REF_energy"] = -10.0 * len(atoms)
+            atoms.arrays["REF_forces"] = np.random.randn(len(atoms), 3) * 0.1
+            if with_hirshfeld:
+                atoms.arrays["REF_hirsh_ratios"] = np.ones(len(atoms))
+            atoms_list.append(atoms)
+        ase.io.write(path, atoms_list)
+
+    ft_path = tmp_path / "finetune.xyz"
+    replay_path = tmp_path / "replay.xyz"
+    make_xyz(ft_path, with_hirshfeld=True)
+    make_xyz(replay_path, with_hirshfeld=False)
+
+    config = _singlehead_config(
+        ft_path,
+        hirshfeld_weight=1.0,
+        replay_datasets=[str(replay_path)],
+        replay_fractions=[1.0],
+        replay_total=2,
+    )
+    with pytest.raises(ValueError, match="hirshfeld_ratios"):
+        _setup_singlehead_data_loaders(config)
+
+
+def test_replay_dataset_missing_property_raises_preprocessed(
+    tmp_path, example_preprocessed_hdf5_full_keyspec
+):
+    """Fine-tuning with a preprocessed-HDF5 replay dataset missing a
+    required property must fail fast, the same as the main data."""
+    import numpy as np
+    from ase.build import molecule
+    import ase.io
+    from so3krates_torch.tools.data_setup import (
+        _setup_singlehead_data_loaders,
+    )
+
+    atoms_list = []
+    for mol_name in ["H2O", "NH3", "CH4"]:
+        atoms = molecule(mol_name)
+        atoms.info["REF_energy"] = -10.0 * len(atoms)
+        atoms.arrays["REF_forces"] = np.random.randn(len(atoms), 3) * 0.1
+        atoms.arrays["REF_hirsh_ratios"] = np.ones(len(atoms))
+        atoms_list.append(atoms)
+    ft_path = tmp_path / "finetune_with_hirshfeld.xyz"
+    ase.io.write(ft_path, atoms_list)
+
+    config = _singlehead_config(
+        ft_path,
+        hirshfeld_weight=1.0,
+        replay_datasets=[str(example_preprocessed_hdf5_full_keyspec)],
+        replay_fractions=[1.0],
+        replay_total=2,
+    )
+    with pytest.raises(ValueError, match="hirshfeld_ratios"):
+        _setup_singlehead_data_loaders(config)
+
+
+def test_replay_dataset_missing_property_raises_on_resample(tmp_path):
+    """A replay-resample config (replay_resample_per_epoch=True) must
+    be protected too, not just the plain replay path — the initial
+    setup call already validates (since every _load_replay_data call
+    checks required_properties), and the per-epoch builder closure
+    must carry the same required_properties through as well so a
+    later resample can't silently reintroduce the bug."""
+    import numpy as np
+    from ase.build import molecule
+    import ase.io
+    from so3krates_torch.tools.data_setup import (
+        _setup_singlehead_data_loaders,
+    )
+
+    def make_xyz(path, with_hirshfeld):
+        atoms_list = []
+        for mol_name in ["H2O", "NH3", "CH4"]:
+            atoms = molecule(mol_name)
+            atoms.info["REF_energy"] = -10.0 * len(atoms)
+            atoms.arrays["REF_forces"] = np.random.randn(len(atoms), 3) * 0.1
+            if with_hirshfeld:
+                atoms.arrays["REF_hirsh_ratios"] = np.ones(len(atoms))
+            atoms_list.append(atoms)
+        ase.io.write(path, atoms_list)
+
+    ft_path = tmp_path / "finetune.xyz"
+    replay_path = tmp_path / "replay.xyz"
+    make_xyz(ft_path, with_hirshfeld=True)
+    make_xyz(replay_path, with_hirshfeld=False)
+
+    config = _singlehead_config(
+        ft_path,
+        hirshfeld_weight=1.0,
+        replay_datasets=[str(replay_path)],
+        replay_fractions=[1.0],
+        replay_total=2,
+        replay_resample_per_epoch=True,
+    )
+    with pytest.raises(ValueError, match="hirshfeld_ratios"):
+        _setup_singlehead_data_loaders(config)
 
 
 def test_select_valid_subset_split_ratio():

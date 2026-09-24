@@ -62,6 +62,7 @@ from so3krates_torch.data.utils import (
     KeySpecification,
     config_from_atoms,
     compute_average_E0s,
+    pluralize_property_clause,
     property_presence_from_configs,
     raise_if_properties_missing,
 )
@@ -767,6 +768,48 @@ def scan_raw_hdf5_statistics(
     return e0s, num_elements, avg_num_neighbors
 
 
+def scan_raw_hdf5_property_presence(
+    hdf5_path: str,
+    keyspec: "KeySpecification",
+    property_names: Iterable[str],
+) -> Dict[str, bool]:
+    """Check whether each named property's data is present anywhere
+    in a raw HDF5 v2.0 file, without constructing any ase.Atoms.
+
+    A property is present in the file iff at least one structure has
+    it, which for this columnar layout is equivalent to its mapped
+    key existing as a top-level `properties/info` or
+    `properties/arrays` dataset (see module docstring) — those
+    datasets are only ever created for keys `_detect_prop_meta` found
+    in at least one structure. This makes the check a handful of
+    cheap h5py group-membership lookups instead of a full-file load,
+    which matters when this is used to validate a `lazy_loading`
+    validation split that should never be fully materialized.
+    """
+    property_names = list(property_names)
+    presence = {name: False for name in property_names}
+    with h5py.File(hdf5_path, "r") as f:
+        info_keys = (
+            set(f["properties/info"].keys())
+            if ("properties/info" in f)
+            else set()
+        )
+        arrays_keys = (
+            set(f["properties/arrays"].keys())
+            if ("properties/arrays" in f)
+            else set()
+        )
+    for name in property_names:
+        atoms_key = keyspec.info_keys.get(name) or keyspec.arrays_keys.get(
+            name
+        )
+        if atoms_key is not None and (
+            atoms_key in info_keys or atoms_key in arrays_keys
+        ):
+            presence[name] = True
+    return presence
+
+
 # ============================================================================
 # Raw HDF5 — Configuration helpers
 # ============================================================================
@@ -1185,52 +1228,87 @@ def _read_atomic_data_from_hdf5_group(
 def scan_preprocessed_hdf5_property_presence(
     hdf5_path: str,
     property_names: Iterable[str],
-) -> Dict[str, bool]:
-    """Check whether each named property has a non-zero weight
-    somewhere in a preprocessed HDF5 file.
+) -> Dict[str, Tuple[int, int]]:
+    """Check, for each named property, how many configs in a
+    preprocessed HDF5 file have a non-zero weight for it.
 
-    Only reads the small per-config `weights` group of each config
-    (not positions/edges/properties), and stops early once every
-    requested property has been found present at least once.
+    Checks the small per-config `weights` group of each config, not
+    `properties`: once a property has gone through
+    `AtomicData.from_config`, its VALUE is always a real (possibly
+    zero-filled) tensor — placeholders for a genuinely absent property
+    are indistinguishable from real data at that point, so the
+    `properties` group can't be used to detect absence. The `weights`
+    group is what `config_from_atoms` deliberately forces to 0.0 when
+    a property's key is absent from the source data, so it's the only
+    signal this file format actually preserves.
+
+    Every config is scanned (no early exit) since detecting
+    inconsistent per-property coverage across configs — e.g. from
+    merging preprocessed files that don't all carry the same
+    properties — is the point of this function.
+
+    Returns a dict mapping each property name to
+    (num_configs_with_nonzero_weight, num_configs_total).
     """
     property_names = list(property_names)
-    presence = {name: False for name in property_names}
+    counts = {name: 0 for name in property_names}
     with h5py.File(hdf5_path, "r") as f:
         num_configs = int(f.attrs["num_configs"])
         for i in range(num_configs):
-            if all(presence.values()):
-                break
             weights_grp = f[f"config_{i}"]["weights"]
             for name in property_names:
-                if presence[name]:
-                    continue
                 weight_key = f"{name}_weight"
-                if weight_key in weights_grp:
-                    if np.any(np.asarray(weights_grp[weight_key]) != 0.0):
-                        presence[name] = True
-    return presence
+                if weight_key in weights_grp and np.any(
+                    np.asarray(weights_grp[weight_key]) != 0.0
+                ):
+                    counts[name] += 1
+    return {name: (count, num_configs) for name, count in counts.items()}
 
 
 def raise_if_preprocessed_properties_missing(
-    presence: Dict[str, bool],
+    presence: Dict[str, Tuple[int, int]],
     hdf5_path: str,
 ) -> None:
-    """Raise a ValueError listing every property that is missing
-    (presence[name] is False) from a preprocessed HDF5 file."""
-    missing = [name for name, present in presence.items() if not present]
-    if not missing:
+    """Raise a ValueError if any property has a non-zero loss weight
+    but is absent from every config (`missing`), or present in only
+    some configs (`inconsistent`) of a preprocessed HDF5 file — the
+    latter typically comes from merging preprocessed files that don't
+    all carry the same properties, and would otherwise crash later
+    with a confusing error instead of failing fast here."""
+    missing = [name for name, (count, total) in presence.items() if count == 0]
+    inconsistent = [
+        name for name, (count, total) in presence.items() if 0 < count < total
+    ]
+    if not missing and not inconsistent:
         return
 
-    noun = "property" if len(missing) == 1 else "properties"
-    names = ", ".join(f"'{name}'" for name in missing)
-    raise ValueError(
-        f"The following {noun} have a non-zero loss weight but "
-        f"{'was' if len(missing) == 1 else 'were'} not populated when "
-        f"'{hdf5_path}' was preprocessed: {names}. Re-run preprocessing "
-        "from a source file that contains this data, or set the "
-        "corresponding loss weight to 0 if this property should not be "
-        "used."
-    )
+    sections = []
+    if missing:
+        noun, _verb, was_were = pluralize_property_clause(missing)
+        names = ", ".join(f"'{name}'" for name in missing)
+        sections.append(
+            f"The following {noun} have a non-zero loss weight but "
+            f"{was_were} not populated when "
+            f"'{hdf5_path}' was preprocessed: {names}. Re-run preprocessing "
+            "from a source file that contains this data, or set the "
+            "corresponding loss weight to 0 if this property should not be "
+            "used."
+        )
+    if inconsistent:
+        detail = ", ".join(
+            f"'{name}' ({presence[name][0]}/{presence[name][1]} configs)"
+            for name in inconsistent
+        )
+        sections.append(
+            f"The following properties have a non-zero loss weight but "
+            f"are only present in some configs of '{hdf5_path}': {detail}. "
+            "This usually comes from merging preprocessed HDF5 files that "
+            "don't all contain the same properties — ensure all merged "
+            "files share the same property coverage, or set the "
+            "corresponding loss weight to 0 if this property should not be "
+            "used."
+        )
+    raise ValueError("\n".join(sections))
 
 
 class PreprocessedHDF5Dataset(torch.utils.data.Dataset):

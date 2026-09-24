@@ -432,6 +432,12 @@ TRAINING:
       valid_ratio: 0.1  # used if path_to_val_data not given
     head_1:
       path_to_train_data: /path/to/head1_train.xyz
+      # Opt this head out of a globally-required loss property whose
+      # data it genuinely doesn't have (e.g. an energy/forces-only
+      # ensemble member) -- without this, a property with a non-zero
+      # loss weight that's missing from any single head's data raises
+      # an error.
+      exclude_loss_properties: [hirshfeld_ratios]
 ```
 
 #### Data Key Mapping

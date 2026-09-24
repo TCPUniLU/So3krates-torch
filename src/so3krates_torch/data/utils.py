@@ -213,14 +213,26 @@ def property_presence_from_configs(
     configs: "Configurations",
     property_names: Sequence[str],
 ) -> Dict[str, bool]:
-    """Check whether each named property is present (non-zero weight)
-    in at least one of the given configs."""
+    """Check whether each named property's data is actually present
+    (not None) in at least one of the given configs.
+
+    Presence is judged from the property VALUE, not from
+    `property_weights` — a deliberate per-structure
+    `config_<name>_weight=0` override on data that is genuinely
+    present must not be mistaken for the property being absent."""
     return {
-        name: any(
-            (c.property_weights.get(name, 0.0) or 0.0) != 0.0 for c in configs
-        )
+        name: any(c.properties.get(name) is not None for c in configs)
         for name in property_names
     }
+
+
+def pluralize_property_clause(names: Sequence[str]) -> Tuple[str, str, str]:
+    """Return (noun, verb, was_were) agreeing in number with `names`,
+    for building "The following property/properties has/have ...
+    was/were ..." error messages consistently across call sites."""
+    if len(names) == 1:
+        return "property", "has", "was"
+    return "properties", "have", "were"
 
 
 def raise_if_properties_missing(
@@ -243,13 +255,10 @@ def raise_if_properties_missing(
         key_desc = f"key '{key}'" if key else "its configured key"
         lines.append(f"  - '{name}': looked for {key_desc}")
 
-    if len(missing) == 1:
-        noun, verb = "property", "has"
-    else:
-        noun, verb = "properties", "have"
+    noun, verb, was_were = pluralize_property_clause(missing)
     raise ValueError(
         f"The following {noun} {verb} a non-zero loss weight but "
-        f"{'was' if len(missing) == 1 else 'were'} not found in "
+        f"{was_were} not found in "
         f"'{file_path}':\n"
         + "\n".join(lines)
         + "\nCheck that the corresponding '<name>_key' under TRAINING.keys "

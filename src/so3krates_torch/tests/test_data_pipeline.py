@@ -601,37 +601,53 @@ class TestRequiredPropertyPresence:
     in the data file, instead of silently zero-filling it."""
 
     @staticmethod
-    def _config(property_weights):
+    def _config(properties=None, property_weights=None):
         from so3krates_torch.data.utils import Configuration
 
         return Configuration(
             atomic_numbers=np.array([1]),
             positions=np.zeros((1, 3)),
-            properties={},
-            property_weights=property_weights,
+            properties=properties or {},
+            property_weights=property_weights or {},
         )
 
-    def test_presence_true_when_any_config_has_nonzero_weight(self):
+    def test_presence_true_when_any_config_has_data(self):
         configs = [
-            self._config({"hirshfeld_ratios": 0.0}),
-            self._config({"hirshfeld_ratios": 1.0}),
+            self._config(properties={"hirshfeld_ratios": None}),
+            self._config(properties={"hirshfeld_ratios": np.array([1.0])}),
         ]
         presence = property_presence_from_configs(
             configs, ["hirshfeld_ratios", "energy"]
         )
         assert presence["hirshfeld_ratios"] is True
-        # "energy" was never in property_weights -> absent
+        # "energy" was never in properties -> absent
         assert presence["energy"] is False
 
-    def test_presence_false_when_all_configs_zero_weight(self):
+    def test_presence_false_when_all_configs_missing_data(self):
         configs = [
-            self._config({"hirshfeld_ratios": 0.0}),
-            self._config({"hirshfeld_ratios": 0.0}),
+            self._config(properties={"hirshfeld_ratios": None}),
+            self._config(properties={"hirshfeld_ratios": None}),
         ]
         presence = property_presence_from_configs(
             configs, ["hirshfeld_ratios"]
         )
         assert presence["hirshfeld_ratios"] is False
+
+    def test_presence_true_despite_explicit_zero_weight_override(self):
+        """A deliberate per-structure config_<name>_weight=0 override
+        on data that IS present must not be mistaken for the property
+        being absent — presence is judged from the value, not the
+        weight (false-positive regression test)."""
+        configs = [
+            self._config(
+                properties={"hirshfeld_ratios": np.array([1.0])},
+                property_weights={"hirshfeld_ratios": 0.0},
+            ),
+        ]
+        presence = property_presence_from_configs(
+            configs, ["hirshfeld_ratios"]
+        )
+        assert presence["hirshfeld_ratios"] is True
 
     def test_raise_if_properties_missing_names_key_and_property(self):
         keyspec = KeySpecification(
