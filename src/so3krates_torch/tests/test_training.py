@@ -779,10 +779,12 @@ def test_heterogeneous_multihead_property_excluded_does_not_raise(tmp_path):
             "heads": {
                 "head_a": {
                     "path_to_train_data": str(path_a),
+                    "valid_ratio": 0.4,
                     "num_valid": 1,
                 },
                 "head_b": {
                     "path_to_train_data": str(path_b),
+                    "valid_ratio": 0.4,
                     "num_valid": 1,
                     "exclude_loss_properties": ["hirshfeld_ratios"],
                 },
