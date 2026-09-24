@@ -1,5 +1,6 @@
 import argparse
 import logging
+from typing import List, Optional
 
 import yaml
 import torch
@@ -11,6 +12,7 @@ from so3krates_torch.tools.utils import (
 )
 from so3krates_torch.tools.train import train
 from so3krates_torch.tools.finetune import fuse_lora_weights
+from so3krates_torch.tools.multihead_utils import reduce_mh_model_to_sh
 from so3krates_torch.tools.torch_geometric import seed_everything
 import os
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -25,6 +27,7 @@ from so3krates_torch.tools.model_setup import (
 )
 from so3krates_torch.tools.data_setup import (
     setup_data_loaders,
+    FINETUNE_HEAD_NAME,
 )
 from so3krates_torch.tools.training_setup import (
     setup_loss_function,
@@ -85,6 +88,59 @@ def wrap_model_ddp(model, local_rank):
         device_ids=[local_rank],
         find_unused_parameters=True,
     )
+
+
+def _export_trained_model(
+    model: torch.nn.Module,
+    config: dict,
+    device,
+    dtype_str: str,
+    head_names: Optional[List[str]] = None,
+) -> None:
+    """Save the trained model according to TRAINING.post_training_export:
+    the (possibly multi-head) model as-is, per-head single-head models
+    extracted via reduce_mh_model_to_sh, or both.
+
+    `head_names` must be in head_idx order (i.e. list(valid_loaders),
+    since valid_loaders is keyed by head name in that order) — the
+    caller supplies it rather than this function reading
+    config["TRAINING"]["heads"], which is not populated for the
+    replay_as_heads path (its heads dict is intentionally kept out of
+    `config`, which gets pickled into every checkpoint)."""
+    export_mode = config["TRAINING"].get("post_training_export", "multihead")
+    if not head_names and export_mode != "multihead":
+        raise ValueError(
+            f"post_training_export='{export_mode}' requires a "
+            "multi-head run ('heads' or 'replay_as_heads')."
+        )
+
+    name_exp = config["GENERAL"]["name_exp"]
+
+    if export_mode in ("multihead", "multihead+singlehead"):
+        if head_names:
+            model.heads = list(head_names)
+        final_model_path = f"{name_exp}.pth"
+        torch.save(model.state_dict(), final_model_path)
+        torch.save(model, final_model_path.replace(".pth", ".model"))
+
+    if export_mode in ("multihead+singlehead", "singlehead"):
+        # The trained model's avg_num_neighbors (and the att_norm_inv/
+        # att_norm_ev it drives) are plain attributes, not part of
+        # state_dict(), so reduce_mh_model_to_sh (which rebuilds from
+        # config["ARCHITECTURE"]) can't recover them on its own.
+        trained_avg_num_neighbors = model.avg_num_neighbors
+        for head_idx, head_name in enumerate(head_names):
+            sh_model = reduce_mh_model_to_sh(
+                model.state_dict(),
+                config["ARCHITECTURE"],
+                head_idx,
+                model_choice="so3lr",
+                device=str(device),
+                dtype=dtype_str,
+            )
+            set_avg_num_neighbors_in_model(sh_model, trained_avg_num_neighbors)
+            sh_model.heads = [head_name]
+            torch.save(sh_model, f"{name_exp}_{head_name}.model")
 
 
 def run_training(config: dict) -> None:
@@ -264,6 +320,16 @@ def run_training(config: dict) -> None:
         )
         model.select_heads = True
 
+    if config["TRAINING"].get("replay_as_heads", False):
+        primary_valid_head = FINETUNE_HEAD_NAME
+    else:
+        primary_valid_head = config["TRAINING"].get("primary_valid_head")
+    if primary_valid_head is not None:
+        logging.info(
+            f"Head '{primary_valid_head}' validation loss drives "
+            "checkpointing, early stopping, and the LR scheduler."
+        )
+
     logging.info("Starting training loop...")
     train(
         model=model,
@@ -299,6 +365,7 @@ def run_training(config: dict) -> None:
         ),
         config=config,
         replay_builder=replay_builder,
+        primary_valid_head=primary_valid_head,
     )
     logging.info("Training completed successfully!")
 
@@ -319,9 +386,16 @@ def run_training(config: dict) -> None:
 
     # Only rank 0 saves the final model
     if rank == 0:
-        final_model_path = f'{config["GENERAL"]["name_exp"]}.pth'
-        torch.save(model.state_dict(), final_model_path)
-        torch.save(model, final_model_path.replace(".pth", ".model"))
+        is_multihead_run = bool(config["TRAINING"].get("heads")) or config[
+            "TRAINING"
+        ].get("replay_as_heads", False)
+        # valid_loaders is keyed by head name in head_idx order (see
+        # _setup_multihead_data_loaders); for a single-head run it's
+        # just {"main": loader} or {}, neither a real head name.
+        head_names = list(valid_loaders) if is_multihead_run else None
+        _export_trained_model(
+            model, config, device, dtype_str, head_names=head_names
+        )
 
 
 def run_dry_run(config: dict) -> None:

@@ -143,10 +143,34 @@ class TrainingConfig(BaseModel):
     replay_datasets: Optional[List[str]] = None
     replay_fractions: Optional[List[float]] = None
     replay_total: Optional[int] = None
-    replay_oversample_finetune: bool = True
+    # None means "use the single-head path's default of True";
+    # kept as a tri-state (rather than bool = True) so validate_replay
+    # can tell an explicit setting apart from the default even after a
+    # model_dump() -> model_validate() round trip (which otherwise
+    # marks every field as explicitly set, defeating
+    # model_fields_set-based detection) — needed since this flag has
+    # no effect at all under replay_as_heads and should be rejected
+    # rather than silently ignored there.
+    replay_oversample_finetune: Optional[bool] = None
     replay_resample_per_epoch: bool = False
+    replay_as_heads: bool = False
+    # Optional per-dataset head name for replay_as_heads. Datasets
+    # sharing the same name are routed to the same head instead of
+    # each getting its own. Defaults to one head per replay dataset.
+    replay_head_names: Optional[List[str]] = None
     # Per-config-type loss weight multipliers
     config_type_weights: Optional[Dict[str, float]] = None
+    # For a manual `heads:` multi-head run, which head's validation
+    # loss drives checkpointing/early-stopping/LR scheduling (default:
+    # the last-declared head, for backwards compatibility). Ignored
+    # for replay_as_heads, which always uses the "finetune" head.
+    primary_valid_head: Optional[str] = None
+    # What to export at the end of training: the (possibly multi-head)
+    # trained model, per-head single-head models extracted from it, or
+    # both.
+    post_training_export: Literal[
+        "multihead", "multihead+singlehead", "singlehead"
+    ] = "multihead"
 
     @model_validator(mode="after")
     def validate_pretrained(self):
@@ -175,6 +199,12 @@ class TrainingConfig(BaseModel):
                 "'replay_total' must all be specified together."
             )
         if not any_set:
+            if self.replay_as_heads:
+                raise ValueError(
+                    "replay_as_heads=True requires 'replay_datasets', "
+                    "'replay_fractions', and 'replay_total' to also "
+                    "be specified."
+                )
             return self
         if len(self.replay_datasets) != len(self.replay_fractions):
             raise ValueError(
@@ -197,6 +227,50 @@ class TrainingConfig(BaseModel):
             raise ValueError(
                 "Data replay is not supported with multi-head "
                 "training. Remove 'heads' or 'replay_datasets'."
+            )
+        if self.replay_as_heads and self.replay_resample_per_epoch:
+            raise ValueError(
+                "replay_resample_per_epoch is not supported with "
+                "replay_as_heads (each replay dataset is sampled "
+                "once, at setup time). Remove 'replay_resample_per_epoch'."
+            )
+        if (
+            self.replay_as_heads
+            and self.replay_oversample_finetune is not None
+        ):
+            raise ValueError(
+                "replay_oversample_finetune has no effect under "
+                "replay_as_heads (there is no combined fine-tune + "
+                "replay loader to balance; each head is trained via "
+                "its own loader). Remove 'replay_oversample_finetune'."
+            )
+        if self.replay_head_names is not None:
+            if len(self.replay_head_names) != len(self.replay_datasets):
+                raise ValueError(
+                    f"replay_head_names has "
+                    f"{len(self.replay_head_names)} entries but "
+                    f"replay_datasets has {len(self.replay_datasets)}. "
+                    "They must match."
+                )
+            # Must match data_setup.FINETUNE_HEAD_NAME. Not imported
+            # here to keep this leaf config module free of a
+            # dependency on the tools layer.
+            if "finetune" in self.replay_head_names:
+                raise ValueError(
+                    "'finetune' is reserved for the main training "
+                    "dataset's head and cannot be used in "
+                    "'replay_head_names'."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def validate_post_training_export(self):
+        is_multihead_run = self.heads is not None or self.replay_as_heads
+        if self.post_training_export != "multihead" and not is_multihead_run:
+            raise ValueError(
+                f"post_training_export='{self.post_training_export}' "
+                "requires a multi-head run ('heads' or "
+                "'replay_as_heads')."
             )
         return self
 
@@ -221,3 +295,47 @@ class TrainConfig(BaseModel):
     ARCHITECTURE: ArchitectureConfig
     TRAINING: TrainingConfig
     MISC: MiscConfig = MiscConfig()
+
+    @model_validator(mode="after")
+    def validate_multihead_cross_section(self):
+        is_multihead_flagged = (
+            self.ARCHITECTURE.convert_to_multihead
+            or self.ARCHITECTURE.use_multihead
+        )
+        if (
+            self.TRAINING.post_training_export != "multihead"
+            and not is_multihead_flagged
+        ):
+            raise ValueError(
+                f"TRAINING.post_training_export="
+                f"'{self.TRAINING.post_training_export}' requires "
+                "ARCHITECTURE.convert_to_multihead or use_multihead "
+                "to be true (a plain single-head model has no heads "
+                "to extract)."
+            )
+        if self.TRAINING.replay_as_heads:
+            if not self.ARCHITECTURE.use_multihead:
+                raise ValueError(
+                    "TRAINING.replay_as_heads requires "
+                    "ARCHITECTURE.use_multihead=true (otherwise "
+                    "model.select_heads is never enabled during "
+                    "training and per-sample head routing has no "
+                    "effect)."
+                )
+            replay_head_names = self.TRAINING.replay_head_names
+            if replay_head_names is None:
+                num_replay_heads = len(self.TRAINING.replay_datasets or [])
+            else:
+                num_replay_heads = len(set(replay_head_names))
+            expected_heads = num_replay_heads + 1
+            if self.ARCHITECTURE.num_output_heads != expected_heads:
+                raise ValueError(
+                    "TRAINING.replay_as_heads requires "
+                    "ARCHITECTURE.num_output_heads == number of "
+                    f"distinct replay heads + 1 = {expected_heads} "
+                    "(one fine-tune head plus one per distinct "
+                    "replay_head_names entry), got "
+                    f"num_output_heads="
+                    f"{self.ARCHITECTURE.num_output_heads}."
+                )
+        return self

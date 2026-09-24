@@ -42,6 +42,10 @@ from so3krates_torch.tools.utils import (
 )
 from so3krates_torch.tools.model_setup import determine_num_elements
 
+# Reserved head name for the normal fine-tune dataset in the automatic
+# replay_as_heads path. Always head 0 (see _setup_replay_multihead_data_loaders).
+FINETUNE_HEAD_NAME = "finetune"
+
 
 def _worker_init_fn(worker_id: int) -> None:
     seed = torch.initial_seed() % (2**32)
@@ -236,6 +240,54 @@ def _compute_e0s(
     return {z: present_e0s.get(z, 0.0) for z in range(1, 119)}
 
 
+def _replay_counts(fractions: List[float], total: int) -> List[int]:
+    """Distribute `total` samples across datasets per `fractions`,
+    handing any remainder (from flooring) to the first datasets."""
+    counts = [int(math.floor(f * total)) for f in fractions]
+    remainder = total - sum(counts)
+    for i in range(remainder):
+        counts[i] += 1
+    return counts
+
+
+def _sample_atoms_for_replay(path: str, count: int) -> list:
+    """Load `count` randomly-sampled ASE Atoms from a replay dataset.
+
+    Unlike `_load_replay_data`, this returns raw Atoms (not AtomicData)
+    so the caller can route them through the per-head config/Configuration
+    pipeline (needed to tag them with a head index). Only xyz/extxyz and
+    raw HDF5 are supported — preprocessed HDF5 stores ready-made graphs
+    with no way to recover per-sample head assignment.
+    """
+    if count == 0:
+        return []
+    file_format = detect_file_format(path)
+    if file_format == "hdf5_preprocessed":
+        raise ValueError(
+            f"Replay dataset '{path}' is preprocessed HDF5, which is "
+            "not supported with replay_as_heads. Use xyz/extxyz or "
+            "raw HDF5 for datasets used with replay_as_heads."
+        )
+    if path.endswith((".h5", ".hdf5")):
+        atoms_list = load_atoms_from_hdf5(path, index=None)
+    elif path.endswith((".xyz", ".extxyz")):
+        atoms_list = read(path, index=":")
+    else:
+        raise ValueError(f"Unsupported replay file format: {path}")
+
+    n_available = len(atoms_list)
+    if count > n_available:
+        logging.warning(
+            f"Replay dataset {path} has {n_available} "
+            f"structures but {count} requested. "
+            f"Sampling with replacement."
+        )
+        indices = random.choices(range(n_available), k=count)
+    else:
+        indices = random.sample(range(n_available), count)
+    return [atoms_list[i] for i in indices]
+
+
 def _load_replay_data(
     config: dict,
     r_max: float,
@@ -253,11 +305,7 @@ def _load_replay_data(
     fractions = config["TRAINING"]["replay_fractions"]
     total = config["TRAINING"]["replay_total"]
 
-    # Compute per-dataset counts with remainder distribution
-    counts = [int(math.floor(f * total)) for f in fractions]
-    remainder = total - sum(counts)
-    for i in range(remainder):
-        counts[i] += 1
+    counts = _replay_counts(fractions, total)
 
     all_replay = []
     for path, count in zip(replay_paths, counts):
@@ -523,15 +571,23 @@ def _setup_multihead_data_loaders(
     distributed: bool = False,
     rank: int = 0,
     world_size: int = 1,
+    heads_override: Optional[dict] = None,
 ) -> tuple:
     """Setup data loaders for multi-head (multi-dataset) training.
 
     Returns (train_loader, valid_loaders, train_sampler,
              avg_num_neighbors, num_elements,
              average_atomic_energy_shifts).
+
+    heads_override, when given, is used instead of
+    config["TRAINING"]["heads"] (used by the automatic
+    replay-as-heads path, whose heads dict is built at runtime
+    rather than declared in the config file). Each head's data may
+    be given as "path_to_train_data" (read from disk, as usual) or
+    as an already-loaded "atoms_list".
     """
     keydict = DefaultKeys.keydict()
-    config_keys = config["TRAINING"].get("keys", {})
+    config_keys = config["TRAINING"].get("keys") or {}
     keydict.update(config_keys)
     keyspec = update_keyspec_from_kwargs(KeySpecification(), keydict)
     batch_size = config["TRAINING"]["batch_size"]
@@ -542,11 +598,20 @@ def _setup_multihead_data_loaders(
     loss_weights = get_loss_property_weights(config)
     required_properties = [name for name, w in loss_weights.items() if w > 0]
 
-    heads = config["TRAINING"]["heads"]
+    heads = (
+        heads_override
+        if heads_override is not None
+        else config["TRAINING"]["heads"]
+    )
     train_configs = []
     val_data = {}
+    empty_train_heads = []
+    empty_val_heads = []
     for head_name, head_config in heads.items():
-        head_data = read(head_config["path_to_train_data"], index=":")
+        if "atoms_list" in head_config:
+            head_data = head_config["atoms_list"]
+        else:
+            head_data = read(head_config["path_to_train_data"], index=":")
         head_valid_path = head_config.get("path_to_val_data", None)
         if head_valid_path:
             head_val_data = read(head_valid_path, index=":")
@@ -564,6 +629,10 @@ def _setup_multihead_data_loaders(
         logging.info(
             f"Head {head_name} - Validation set size: " f"{len(head_val_data)}"
         )
+        if len(head_train_data) == 0:
+            empty_train_heads.append(head_name)
+        if len(head_val_data) == 0:
+            empty_val_heads.append(head_name)
 
         head_ctw = head_config.get(
             "config_type_weights",
@@ -596,7 +665,10 @@ def _setup_multihead_data_loaders(
             p for p in required_properties if p not in head_excluded
         ]
         if head_required:
-            label = f"{head_config['path_to_train_data']} (head '{head_name}')"
+            head_train_path = head_config.get(
+                "path_to_train_data", "<in-memory atoms_list>"
+            )
+            label = f"{head_train_path} (head '{head_name}')"
             if head_config_list_train:
                 raise_if_properties_missing(
                     property_presence_from_configs(
@@ -629,6 +701,26 @@ def _setup_multihead_data_loaders(
             head_config_list_val,
             batch_size=valid_batch_size,
             shuffle=False,
+        )
+
+    if empty_train_heads or empty_val_heads:
+        messages = []
+        if empty_train_heads:
+            messages.append(
+                f"heads with 0 training structures: {empty_train_heads}"
+            )
+        if empty_val_heads:
+            messages.append(
+                f"heads with 0 validation structures: {empty_val_heads}"
+            )
+        raise ValueError(
+            "Multi-head data setup produced an empty split for at "
+            "least one head (" + "; ".join(messages) + "). Training "
+            "on / evaluating an empty head crashes later with a "
+            "confusing error. Fix by increasing that head's data "
+            "(e.g. a larger 'replay_total', a bigger source dataset), "
+            "raising its 'valid_ratio', setting an explicit "
+            "'num_valid', or providing 'path_to_val_data'."
         )
 
     # Find elements actually present in data
@@ -695,6 +787,74 @@ def _setup_multihead_data_loaders(
         num_elements,
         average_atomic_energy_shifts,
         None,  # replay_builder (not supported for multi-head)
+    )
+
+
+def _setup_replay_multihead_data_loaders(
+    config: dict,
+    distributed: bool = False,
+    rank: int = 0,
+    world_size: int = 1,
+) -> tuple:
+    """Setup data loaders for automatic multi-head replay training.
+
+    Builds one head per distinct entry in `replay_head_names` (default:
+    one per replay dataset, named "replay_0", "replay_1", ... in
+    `replay_datasets` order) plus a "finetune" head for the normal
+    TRAINING.path_to_train_data/path_to_val_data, then delegates to
+    _setup_multihead_data_loaders. "finetune" is always head 0.
+
+    Multiple replay datasets may share a head by giving them the same
+    `replay_head_names` entry, e.g. replay_head_names=["old_md",
+    "old_md", "old_qm"] pools the first two datasets into one
+    "old_md" head and routes the third to its own "old_qm" head.
+    """
+    replay_paths = config["TRAINING"]["replay_datasets"]
+    fractions = config["TRAINING"]["replay_fractions"]
+    total = config["TRAINING"]["replay_total"]
+    replay_head_names = config["TRAINING"].get("replay_head_names")
+    if replay_head_names is None:
+        replay_head_names = [f"replay_{i}" for i in range(len(replay_paths))]
+    # Preserve first-seen order so head indices stay deterministic.
+    distinct_head_names = list(dict.fromkeys(replay_head_names))
+
+    num_output_heads = config["ARCHITECTURE"].get("num_output_heads")
+    expected_heads = len(distinct_head_names) + 1
+    if num_output_heads != expected_heads:
+        raise ValueError(
+            "replay_as_heads requires ARCHITECTURE.num_output_heads "
+            f"== number of distinct replay heads + 1 = "
+            f"{expected_heads} (one fine-tune head plus one per "
+            f"distinct replay_head_names entry), got "
+            f"num_output_heads={num_output_heads}."
+        )
+
+    counts = _replay_counts(fractions, total)
+    valid_ratio = config["TRAINING"].get("valid_ratio", 0.1)
+
+    heads = {
+        FINETUNE_HEAD_NAME: {
+            "path_to_train_data": config["TRAINING"]["path_to_train_data"],
+            "path_to_val_data": config["TRAINING"].get("path_to_val_data"),
+            "valid_ratio": valid_ratio,
+        }
+    }
+    for name in distinct_head_names:
+        heads[name] = {"atoms_list": [], "valid_ratio": valid_ratio}
+    for path, count, name in zip(replay_paths, counts, replay_head_names):
+        heads[name]["atoms_list"].extend(_sample_atoms_for_replay(path, count))
+
+    # heads is intentionally NOT stashed onto `config`: it holds live
+    # ASE Atoms objects, and `config` gets pickled into every training
+    # checkpoint (CheckpointBuilder.create_checkpoint) — see
+    # run_train.py's _export_trained_model for how head names reach the
+    # export step instead (via the returned valid_loaders' keys).
+    return _setup_multihead_data_loaders(
+        config,
+        distributed=distributed,
+        rank=rank,
+        world_size=world_size,
+        heads_override=heads,
     )
 
 
@@ -859,7 +1019,13 @@ def _setup_singlehead_data_loaders(
     replay_builder = None
     replay_datasets_cfg = config["TRAINING"].get("replay_datasets", None)
     if replay_datasets_cfg:
-        oversample = config["TRAINING"].get("replay_oversample_finetune", True)
+        # None (unset) means "use the default of True" -- the config
+        # field is a tri-state so validate_replay can tell an explicit
+        # setting apart from the default; .get(key, True) would NOT
+        # apply that default here since the key is present (as None)
+        # once the config has been through a pydantic model_dump().
+        oversample_cfg = config["TRAINING"].get("replay_oversample_finetune")
+        oversample = True if oversample_cfg is None else oversample_cfg
         resample = config["TRAINING"].get("replay_resample_per_epoch", False)
 
         # Materialize fine-tune data once
@@ -999,6 +1165,10 @@ def setup_data_loaders(
     """
     if config["TRAINING"].get("heads", None) is not None:
         return _setup_multihead_data_loaders(
+            config, distributed, rank, world_size
+        )
+    if config["TRAINING"].get("replay_as_heads", False):
+        return _setup_replay_multihead_data_loaders(
             config, distributed, rank, world_size
         )
     return _setup_singlehead_data_loaders(

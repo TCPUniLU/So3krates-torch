@@ -35,6 +35,25 @@ from so3krates_torch.tools.eval import ModelEval
 from so3krates_torch.tools.finetune import preserve_grad_state
 
 
+def _select_valid_loss(
+    head_losses: Dict[str, float],
+    primary_valid_head: Optional[str] = None,
+) -> float:
+    """Pick the validation loss that drives checkpointing, early
+    stopping, and the LR scheduler out of one loss per head.
+
+    Uses `primary_valid_head` when given and present in `head_losses`;
+    otherwise falls back to the last-inserted head, preserving prior
+    behavior for multi-head configs that don't set a primary head.
+    Returns np.inf for an empty dict (e.g. no validation data at all).
+    """
+    if not head_losses:
+        return np.inf
+    if primary_valid_head is not None and primary_valid_head in head_losses:
+        return head_losses[primary_valid_head]
+    return list(head_losses.values())[-1]
+
+
 @dataclasses.dataclass
 class SWAContainer:
     model: AveragedModel
@@ -193,6 +212,7 @@ def train(
     early_stopping_min_delta: float = 0.0,
     early_stopping_warmup: int = 0,
     replay_builder=None,
+    primary_valid_head: Optional[str] = None,
 ):
     lowest_loss = np.inf
     valid_loss = np.inf
@@ -214,6 +234,7 @@ def train(
     epoch = start_epoch
 
     # log validation loss before _any_ training
+    head_losses = {}
     for valid_loader_name, valid_loader in valid_loaders.items():
         valid_loss_head, eval_metrics = evaluate(
             model=model,
@@ -222,6 +243,7 @@ def train(
             output_args=output_args,
             device=device,
         )
+        head_losses[valid_loader_name] = valid_loss_head
         valid_err_log(
             valid_loss_head,
             eval_metrics,
@@ -230,9 +252,7 @@ def train(
             None,
             valid_loader_name,
         )
-    valid_loss = (
-        valid_loss_head  # consider only the last head for the checkpoint
-    )
+    valid_loss = _select_valid_loss(head_losses, primary_valid_head)
 
     epoch_times = []
 
@@ -307,6 +327,7 @@ def train(
                 optimizer.eval()
             with param_context:
                 wandb_log_dict = {}
+                head_losses = {}
                 for valid_loader_name, valid_loader in valid_loaders.items():
                     valid_loss_head, eval_metrics = evaluate(
                         model=model_to_evaluate,
@@ -315,6 +336,7 @@ def train(
                         output_args=output_args,
                         device=device,
                     )
+                    head_losses[valid_loader_name] = valid_loss_head
                     if rank == 0:
                         valid_err_log(
                             valid_loss_head,
@@ -338,7 +360,9 @@ def train(
                         plotter.plot(epoch, model_to_evaluate, rank)
                     except Exception as e:  # pylint: disable=broad-except
                         logging.debug(f"Plotting failed: {e}")
-                valid_loss = valid_loss_head  # consider only the last head for the checkpoint
+                valid_loss = _select_valid_loss(
+                    head_losses, primary_valid_head
+                )
                 if rank == 0:
                     avg_epoch_time = sum(epoch_times) / len(epoch_times)
                     remaining = max_num_epochs - epoch - 1

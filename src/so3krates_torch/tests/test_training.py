@@ -660,9 +660,14 @@ def test_missing_loss_property_raises_for_multihead(tmp_path):
     )
 
     def make_xyz(path):
+        # 12 structures (not 3): with the default valid_ratio=0.1, 3
+        # structures would round down to an empty validation split and
+        # trip the (correct) empty-split guard before ever reaching the
+        # property-presence check this test targets.
         atoms_list = []
-        for mol_name in ["H2O", "NH3", "CH4"]:
-            atoms = molecule(mol_name)
+        mols = ["H2O", "NH3", "CH4"]
+        for i in range(12):
+            atoms = molecule(mols[i % len(mols)])
             atoms.info["REF_energy"] = -10.0 * len(atoms)
             atoms.arrays["REF_forces"] = np.random.randn(len(atoms), 3) * 0.1
             atoms_list.append(atoms)
@@ -703,9 +708,14 @@ def test_heterogeneous_multihead_property_raises_by_default(tmp_path):
     )
 
     def make_xyz(path, with_hirshfeld):
+        # 12 structures: select_valid_subset's num_valid only caps the
+        # valid_ratio-derived split size, it can't raise it above 0 —
+        # with only 3 structures num_valid=1 below would still yield
+        # an empty (and now fail-fast) validation split.
         atoms_list = []
-        for mol_name in ["H2O", "NH3", "CH4"]:
-            atoms = molecule(mol_name)
+        mols = ["H2O", "NH3", "CH4"]
+        for i in range(12):
+            atoms = molecule(mols[i % len(mols)])
             atoms.info["REF_energy"] = -10.0 * len(atoms)
             atoms.arrays["REF_forces"] = np.random.randn(len(atoms), 3) * 0.1
             if with_hirshfeld:
@@ -1096,3 +1106,279 @@ def test_determine_num_elements(example_xyz_with_data):
     n = determine_num_elements(loader)
     # H2O -> H,O; NH3 -> N,H; CH4 -> C,H  ->  {H, O, N, C} = 4 elements
     assert n == 4
+
+
+def _make_replay_xyz(path, n_structures):
+    import numpy as np
+    from ase.build import molecule
+    import ase.io
+
+    atoms_list = []
+    mols = ["H2O", "NH3", "CH4"]
+    for i in range(n_structures):
+        atoms = molecule(mols[i % len(mols)])
+        atoms.info["REF_energy"] = -10.0 * len(atoms)
+        atoms.arrays["REF_forces"] = np.random.randn(len(atoms), 3) * 0.1
+        atoms_list.append(atoms)
+    ase.io.write(path, atoms_list)
+
+
+class TestReplayAsHeads:
+    """Tests for _setup_replay_multihead_data_loaders: routing the
+    normal fine-tune dataset and each replay dataset to their own
+    head, instead of mixing them into a single shared head."""
+
+    def test_builds_one_head_per_replay_dataset_plus_finetune(self, tmp_path):
+        from so3krates_torch.tools.data_setup import (
+            _setup_replay_multihead_data_loaders,
+        )
+
+        finetune_path = tmp_path / "finetune.xyz"
+        replay_path = tmp_path / "replay.xyz"
+        _make_replay_xyz(finetune_path, 20)
+        _make_replay_xyz(replay_path, 20)
+
+        config = {
+            "GENERAL": {},
+            "ARCHITECTURE": {
+                "r_max": 5.0,
+                "r_max_lr": None,
+                "num_output_heads": 2,
+            },
+            "TRAINING": {
+                "path_to_train_data": str(finetune_path),
+                "batch_size": 2,
+                "valid_batch_size": 2,
+                "replay_datasets": [str(replay_path)],
+                "replay_fractions": [1.0],
+                "replay_total": 20,
+            },
+        }
+
+        (
+            train_loader,
+            val_loaders,
+            _train_sampler,
+            _avg_num_neighbors,
+            _num_elements,
+            _e0s,
+            replay_builder,
+        ) = _setup_replay_multihead_data_loaders(config)
+
+        assert replay_builder is None
+        # "finetune" must be head 0, matching the reserved-name/head-idx
+        # convention run_train.py's export step relies on.
+        assert list(val_loaders.keys()) == ["finetune", "replay_0"]
+
+        # replay_0's train+val split should draw from the 20 requested
+        # replay structures (replay_total), not double-count anything.
+        replay_head_total = len(val_loaders["replay_0"].dataset) + sum(
+            1
+            for batch in train_loader
+            for head in batch.head.tolist()
+            if head == 1
+        )
+        assert replay_head_total == 20
+
+    def test_raises_when_num_output_heads_mismatched(self, tmp_path):
+        from so3krates_torch.tools.data_setup import (
+            _setup_replay_multihead_data_loaders,
+        )
+
+        finetune_path = tmp_path / "finetune.xyz"
+        replay_path = tmp_path / "replay.xyz"
+        _make_replay_xyz(finetune_path, 10)
+        _make_replay_xyz(replay_path, 20)
+
+        config = {
+            "GENERAL": {},
+            "ARCHITECTURE": {
+                "r_max": 5.0,
+                "r_max_lr": None,
+                "num_output_heads": 5,  # should be 2 (1 replay + finetune)
+            },
+            "TRAINING": {
+                "path_to_train_data": str(finetune_path),
+                "batch_size": 2,
+                "valid_batch_size": 2,
+                "replay_datasets": [str(replay_path)],
+                "replay_fractions": [1.0],
+                "replay_total": 6,
+            },
+        }
+
+        with pytest.raises(ValueError, match="num_output_heads"):
+            _setup_replay_multihead_data_loaders(config)
+
+    def test_setup_data_loaders_dispatches_to_replay_as_heads(self, tmp_path):
+        from so3krates_torch.tools.data_setup import setup_data_loaders
+
+        finetune_path = tmp_path / "finetune.xyz"
+        replay_path = tmp_path / "replay.xyz"
+        _make_replay_xyz(finetune_path, 20)
+        _make_replay_xyz(replay_path, 20)
+
+        config = {
+            "GENERAL": {},
+            "ARCHITECTURE": {
+                "r_max": 5.0,
+                "r_max_lr": None,
+                "num_output_heads": 2,
+            },
+            "TRAINING": {
+                "path_to_train_data": str(finetune_path),
+                "batch_size": 2,
+                "valid_batch_size": 2,
+                "replay_as_heads": True,
+                "replay_datasets": [str(replay_path)],
+                "replay_fractions": [1.0],
+                "replay_total": 20,
+            },
+        }
+
+        _, val_loaders, _, _, _, _, _ = setup_data_loaders(config)
+        assert set(val_loaders.keys()) == {"finetune", "replay_0"}
+
+    def test_replay_head_names_groups_multiple_datasets_into_one_head(
+        self, tmp_path
+    ):
+        """Two replay datasets sharing a replay_head_names entry must be
+        routed to the same head, not one head each."""
+        from so3krates_torch.tools.data_setup import (
+            _setup_replay_multihead_data_loaders,
+        )
+
+        finetune_path = tmp_path / "finetune.xyz"
+        replay_a_path = tmp_path / "replay_a.xyz"
+        replay_b_path = tmp_path / "replay_b.xyz"
+        replay_c_path = tmp_path / "replay_c.xyz"
+        _make_replay_xyz(finetune_path, 10)
+        _make_replay_xyz(replay_a_path, 20)
+        _make_replay_xyz(replay_b_path, 20)
+        _make_replay_xyz(replay_c_path, 20)
+
+        config = {
+            "GENERAL": {},
+            "ARCHITECTURE": {
+                "r_max": 5.0,
+                "r_max_lr": None,
+                # 2 replay heads (old_md, old_qm) + finetune = 3
+                "num_output_heads": 3,
+            },
+            "TRAINING": {
+                "path_to_train_data": str(finetune_path),
+                "batch_size": 2,
+                "valid_batch_size": 2,
+                "replay_datasets": [
+                    str(replay_a_path),
+                    str(replay_b_path),
+                    str(replay_c_path),
+                ],
+                "replay_fractions": [0.4, 0.4, 0.2],
+                "replay_total": 50,
+                "replay_head_names": ["old_md", "old_md", "old_qm"],
+            },
+        }
+
+        (
+            train_loader,
+            val_loaders,
+            _train_sampler,
+            _avg_num_neighbors,
+            _num_elements,
+            _e0s,
+            replay_builder,
+        ) = _setup_replay_multihead_data_loaders(config)
+
+        assert replay_builder is None
+        # "finetune" must be head 0, matching the reserved-name/head-idx
+        # convention run_train.py's export step relies on.
+        assert list(val_loaders.keys()) == ["finetune", "old_md", "old_qm"]
+
+        # old_md pools replay_a (20) + replay_b (20) = 40 structures;
+        # old_qm gets replay_c's 10 structures.
+        head_idx = {"finetune": 0, "old_md": 1, "old_qm": 2}
+        train_counts = {name: 0 for name in head_idx}
+        for batch in train_loader:
+            for head in batch.head.tolist():
+                for name, idx in head_idx.items():
+                    if head == idx:
+                        train_counts[name] += 1
+
+        old_md_total = (
+            len(val_loaders["old_md"].dataset) + train_counts["old_md"]
+        )
+        old_qm_total = (
+            len(val_loaders["old_qm"].dataset) + train_counts["old_qm"]
+        )
+        assert old_md_total == 40
+        assert old_qm_total == 10
+
+
+class TestEmptyPerHeadSplitFailsFast:
+    """A head with 0 validation (or 0 training) structures must raise
+    immediately during data setup, not surface as a confusing
+    KeyError('mae_e_per_atom') the first time train() evaluates it."""
+
+    def test_raises_for_head_with_zero_validation_structures(self, tmp_path):
+        from so3krates_torch.tools.data_setup import (
+            _setup_replay_multihead_data_loaders,
+        )
+
+        finetune_path = tmp_path / "finetune.xyz"
+        replay_path = tmp_path / "replay.xyz"
+        _make_replay_xyz(finetune_path, 20)
+        _make_replay_xyz(replay_path, 20)
+
+        config = {
+            "GENERAL": {},
+            "ARCHITECTURE": {
+                "r_max": 5.0,
+                "r_max_lr": None,
+                "num_output_heads": 2,
+            },
+            "TRAINING": {
+                "path_to_train_data": str(finetune_path),
+                "batch_size": 2,
+                "valid_batch_size": 2,
+                "replay_datasets": [str(replay_path)],
+                "replay_fractions": [1.0],
+                # int(6 * 0.1) == 0 -> replay_0 gets no validation data.
+                "replay_total": 6,
+            },
+        }
+
+        with pytest.raises(ValueError, match="replay_0"):
+            _setup_replay_multihead_data_loaders(config)
+
+    def test_does_not_raise_when_every_head_has_validation_structures(
+        self, tmp_path
+    ):
+        from so3krates_torch.tools.data_setup import (
+            _setup_replay_multihead_data_loaders,
+        )
+
+        finetune_path = tmp_path / "finetune.xyz"
+        replay_path = tmp_path / "replay.xyz"
+        _make_replay_xyz(finetune_path, 20)
+        _make_replay_xyz(replay_path, 20)
+
+        config = {
+            "GENERAL": {},
+            "ARCHITECTURE": {
+                "r_max": 5.0,
+                "r_max_lr": None,
+                "num_output_heads": 2,
+            },
+            "TRAINING": {
+                "path_to_train_data": str(finetune_path),
+                "batch_size": 2,
+                "valid_batch_size": 2,
+                "replay_datasets": [str(replay_path)],
+                "replay_fractions": [1.0],
+                "replay_total": 20,
+            },
+        }
+
+        # Should not raise.
+        _setup_replay_multihead_data_loaders(config)
