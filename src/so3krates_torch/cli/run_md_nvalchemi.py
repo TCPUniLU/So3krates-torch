@@ -42,17 +42,9 @@ from nvalchemi.data.batch import Batch
 from nvalchemi.dynamics.base import DynamicsStage
 from nvalchemi.dynamics import initialize_velocities
 from nvalchemi.dynamics.hooks.logging import LoggingHook
-
-# NOTE: KB_EV and kinetic_energy_per_graph are not re-exported from
-# nvalchemi.dynamics / nvalchemi.dynamics.hooks in nvalchemi-toolkit 0.2.0
-# (unlike what an earlier draft of this module assumed). They live in the
-# nominally-private nvalchemi.dynamics.hooks._utils module — which is
-# exactly how nvalchemi's own integrators (nvt_langevin.py, npt.py,
-# nvt_nose_hoover.py, nph.py) and hooks (monitors.py) import them, so this
-# is the de facto stable access point for this release.
-from nvalchemi.dynamics.hooks._utils import KB_EV, kinetic_energy_per_graph
 from nvalchemi.dynamics.integrators.npt import NPT
 from nvalchemi.dynamics.integrators.nvt_langevin import NVTLangevin
+from nvalchemi.models.base import BaseModelMixin
 
 from so3krates_torch.calculator.nvalchemi_so3 import (
     NVAlchemiSO3LR,
@@ -64,24 +56,29 @@ from so3krates_torch.calculator.nvalchemi_so3 import (
 # ---------------------------------------------------------------------------
 AMU_TO_G_PER_CM3 = 1.66054  # (amu/Å³) → g/cm³
 BAR_TO_EV_PER_A3 = 6.2415e-7  # bar → eV/Å³
+KB_EV_PER_K = 8.617333262e-5  # Boltzmann constant [eV/K]
 
 
 def _temperature_per_graph(batch) -> torch.Tensor:
     """Instantaneous kinetic temperature per graph ``[B]`` in K.
 
-    Equipartition with 3N degrees of freedom (no constraint correction),
-    matching nvalchemi's own ``temperature_per_graph``.
+    Equipartition with 3N degrees of freedom (no constraint correction).
+    Computed locally (no nvalchemi private-module import): per-atom KE
+    ``0.5 * m_i |v_i|^2`` is scattered into a ``[B]`` tensor via
+    ``index_add_`` over ``batch.batch_idx``.
     """
-    ke = kinetic_energy_per_graph(
-        batch.velocities,
-        batch.atomic_masses,
-        batch.batch_idx,
-        batch.num_graphs,
-    ).squeeze(
-        -1
-    )  # [B] eV ("kinetic_energy_per_graph" returns [B, 1])
+    masses = batch.atomic_masses
+    if masses.dim() > 1:
+        masses = masses.squeeze(-1)
+    per_atom_ke = 0.5 * masses * (batch.velocities**2).sum(-1)  # [V]
+    ke = torch.zeros(
+        int(batch.num_graphs),
+        dtype=per_atom_ke.dtype,
+        device=per_atom_ke.device,
+    )
+    ke.index_add_(0, batch.batch_idx, per_atom_ke)  # [B]
     dof = 3.0 * batch.num_nodes_per_graph.to(ke.dtype)  # [B]
-    return 2.0 * ke / (dof * KB_EV)
+    return 2.0 * ke / (dof * KB_EV_PER_K)
 
 
 def _pressure_bar_per_graph(batch) -> torch.Tensor:
@@ -99,7 +96,7 @@ def _pressure_bar_per_graph(batch) -> torch.Tensor:
     vols = torch.abs(torch.linalg.det(cell))  # [B] Å³
     temps = _temperature_per_graph(batch)  # [B] K
     n_atoms = batch.num_nodes_per_graph.to(vols.dtype)  # [B]
-    p_kin = n_atoms * KB_EV * temps / vols  # [B] eV/Å³
+    p_kin = n_atoms * KB_EV_PER_K * temps / vols  # [B] eV/Å³
     # batch.stress is tensile-positive Cauchy stress (ASE convention);
     # P_vir = -tr(sigma)/3, as in ASE and LAMMPS `thermo press`.
     p_vir = -batch.stress.diagonal(dim1=-2, dim2=-1).sum(-1) / 3.0  # [B] eV/Å³
@@ -546,7 +543,7 @@ class _PrintHook:
 
 
 def _make_hooks(
-    model: NVAlchemiSO3LR,
+    model: BaseModelMixin,
     log_file: str,
     log_freq: int,
     dt_fs: float,
