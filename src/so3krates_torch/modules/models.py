@@ -547,6 +547,7 @@ class SO3LR(So3krates):
         use_pme: bool = False,
         pme_smearing: float = None,
         pme_mesh_spacing: float = None,
+        output_partial_charges: bool = False,
         *args,
         **kwargs,
     ):
@@ -555,6 +556,11 @@ class SO3LR(So3krates):
         # Store SO3LR-specific constructor arguments as attributes
         self.zbl_repulsion_bool = zbl_repulsion_bool
         self.electrostatic_energy_bool = electrostatic_energy_bool
+        # When True, partial charges (and the dipole) are computed and
+        # returned even if electrostatic_energy_bool is False — e.g. to feed
+        # an external electrostatics solver (NVAlchemi-native PME) without
+        # double-counting the model's own electrostatic energy.
+        self.output_partial_charges = output_partial_charges
         self.electrostatic_energy_scale = electrostatic_energy_scale
         self.dispersion_energy_bool = dispersion_energy_bool
         self.dispersion_energy_scale = dispersion_energy_scale
@@ -805,7 +811,15 @@ class SO3LR(So3krates):
                 num_nodes=inv_features.shape[0],
             )
         electrostatic_energies = None
-        if self.electrostatic_energy_bool:
+        partial_charges = None
+        dipole = None
+        # Compute charges/dipole when needed for the model's own
+        # electrostatics OR when explicitly requested as an output (the
+        # latter feeds an external solver without adding electrostatic
+        # energy here).
+        if self.electrostatic_energy_bool or getattr(
+            self, "output_partial_charges", False
+        ):
             partial_charges = self.partial_charges_output_block(
                 inv_features=inv_features,
                 atomic_numbers=data["atomic_numbers"],
@@ -820,6 +834,7 @@ class SO3LR(So3krates):
                 batch_segments=self.batch_segments,
                 num_graphs=self.num_graphs,
             )
+        if self.electrostatic_energy_bool:
             if getattr(self, "use_pme", False):
                 electrostatic_energies = self.pme_electrostatic_potential(
                     partial_charges=partial_charges,
@@ -916,10 +931,8 @@ class SO3LR(So3krates):
             hessian=hessian,
             edge_forces=edge_forces,
             zbl_atomic_energies=zbl_atomic_energies,
-            partial_charges=(
-                partial_charges if self.electrostatic_energy_bool else None
-            ),
-            dipole=dipole if self.electrostatic_energy_bool else None,
+            partial_charges=partial_charges,
+            dipole=dipole,
             hirshfeld_ratios=(
                 hirshfeld_ratios if self.dispersion_energy_bool else None
             ),
