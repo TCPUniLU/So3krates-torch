@@ -10,7 +10,7 @@ import torch
 pytest.importorskip("nvalchemi", reason="nvalchemi-toolkit not installed")
 pytest.importorskip("nvalchemiops", reason="nvalchemi-toolkit-ops missing")
 
-from ase.build import bulk, molecule
+from ase.build import bulk
 
 from nvalchemi.data.atomic_data import AtomicData
 from nvalchemi.data.batch import Batch
@@ -377,7 +377,13 @@ def _parity_calc(model, compute_stress: bool = False):
 
 
 def test_skin_does_not_change_energy():
-    """Edges in (r_lr, r_lr + skin] must be dropped before the model."""
+    """End-to-end energy-invariance smoke test: a list built at r_lr + skin
+    gives the same energy as one built at r_lr.
+
+    This alone does not prove the skin mask works — the model's LR kernels
+    also zero pairs beyond cutoff_lr internally. The discriminating guard
+    for the skin mask is ``test_adapt_input_drops_skin_shell_edges``.
+    """
     model = _make_so3lr(electrostatics_bool=True)
     w = NVAlchemiSO3LR(model).to(DEVICE)
     atoms = bulk("NaCl", "rocksalt", a=5.64)
@@ -450,9 +456,38 @@ def test_energy_only_mode_keeps_graph_to_positions():
     w.model_config.active_outputs = {"energy"}
     batch = _make_batch_with_nl(w, bulk("NaCl", "rocksalt", a=5.64))
     batch["positions"] = batch.positions.detach().requires_grad_(True)
-    e = w(batch)["energy"].sum()
+    out = w(batch)
+    # compute_force=False path: no forces/stress in the output.
+    assert out.get("forces") is None
+    assert out.get("stress") is None
+    e = out["energy"].sum()
     (g,) = torch.autograd.grad(e, batch.positions)
     assert torch.isfinite(g).all()
+
+
+def test_multi_graph_per_graph_charge_matches_calculator():
+    """A 2-graph batch with charges 0 and 1 gives per-graph energies equal
+    to the calculator run on each system alone (atoms.info['charge'])."""
+    model = _make_so3lr(electrostatics_bool=True)
+    w = NVAlchemiSO3LR(model).to(DEVICE)
+    a1 = bulk("NaCl", "rocksalt", a=5.6402)
+    a2 = bulk("NaCl", "rocksalt", a=5.8000)
+    a1.info["charge"] = 0
+    a2.info["charge"] = 1
+    out = w(_make_batch_with_nl_multi(w, [a1, a2]))
+    assert out["energy"].shape == (2, 1)
+
+    # Charge must matter for the check to be meaningful.
+    a2_neutral = a2.copy()
+    a2_neutral.info["charge"] = 0
+    e2_neutral = w(_make_batch_with_nl(w, a2_neutral))["energy"]
+    assert not torch.allclose(out["energy"][1], e2_neutral[0])
+
+    for i, atoms in enumerate((a1, a2)):
+        atoms.calc = _parity_calc(model)
+        assert out["energy"][i].item() == pytest.approx(
+            atoms.get_potential_energy(), abs=1e-5
+        )
 
 
 @pytest.mark.parametrize(
@@ -476,15 +511,33 @@ def test_lr_terms_match_calculator(lr_kwargs, periodic):
         atoms = bulk("NaCl", "rocksalt", a=5.64).repeat(2)
         atoms.rattle(0.05, seed=1)
     else:
-        atoms = molecule("H2O")
+        # Non-periodic 16-atom NaCl cluster: has pairs in (r_sr, r_lr)
+        # (LR-only edges) and in [r_lr, r_lr + skin) (skin shell), unlike
+        # a single small molecule where every pair is inside r_sr.
+        atoms = bulk("NaCl", "rocksalt", a=5.64, cubic=True).repeat((2, 1, 1))
+        atoms.pbc = False
         atoms.center(vacuum=6.0)
-    out = w(_make_batch_with_nl(w, atoms, cutoff=w.r_lr + 0.5))
+        atoms.rattle(0.05, seed=1)
+    batch = _make_batch_with_nl(w, atoms, cutoff=w.r_lr + 0.5)
+    # Guard against the case silently becoming vacuous: the built list
+    # must contain LR-only edges and skin-shell edges.
+    d = w.adapt_input(batch)
+    n_all = batch.neighbor_list.shape[0]
+    n_lr = d["edge_index_lr"].shape[1]
+    n_sr = d["edge_index"].shape[1]
+    assert n_lr > n_sr, "no LR-only edges (r_sr <= r < r_lr)"
+    assert n_all > n_lr, "no skin-shell edges (r_lr <= r < r_lr + skin)"
+
+    out = w(batch)
     atoms.calc = _parity_calc(model, compute_stress=periodic)
     assert out["energy"].item() == pytest.approx(
         atoms.get_potential_energy(), abs=1e-5
     )
+    f_ref = atoms.get_forces()
+    # Forces must be well above atol, else the force check is vacuous.
+    assert np.abs(f_ref).max() > 1e-3
     np.testing.assert_allclose(
-        out["forces"].detach().numpy(), atoms.get_forces(), atol=1e-5
+        out["forces"].detach().numpy(), f_ref, atol=1e-5
     )
     if periodic:
         from ase.stress import voigt_6_to_full_3x3_stress
