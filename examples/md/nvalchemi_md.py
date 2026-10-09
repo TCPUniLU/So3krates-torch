@@ -31,17 +31,15 @@ import argparse
 import torch
 from ase.io import read as ase_read
 
-from nvalchemi.data.atomic_data import AtomicData
 from nvalchemi.data.batch import Batch
-from nvalchemi.dynamics.base import DynamicsStage
 from nvalchemi.dynamics.integrators.npt import NPT
 from nvalchemi.dynamics.integrators.nvt_langevin import NVTLangevin
-from nvalchemi.hooks.neighbor_list import NeighborListHook
 
 from so3krates_torch.calculator.nvalchemi_so3 import (
     NVAlchemiSO3LR,
     build_nvalchemi_pme_model,
 )
+from so3krates_torch.cli.run_md_nvalchemi import atoms_to_data
 
 
 def main() -> None:
@@ -56,6 +54,12 @@ def main() -> None:
     )
     p.add_argument("--steps", type=int, default=1000)
     p.add_argument("--device", default="cuda")
+    p.add_argument(
+        "--skin",
+        type=float,
+        default=0.5,
+        help="Verlet skin [Å] for the GPU-native neighbor list (Å)",
+    )
     args = p.parse_args()
 
     dtype = torch.float64
@@ -74,35 +78,22 @@ def main() -> None:
             alpha=None,  # Ewald split [1/Å]; None = auto-estimate
             spline_order=4,
             accuracy=1e-6,
+            skin=args.skin,
         )
     else:
         if args.electrostatics == "none":
             raw.electrostatic_energy_bool = False
-        model = NVAlchemiSO3LR(raw, electrostatics="model")
+        model = NVAlchemiSO3LR(raw, electrostatics="model", skin=args.skin)
     model = model.to(device=args.device, dtype=dtype).eval()
 
     # --- Build a (single-system) batch -------------------------------------
     atoms = ase_read(args.atoms)
-    n = len(atoms)
-    data = AtomicData.from_atoms(
-        atoms, device=args.device, dtype=dtype
-    ).model_copy(
-        update={
-            "forces": torch.zeros(n, 3, dtype=dtype, device=args.device),
-            "energy": torch.zeros(1, 1, dtype=dtype, device=args.device),
-            "stress": torch.zeros(1, 3, 3, dtype=dtype, device=args.device),
-        }
-    )
+    data = atoms_to_data(atoms, args.device, dtype)
     batch = Batch.from_data_list([data])
 
-    # --- Neighbor list rebuilt each step on the GPU ------------------------
-    hooks = [
-        NeighborListHook(
-            config=model.model_config.neighbor_config,
-            skin=0.5,
-            stage=DynamicsStage.BEFORE_COMPUTE,
-        )
-    ]
+    # --- Neighbor list: the model's own hooks rebuild it on the GPU each
+    # step, out to its neighbor_config.cutoff + skin (set above). --------
+    hooks = model.make_neighbor_hooks()
 
     # --- Integrator (dt / time constants in fs) ----------------------------
     if args.ensemble == "nvt":

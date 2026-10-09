@@ -196,6 +196,76 @@ torchkrates-eval --model_path my_model.model --data_path test_set.xyz
 
 ---
 
+### `torchkrates-md-nvalchemi` — GPU-native MD with NVAlchemi
+
+Run NVT/NPT molecular dynamics directly on GPU using [NVAlchemi](https://github.com/NVIDIA/nvalchemi)'s integrators and native cell-list neighbor search, without going through LAMMPS. Requires **Python ≥ 3.11** and the `nvalchemi` extra:
+
+```bash
+pip install ".[nvalchemi]"
+```
+
+This pins `nvalchemi-toolkit[ase]>=0.2,<0.3`; the wrapper (`so3krates_torch.calculator.nvalchemi_so3`) targets the 0.2.x API and is not expected to work with 0.1.x or 0.3.x.
+
+NVT example:
+
+```bash
+torchkrates-md-nvalchemi \
+    --model model.pt \
+    --atoms NaCl.xyz \
+    --ensemble nvt \
+    --temperature 300 \
+    --steps 10000
+```
+
+NPT example (requires a periodic structure file, e.g. extended-XYZ with a `Lattice=` header, POSCAR, or CIF):
+
+```bash
+torchkrates-md-nvalchemi \
+    --model model.pt \
+    --atoms NaCl.xyz \
+    --ensemble npt \
+    --temperature 300 \
+    --pressure 1.0 \
+    --steps 10000
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--model` | *required* | Path to a trained model (`.pt`) |
+| `--atoms` | *required* | ASE-readable input structure |
+| `--index` | `-1` | ASE frame selection; `-1` runs the last frame, `:` runs every frame as an independent system in one batch |
+| `--ensemble` | `nvt` | `nvt` (Langevin) or `npt` (MTK barostat) |
+| `--temperature` | `300.0` | Temperature [K] |
+| `--pressure` | `1.0` | Pressure [bar], NPT only |
+| `--dt` | `0.5` | Time step [fs] |
+| `--steps` | `10000` | Number of MD steps |
+| `--skin` | `0.5` | Verlet skin [Å] for the GPU-native neighbor list |
+| `--electrostatics` | `model` | `model`, `nvalchemi`, or `none` (see below) |
+| `--pressure-coupling` | `isotropic` | `isotropic`, `anisotropic`, or `triclinic` (NPT only) |
+| `--skip-vel-init` | `False` | Keep the velocities already stored in the structure file instead of (re-)sampling Maxwell-Boltzmann at `--temperature` |
+| `--compile` | `False` | `torch.compile` the inner model; raises on CPU for long-range models (unsupported Inductor lowering) |
+| `--seed` | `42` | Langevin RNG seed (NVT only) |
+| `--log-file` | `md_log.csv` | Output CSV log path |
+| `--log-freq` | `100` | Log every N steps |
+
+**Electrostatics semantics.** `--electrostatics` selects which long-range Coulomb term is active, and the two non-`none` options are *different, non-interchangeable* electrostatics models:
+
+- `model` (default, **recommended**): the model computes its own electrostatics exactly as trained — damped real-space erf-Coulomb (`use_pme: false`) or the model's own torch-pme (`use_pme: true`). This is the validated path.
+- `nvalchemi` (**experimental**): the short-range model instead emits partial charges only, and NVAlchemi's GPU-native PME (full Ewald) supplies the Coulomb energy from those charges. Only meaningful for a model trained with `use_pme: true`, and even then it does **not** reproduce the model's own torch-pme energy numerically — it is a separate backend. Known limitations pending a later phase:
+  - in NPT, the Coulomb contribution to the stress/virial is currently **missing**, so the barostat does not see the correct pressure;
+  - PME forces omit the charge-response (`dq/dr`) term, so they are not fully conservative.
+
+  Use `model` unless you specifically need NVAlchemi-native PME and have validated it for your use case.
+- `none`: long-range electrostatics disabled entirely.
+
+**Stress and pressure convention.** The model emits stress in the ASE convention (tensile-positive Cauchy stress); nvalchemi-toolkit 0.2 uses the same convention, so it is passed through unchanged. The reported pressure is `P = N kB T / V − tr(σ)/3`, matching ASE and LAMMPS's `thermo press` so the two engines can be compared directly at the same configuration.
+
+**Charge and spin.** Total charge is read from `atoms.info["charge"]` (an integer, the same key `TorchkratesCalculator` uses); total spin from the `AtomicData` `spin` field (the total spin *S*, not the multiplicity) — `AtomicData.from_atoms` does not populate it from ASE automatically, so set it explicitly if your model uses spin embedding.
+
+See `examples/md/nvalchemi_md.py` for the equivalent programmatic API, including how to configure NVAlchemi-native PME via `build_nvalchemi_pme_model(...)`.
+
+---
+
 ### `torchkrates-metric` — Error Metrics
 
 Compute error metrics over an ASE-readable dataset. Prints a table with MAE and RMSE per atom for each property.
