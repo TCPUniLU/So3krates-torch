@@ -69,10 +69,40 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
           ``electrostatic_energy_bool=False`` and ``output_partial_charges=True``
           (use :func:`build_nvalchemi_pme_model`, which sets this up and
           composes the PME step).
+    skin:
+        Verlet skin (Å) forwarded to ``model_config.neighbor_config.skin``,
+        so :meth:`make_neighbor_hooks` builds the neighbor list out to
+        ``r_lr + skin`` and only rebuilds it once an atom has moved more
+        than ``skin / 2``.  ``adapt_input`` drops every pair with
+        ``r >= r_lr`` (the skin shell) before calling the model, so the
+        result does not depend on ``skin``.  Default ``0.0`` (rebuild every
+        step).
+
+    Notes
+    -----
+    *Active outputs.*  ``forward`` requests forces / stress from the model
+    only when they are in ``model_config.active_outputs`` (e.g. NVT
+    integrators do not need stress).  With neither active, the wrapper runs
+    an energy-only forward and returns an ``energy`` that stays attached to
+    ``data.positions`` (used as given, not cloned, when it already requires
+    grad), so autograd pipeline groups can differentiate through it.
+
+    *Charge and spin.*  The total charge is read from ``data.charge``
+    (``[B, 1]``; :meth:`AtomicData.from_atoms` fills it from the integer
+    ``atoms.info["charge"]``, the same key :class:`TorchkratesCalculator`
+    uses).  The total spin is read from ``data.spin`` (``[B, 1]``) and is
+    interpreted like the calculator's ``atoms.info["total_spin"]``: the
+    total spin *S* (the model uses ``2 * S`` unpaired electrons), **not**
+    the multiplicity.  ``AtomicData.from_atoms`` does not populate
+    ``spin``; set it explicitly (e.g. ``data.spin = torch.tensor([[S]])``)
+    for spin-embedding models.  Both default to 0 when absent.
     """
 
     def __init__(
-        self, model: nn.Module, electrostatics: str = "model"
+        self,
+        model: nn.Module,
+        electrostatics: str = "model",
+        skin: float = 0.0,
     ) -> None:
         super().__init__()
         if electrostatics not in ("model", "nvalchemi"):
@@ -135,6 +165,7 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
                 cutoff=self.r_lr,
                 format=NeighborListFormat.COO,
                 half_list=False,
+                skin=skin,
             ),
         )
 
@@ -166,25 +197,40 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
         dtype = self._cached_dtype
         device = data.positions.device
 
-        # ── Positions (requires_grad for force autograd) ──────────────
-        positions = data.positions.to(dtype=dtype).clone()
-        positions.requires_grad_(True)
+        # ── Positions ─────────────────────────────────────────────────
+        # A tensor that already requires grad (pipeline autograd group) is
+        # used as-is so the caller can differentiate through it.  Otherwise
+        # clone, so neither our requires_grad_ nor prepare_graph's (which
+        # always enables grad on data["positions"]) mutates a caller leaf.
+        active = self.model_config.active_outputs
+        needs_grad = bool({"forces", "stress"} & active)
+        positions = data.positions.to(dtype=dtype)
+        if not positions.requires_grad:
+            positions = positions.clone()
+            if needs_grad:
+                positions.requires_grad_(True)
 
         # ── Neighbor list: nvalchemi COO [E, 2] → [2, E] ─────────────
         # neighbor_list_shifts: integer PBC image indices [E, 3]
-        edge_index_lr = data.neighbor_list.long().T  # [2, E]
-        ni, nj = edge_index_lr[0], edge_index_lr[1]
-
-        # ── Shift vectors (Cartesian) ─────────────────────────────────
-        # neighbor_list_shifts @ cell[graph_of_sender] gives the
-        # Cartesian offset for the periodic image.
+        edge_index_all = data.neighbor_list.long().T  # [2, E]
+        E = edge_index_all.shape[1]
         nl_shifts = getattr(data, "neighbor_list_shifts", None)
-        E = ni.shape[0]
         if nl_shifts is not None:
             nl_shifts = nl_shifts.to(dtype=dtype, device=device)
         else:
             nl_shifts = torch.zeros(E, 3, dtype=dtype, device=device)
 
+        # Drop sentinel / padding edges (endpoint == n_atoms) — they would
+        # index out of bounds in the gathers below.
+        n_atoms = positions.shape[0]
+        valid = (edge_index_all[0] < n_atoms) & (edge_index_all[1] < n_atoms)
+        edge_index_all = edge_index_all[:, valid]
+        nl_shifts = nl_shifts[valid]
+        ni, nj = edge_index_all[0], edge_index_all[1]
+
+        # ── Shift vectors (Cartesian) ─────────────────────────────────
+        # neighbor_list_shifts @ cell[graph_of_sender] gives the
+        # Cartesian offset for the periodic image.
         cell_raw = getattr(data, "cell", None)
         B = data.num_graphs
         if cell_raw is not None:
@@ -205,11 +251,16 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
             "eb,ebc->ec", nl_shifts, cell[batch_per_edge]
         )  # [E, 3]
 
-        # Full displacement vectors (i→j, PBC-wrapped) [E, 3]
-        vectors_lr = positions[nj] - positions[ni] + shifts
-
         # ── SR / LR split by distance ─────────────────────────────────
-        lengths_lr = torch.linalg.norm(vectors_lr, dim=1)
+        # NeighborListHook builds out to cutoff + skin; drop the skin
+        # shell so the model sees exactly the pairs with r < r_lr (as
+        # the ASE calculator path does).  The masks only select edges —
+        # prepare_graph recomputes the vectors with autograd.
+        with torch.no_grad():
+            # Full displacement vectors (i→j, PBC-wrapped) [E, 3]
+            vectors_all = positions[nj] - positions[ni] + shifts
+            lengths_lr = torch.linalg.norm(vectors_all, dim=1)
+        lr_mask = lengths_lr < self.r_lr
         sr_mask = lengths_lr < self.r_sr
 
         # prepare_graph (input_convention="positions") computes edge vectors
@@ -218,6 +269,9 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
         # pre-computed vectors. unit_shifts are needed for the stress path.
         shifts_sr = shifts[sr_mask]  # [E_sr, 3] Cartesian
         unit_shifts_sr = nl_shifts[sr_mask]  # [E_sr, 3] integer
+
+        charge = getattr(data, "charge", None)
+        spin = getattr(data, "spin", None)
 
         d: dict[str, Any] = {
             # One-hot via lookup table — single GPU op, no CPU round-trip
@@ -230,20 +284,28 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
             "ptr": data.batch_ptr.long(),
             # Head index per graph (0 for single-head models)
             "head": torch.zeros(B, dtype=torch.long, device=device),
-            "edge_index": edge_index_lr[:, sr_mask],  # [2, E_sr]
+            "edge_index": edge_index_all[:, sr_mask],  # [2, E_sr]
             "shifts": shifts_sr,  # [E_sr, 3]
             "unit_shifts": unit_shifts_sr,  # [E_sr, 3]
             # PME and cell-dependent terms need real positions and cell
             "positions": positions,  # [N, 3]
             "cell": cell,  # [B, 3, 3]
-            # Required by electrostatic output block; zero charge / spin
-            "total_charge": torch.zeros(B, dtype=dtype, device=device),
-            "total_spin": torch.zeros(B, dtype=dtype, device=device),
+            # Total charge / spin per graph (see class docstring).
+            "total_charge": (
+                charge.reshape(B).to(dtype=dtype, device=device)
+                if charge is not None
+                else torch.zeros(B, dtype=dtype, device=device)
+            ),
+            "total_spin": (
+                spin.reshape(B).to(dtype=dtype, device=device)
+                if spin is not None
+                else torch.zeros(B, dtype=dtype, device=device)
+            ),
         }
         if self.has_lr:
-            d["edge_index_lr"] = edge_index_lr  # [2, E_lr]
-            d["shifts_lr"] = shifts  # [E_lr, 3]
-            d["unit_shifts_lr"] = nl_shifts  # [E_lr, 3]
+            d["edge_index_lr"] = edge_index_all[:, lr_mask]  # [2, E_lr]
+            d["shifts_lr"] = shifts[lr_mask]  # [E_lr, 3]
+            d["unit_shifts_lr"] = nl_shifts[lr_mask]  # [E_lr, 3]
 
         return d
 
@@ -255,17 +317,20 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
         out = {
             # nvalchemi expects [B, 1]; LoggingHook squeezes to [B]
             "energy": raw_output["energy"].unsqueeze(-1),
-            "forces": raw_output["forces"],
+            # None when not requested (inactive in model_config).
+            "forces": raw_output.get("forces"),
             # The model emits ASE-convention stress (+dE/de / V).
             # nvalchemi-toolkit>=0.2 uses the same convention
             # (tensile-positive Cauchy stress, virial W = -stress * V),
             # so it is passed through unchanged.
-            "stress": raw_output["stress"],  # [B, 3, 3]
+            "stress": raw_output.get("stress"),  # [B, 3, 3]
         }
         if self.electrostatics == "nvalchemi":
             # Per-atom charges [N], wired into the PME step downstream.
             out["charges"] = raw_output["partial_charges"].reshape(-1)
-        return out
+        # Base mapper keeps only active & supported keys (inactive /
+        # uncomputed ones come back as None).
+        return super().adapt_output(out, data)
 
     # ------------------------------------------------------------------
     # Forward
@@ -274,8 +339,13 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
     def forward(
         self, data: AtomicData | Batch, **kwargs: Any
     ) -> dict[str, Any]:
+        active = self.model_config.active_outputs & self.model_config.outputs
         model_inputs = self.adapt_input(data, **kwargs)
-        raw = self.model(model_inputs, compute_force=True, compute_stress=True)
+        raw = self.model(
+            model_inputs,
+            compute_force="forces" in active,
+            compute_stress="stress" in active,
+        )
         return self.adapt_output(raw, data)
 
 

@@ -3,6 +3,7 @@
 Skipped automatically when nvalchemi is not installed.
 """
 
+import numpy as np
 import pytest
 import torch
 
@@ -36,12 +37,16 @@ def _make_so3lr(
     use_pme: bool = False,
     electrostatics_bool: bool = None,
     output_partial_charges: bool = False,
+    dispersion_bool: bool = False,
+    zbl_bool: bool = False,
 ) -> SO3LR:
     """Minimal SO3LR model for testing.
 
     ``electrostatics_bool`` defaults to ``use_pme`` (so a short-range-only
     model has electrostatics off); pass it explicitly to enable the
     real-space erf-Coulomb electrostatics with ``use_pme=False``.
+    ``dispersion_bool`` / ``zbl_bool`` switch on the real-space dispersion
+    and ZBL repulsion terms (off by default).
     """
     es = use_pme if electrostatics_bool is None else electrostatics_bool
     model = SO3LR(
@@ -60,8 +65,11 @@ def _make_so3lr(
         pme_mesh_spacing=0.5 if use_pme else None,
         electrostatic_energy_bool=es,
         output_partial_charges=output_partial_charges,
-        dispersion_energy_bool=False,
-        zbl_repulsion_bool=False,
+        dispersion_energy_bool=dispersion_bool,
+        # DispersionInteraction requires a damping width whenever
+        # cutoff_lr is set (SO3LR always passes r_max_lr).
+        dispersion_energy_cutoff_lr_damping=1.0 if dispersion_bool else None,
+        zbl_repulsion_bool=zbl_bool,
     ).to(dtype=DTYPE, device=DEVICE)
     model.eval()
     return model
@@ -352,13 +360,155 @@ def test_native_pme_md_runs_on_cpu():
 
 
 # ---------------------------------------------------------------------------
+# Active outputs, skin, charge/spin, energy-only mode
+# ---------------------------------------------------------------------------
+
+
+def _parity_calc(model, compute_stress: bool = False):
+    """TorchkratesCalculator with the same args as the parity tests."""
+    return TorchkratesCalculator(
+        models=[model],
+        device=str(DEVICE),
+        dtype=DTYPE,
+        r_max=model.r_max,
+        r_max_lr=model.r_max_lr,
+        compute_stress=compute_stress,
+    )
+
+
+def test_skin_does_not_change_energy():
+    """Edges in (r_lr, r_lr + skin] must be dropped before the model."""
+    model = _make_so3lr(electrostatics_bool=True)
+    w = NVAlchemiSO3LR(model).to(DEVICE)
+    atoms = bulk("NaCl", "rocksalt", a=5.64)
+    e0 = w(_make_batch_with_nl(w, atoms, cutoff=w.r_lr))["energy"]
+    e1 = w(_make_batch_with_nl(w, atoms, cutoff=w.r_lr + 1.0))["energy"]
+    torch.testing.assert_close(e0, e1)
+
+
+def test_adapt_input_drops_skin_shell_edges():
+    """The LR edge set handed to the model is identical whether the list
+    was built at r_lr or at r_lr + skin. (The model's LR kernels also zero
+    pairs beyond cutoff_lr internally, so the energy test above cannot
+    detect a missing mask on its own.)"""
+    w = NVAlchemiSO3LR(_make_so3lr(electrostatics_bool=True))
+    atoms = bulk("NaCl", "rocksalt", a=5.64)
+    d0 = w.adapt_input(_make_batch_with_nl(w, atoms, cutoff=w.r_lr))
+    d1 = w.adapt_input(_make_batch_with_nl(w, atoms, cutoff=w.r_lr + 1.0))
+    assert d1["edge_index_lr"].shape == d0["edge_index_lr"].shape
+    assert d1["shifts_lr"].shape == d0["shifts_lr"].shape
+    assert d1["unit_shifts_lr"].shape == d0["unit_shifts_lr"].shape
+    ii, jj = d1["edge_index_lr"]
+    pos = d1["positions"]
+    lengths = torch.linalg.norm(pos[jj] - pos[ii] + d1["shifts_lr"], dim=1)
+    assert (lengths < w.r_lr).all()
+
+
+def test_skin_is_forwarded_to_neighbor_config():
+    """``skin`` reaches NeighborConfig so make_neighbor_hooks uses it."""
+    w = NVAlchemiSO3LR(_make_so3lr(), skin=0.7)
+    assert w.model_config.neighbor_config.skin == pytest.approx(0.7)
+    (hook,) = w.make_neighbor_hooks()
+    assert hook.skin == pytest.approx(0.7)
+    assert NVAlchemiSO3LR(_make_so3lr()).model_config.neighbor_config.skin == 0
+
+
+def test_total_charge_is_forwarded():
+    """atoms.info['charge'] reaches the model like in TorchkratesCalculator."""
+    model = _make_so3lr(electrostatics_bool=True)
+    w = NVAlchemiSO3LR(model).to(DEVICE)
+    atoms = bulk("NaCl", "rocksalt", a=5.64)
+    neutral = w(_make_batch_with_nl(w, atoms))["energy"]
+    atoms.info["charge"] = 1
+    charged = w(_make_batch_with_nl(w, atoms))["energy"]
+    assert not torch.allclose(neutral, charged)
+    atoms.calc = _parity_calc(model)
+    assert charged.item() == pytest.approx(
+        atoms.get_potential_energy(), abs=1e-4
+    )
+
+
+def test_nvt_outputs_skip_stress():
+    """With stress not active, stress is not requested from the model."""
+    model = _make_so3lr(electrostatics_bool=False)
+    w = NVAlchemiSO3LR(model).to(DEVICE)
+    w.model_config.active_outputs = {"energy", "forces"}
+    calls = []
+    orig = w.model.forward
+    w.model.forward = lambda *a, **k: calls.append(k) or orig(*a, **k)
+    out = w(_make_batch_with_nl(w, bulk("NaCl", "rocksalt", a=5.64)))
+    assert calls[-1]["compute_stress"] is False
+    assert out.get("stress") is None
+    assert out["forces"] is not None
+
+
+def test_energy_only_mode_keeps_graph_to_positions():
+    """Autograd pipeline groups differentiate energy w.r.t. data.positions;
+    the wrapper must not clone/detach them."""
+    model = _make_so3lr(electrostatics_bool=False)
+    w = NVAlchemiSO3LR(model).to(DEVICE)
+    w.model_config.active_outputs = {"energy"}
+    batch = _make_batch_with_nl(w, bulk("NaCl", "rocksalt", a=5.64))
+    batch["positions"] = batch.positions.detach().requires_grad_(True)
+    e = w(batch)["energy"].sum()
+    (g,) = torch.autograd.grad(e, batch.positions)
+    assert torch.isfinite(g).all()
+
+
+@pytest.mark.parametrize(
+    "lr_kwargs",
+    [
+        dict(electrostatics_bool=True),  # erf-Coulomb
+        dict(electrostatics_bool=True, dispersion_bool=True),
+        dict(electrostatics_bool=False, dispersion_bool=True),
+        dict(electrostatics_bool=True, zbl_bool=True),
+    ],
+    ids=["coulomb", "coulomb+disp", "disp", "coulomb+zbl"],
+)
+@pytest.mark.parametrize("periodic", [True, False], ids=["pbc", "molecule"])
+def test_lr_terms_match_calculator(lr_kwargs, periodic):
+    """Real-space LR terms through the wrapper == ASE calculator path
+    (energy, forces, and stress for PBC), with a nonzero skin."""
+    pytest.importorskip("matscipy", reason="matscipy needed for neighbor list")
+    model = _make_so3lr(**lr_kwargs)
+    w = NVAlchemiSO3LR(model, skin=0.5).to(DEVICE)
+    if periodic:
+        atoms = bulk("NaCl", "rocksalt", a=5.64).repeat(2)
+        atoms.rattle(0.05, seed=1)
+    else:
+        atoms = molecule("H2O")
+        atoms.center(vacuum=6.0)
+    out = w(_make_batch_with_nl(w, atoms, cutoff=w.r_lr + 0.5))
+    atoms.calc = _parity_calc(model, compute_stress=periodic)
+    assert out["energy"].item() == pytest.approx(
+        atoms.get_potential_energy(), abs=1e-5
+    )
+    np.testing.assert_allclose(
+        out["forces"].detach().numpy(), atoms.get_forces(), atol=1e-5
+    )
+    if periodic:
+        from ase.stress import voigt_6_to_full_3x3_stress
+
+        np.testing.assert_allclose(
+            out["stress"].detach().numpy()[0],
+            voigt_6_to_full_3x3_stress(atoms.get_stress()),
+            atol=1e-6,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Helper: build AtomicData with neighbor list set, then batch
 # ---------------------------------------------------------------------------
 
 
-def _make_data_with_nl(wrapper: NVAlchemiSO3LR, atoms) -> AtomicData:
-    """Build a single nvalchemi AtomicData with a pre-built neighbor list."""
-    import numpy as np
+def _make_data_with_nl(
+    wrapper: NVAlchemiSO3LR, atoms, cutoff: float | None = None
+) -> AtomicData:
+    """Build a single nvalchemi AtomicData with a pre-built neighbor list.
+
+    ``cutoff`` defaults to ``wrapper.r_lr``; pass a larger value to emulate
+    the ``cutoff + skin`` list that ``NeighborListHook`` builds.
+    """
     from nvalchemiops.torch.neighbors.cell_list import cell_list
 
     pos = torch.tensor(atoms.positions, dtype=DTYPE)
@@ -368,7 +518,7 @@ def _make_data_with_nl(wrapper: NVAlchemiSO3LR, atoms) -> AtomicData:
 
     nm, _num_nb, nm_shifts = cell_list(
         pos,
-        wrapper.r_lr,
+        wrapper.r_lr if cutoff is None else cutoff,
         cell=cell_t,
         pbc=pbc_t,
         return_neighbor_list=True,
@@ -388,13 +538,22 @@ def _make_data_with_nl(wrapper: NVAlchemiSO3LR, atoms) -> AtomicData:
     )
 
 
-def _make_batch_with_nl(wrapper: NVAlchemiSO3LR, atoms) -> Batch:
+def _make_batch_with_nl(
+    wrapper: NVAlchemiSO3LR, atoms, cutoff: float | None = None
+) -> Batch:
     """Build a single-graph nvalchemi Batch with a pre-built neighbor list."""
-    return Batch.from_data_list([_make_data_with_nl(wrapper, atoms)])
+    return Batch.from_data_list(
+        [_make_data_with_nl(wrapper, atoms, cutoff=cutoff)]
+    )
 
 
-def _make_batch_with_nl_multi(wrapper: NVAlchemiSO3LR, atoms_list) -> Batch:
+def _make_batch_with_nl_multi(
+    wrapper: NVAlchemiSO3LR, atoms_list, cutoff: float | None = None
+) -> Batch:
     """Build a multi-graph Batch (one entry per Atoms) with neighbor lists."""
     return Batch.from_data_list(
-        [_make_data_with_nl(wrapper, atoms) for atoms in atoms_list]
+        [
+            _make_data_with_nl(wrapper, atoms, cutoff=cutoff)
+            for atoms in atoms_list
+        ]
     )
