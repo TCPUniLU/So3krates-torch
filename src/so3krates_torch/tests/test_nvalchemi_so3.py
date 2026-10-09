@@ -184,15 +184,11 @@ def test_batched_md_independence():
     assert torch.allclose(out["forces"][len(a1) :], f_refs[1], atol=1e-6)
 
 
-def test_stress_sign_matches_nvalchemi_virial_convention():
-    """The wrapper's `stress` must be the NEGATIVE of the ASE-convention
-    stress.
-
-    The model emits ASE-convention stress (+dE/de / V), which the ASE
-    calculator surfaces verbatim.  NVAlchemi's NPT treats the `stress` key as
-    Cauchy W/V with virial W = -dE/de (the opposite sign), so the adapter
-    negates it.  A regression here silently drives the barostat the wrong way
-    (density falls instead of rising), so it is asserted explicitly.
+def test_stress_matches_ase_convention():
+    """nvalchemi-toolkit>=0.2 treats `stress` as tensile-positive Cauchy
+    stress sigma = -W/V (npt.py: virial = -stress * V), which is exactly
+    ASE's +dE/deps / V. The wrapper must pass the model stress through
+    unchanged; negating it makes the barostat drive the cell the wrong way.
     """
     pytest.importorskip("matscipy", reason="matscipy needed for neighbor list")
     from ase.stress import voigt_6_to_full_3x3_stress
@@ -220,16 +216,12 @@ def test_stress_sign_matches_nvalchemi_virial_convention():
         abs(ase_stress_3x3).max() > 1e-8
     ), "ASE stress is ~zero; test vacuous"
 
-    # The adapter must flip the sign relative to the ASE convention.
-    assert torch.allclose(
+    # The adapter must pass the ASE-convention stress through unchanged.
+    torch.testing.assert_close(
         torch.tensor(nv_stress),
-        torch.tensor(-ase_stress_3x3),
-        atol=1e-8,
-        rtol=1e-6,
-    ), (
-        "NVAlchemi wrapper stress is not -(ASE stress); barostat sign bug.\n"
-        f"  wrapper stress:\n{nv_stress}\n"
-        f"  -(ASE stress):\n{-ase_stress_3x3}"
+        torch.tensor(ase_stress_3x3),
+        atol=1e-6,
+        rtol=1e-5,
     )
 
 

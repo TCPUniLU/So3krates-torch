@@ -61,8 +61,8 @@ KB_EV_PER_K = 8.617333262e-5  # Boltzmann constant [eV/K]
 def _pressure_bar_per_graph(batch) -> torch.Tensor:
     """Instantaneous scalar pressure per graph ``[B]`` in bar.
 
-    ``P = (2/3) KE / V + (1/3) tr(σ)`` where ``σ = batch.stress`` is the
-    NVAlchemi Cauchy stress (virial / V, in eV/Å³, the sign convention the
+    ``P = (2/3) KE / V - (1/3) tr(σ)`` where ``σ = batch.stress`` is the
+    tensile-positive Cauchy stress (ASE convention, the sign convention the
     adapter already emits).  The kinetic term equals ``N kB T / V`` exactly,
     because ``temperature_per_graph`` defines T with 3N degrees of freedom.
 
@@ -80,8 +80,9 @@ def _pressure_bar_per_graph(batch) -> torch.Tensor:
     )  # [B] K
     n_atoms = batch.num_nodes_per_graph.to(vols.dtype)  # [B]
     p_kin = n_atoms * KB_EV_PER_K * temps / vols  # [B] eV/Å³
-    # batch.stress is the Cauchy stress σ = virial/V (eV/Å³); P_vir = tr(σ)/3.
-    p_vir = batch.stress.diagonal(dim1=-2, dim2=-1).sum(-1) / 3.0  # [B] eV/Å³
+    # batch.stress is tensile-positive Cauchy stress (ASE convention);
+    # P_vir = -tr(sigma)/3, as in ASE and LAMMPS `thermo press`.
+    p_vir = -batch.stress.diagonal(dim1=-2, dim2=-1).sum(-1) / 3.0  # [B] eV/Å³
     return (p_kin + p_vir) / BAR_TO_EV_PER_A3  # [B] bar
 
 
