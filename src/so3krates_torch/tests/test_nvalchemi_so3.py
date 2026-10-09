@@ -7,6 +7,7 @@ import pytest
 import torch
 
 pytest.importorskip("nvalchemi", reason="nvalchemi-toolkit not installed")
+pytest.importorskip("nvalchemiops", reason="nvalchemi-toolkit-ops missing")
 
 from ase.build import bulk, molecule
 

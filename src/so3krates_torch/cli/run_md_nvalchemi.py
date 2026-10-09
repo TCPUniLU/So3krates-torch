@@ -5,7 +5,7 @@ list is managed automatically by NVAlchemi's NeighborListHook.
 
 Usage (NVT)::
 
-    python run_md_nvalchemi.py \\
+    torchkrates-md-nvalchemi \\
         --model  model.pt \\
         --atoms  NaCl.xyz \\
         --ensemble nvt \\
@@ -14,7 +14,7 @@ Usage (NVT)::
 
 Usage (NPT)::
 
-    python run_md_nvalchemi.py \\
+    torchkrates-md-nvalchemi \\
         --model  model.pt \\
         --atoms  NaCl.xyz \\
         --ensemble npt \\
