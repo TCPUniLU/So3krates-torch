@@ -1,7 +1,8 @@
 """NVT / NPT molecular dynamics using NVAlchemi + So3krates-torch.
 
 Runs GPU-native MD with a trained So3krates / SO3LR model.  The neighbor
-list is managed automatically by NVAlchemi's NeighborListHook.
+list is managed automatically by the hooks the model's own
+``make_neighbor_hooks()`` builds (NVAlchemi's ``NeighborListHook``).
 
 Usage (NVT)::
 
@@ -40,10 +41,18 @@ from nvalchemi.data.atomic_data import AtomicData
 from nvalchemi.data.batch import Batch
 from nvalchemi.dynamics.base import DynamicsStage
 from nvalchemi.dynamics import initialize_velocities
-from nvalchemi.dynamics.hooks.logging import LoggingHook, temperature_per_graph
+from nvalchemi.dynamics.hooks.logging import LoggingHook
+
+# NOTE: KB_EV and kinetic_energy_per_graph are not re-exported from
+# nvalchemi.dynamics / nvalchemi.dynamics.hooks in nvalchemi-toolkit 0.2.0
+# (unlike what an earlier draft of this module assumed). They live in the
+# nominally-private nvalchemi.dynamics.hooks._utils module — which is
+# exactly how nvalchemi's own integrators (nvt_langevin.py, npt.py,
+# nvt_nose_hoover.py, nph.py) and hooks (monitors.py) import them, so this
+# is the de facto stable access point for this release.
+from nvalchemi.dynamics.hooks._utils import KB_EV, kinetic_energy_per_graph
 from nvalchemi.dynamics.integrators.npt import NPT
 from nvalchemi.dynamics.integrators.nvt_langevin import NVTLangevin
-from nvalchemi.hooks.neighbor_list import NeighborListHook
 
 from so3krates_torch.calculator.nvalchemi_so3 import (
     NVAlchemiSO3LR,
@@ -55,7 +64,24 @@ from so3krates_torch.calculator.nvalchemi_so3 import (
 # ---------------------------------------------------------------------------
 AMU_TO_G_PER_CM3 = 1.66054  # (amu/Å³) → g/cm³
 BAR_TO_EV_PER_A3 = 6.2415e-7  # bar → eV/Å³
-KB_EV_PER_K = 8.617333262e-5  # Boltzmann constant [eV/K]
+
+
+def _temperature_per_graph(batch) -> torch.Tensor:
+    """Instantaneous kinetic temperature per graph ``[B]`` in K.
+
+    Equipartition with 3N degrees of freedom (no constraint correction),
+    matching nvalchemi's own ``temperature_per_graph``.
+    """
+    ke = kinetic_energy_per_graph(
+        batch.velocities,
+        batch.atomic_masses,
+        batch.batch_idx,
+        batch.num_graphs,
+    ).squeeze(
+        -1
+    )  # [B] eV ("kinetic_energy_per_graph" returns [B, 1])
+    dof = 3.0 * batch.num_nodes_per_graph.to(ke.dtype)  # [B]
+    return 2.0 * ke / (dof * KB_EV)
 
 
 def _pressure_bar_per_graph(batch) -> torch.Tensor:
@@ -64,22 +90,16 @@ def _pressure_bar_per_graph(batch) -> torch.Tensor:
     ``P = (2/3) KE / V - (1/3) tr(σ)`` where ``σ = batch.stress`` is the
     tensile-positive Cauchy stress (ASE convention, the sign convention the
     adapter already emits).  The kinetic term equals ``N kB T / V`` exactly,
-    because ``temperature_per_graph`` defines T with 3N degrees of freedom.
+    because ``_temperature_per_graph`` defines T with 3N degrees of freedom.
 
     This matches the total pressure LAMMPS reports (``thermo press``), so the
     two engines can be compared directly at the same configuration.
     """
     cell = batch.cell
     vols = torch.abs(torch.linalg.det(cell))  # [B] Å³
-    temps = temperature_per_graph(
-        batch.velocities,
-        batch.atomic_masses,
-        batch.batch_idx,
-        batch.num_graphs,
-        batch.num_nodes_per_graph,
-    )  # [B] K
+    temps = _temperature_per_graph(batch)  # [B] K
     n_atoms = batch.num_nodes_per_graph.to(vols.dtype)  # [B]
-    p_kin = n_atoms * KB_EV_PER_K * temps / vols  # [B] eV/Å³
+    p_kin = n_atoms * KB_EV * temps / vols  # [B] eV/Å³
     # batch.stress is tensile-positive Cauchy stress (ASE convention);
     # P_vir = -tr(sigma)/3, as in ASE and LAMMPS `thermo press`.
     p_vir = -batch.stress.diagonal(dim1=-2, dim2=-1).sum(-1) / 3.0  # [B] eV/Å³
@@ -111,7 +131,11 @@ def _parse_args() -> argparse.Namespace:
         "--ensemble",
         choices=["nvt", "npt"],
         default="nvt",
-        help="Ensemble: nvt (Langevin) or npt (MTK barostat, default: nvt)",
+        help="Ensemble: nvt (Langevin) or npt (MTK barostat, default: nvt). "
+        "Note: NPT in nvalchemi-toolkit 0.2.0 computes the isotropic "
+        "barostat mass 3x smaller than the hand-patched 0.1.0 runs this "
+        "CLI originally targeted, so NPT trajectories are not directly "
+        "comparable to those earlier runs.",
     )
     p.add_argument(
         "--temperature", type=float, default=300.0, help="Temperature [K]"
@@ -167,6 +191,12 @@ def _parse_args() -> argparse.Namespace:
         type=float,
         default=1e-2,
         help="Langevin friction coefficient [1/fs] (default: 1e-2, NVT only)",
+    )
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Langevin RNG seed (NVT only; default: 42)",
     )
     p.add_argument(
         "--barostat-time",
@@ -232,9 +262,10 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--skip-vel-init",
         action="store_true",
-        help="Skip Maxwell-Boltzmann velocity initialization. Use when the "
-        "input structure already has velocities (e.g. from a restart file). "
-        "Default: initialize velocities from MB at --temperature.",
+        help="Skip Maxwell-Boltzmann velocity initialization and keep the "
+        "velocities stored in the structure file. Default: initialize "
+        "velocities from MB at --temperature (overwriting any velocities "
+        "already present in the input file).",
     )
     p.add_argument(
         "--compile",
@@ -281,6 +312,35 @@ def _parse_args() -> argparse.Namespace:
 
 
 # ---------------------------------------------------------------------------
+# Structure -> AtomicData
+# ---------------------------------------------------------------------------
+
+
+def atoms_to_data(atoms, device: str, dtype: torch.dtype) -> AtomicData:
+    """ASE ``Atoms`` -> ``AtomicData`` with zeroed outputs and ASE velocities.
+
+    ``forces``/``energy``/``stress`` are zero-filled so ``compute()`` can
+    write back in-place (filled at ``BEFORE_COMPUTE``).  nvalchemi's
+    internal time unit equals ASE's (``sqrt(amu*Å^2/eV)``), so
+    ``atoms.get_velocities()`` is copied unchanged (zeros when the
+    structure file carries no velocity data).
+    """
+    n = len(atoms)
+    data = AtomicData.from_atoms(atoms, device=device, dtype=dtype)
+    data = data.model_copy(
+        update={
+            "forces": torch.zeros(n, 3, dtype=dtype, device=device),
+            "energy": torch.zeros(1, 1, dtype=dtype, device=device),
+            "stress": torch.zeros(1, 3, 3, dtype=dtype, device=device),
+            "velocities": torch.as_tensor(
+                atoms.get_velocities(), dtype=dtype, device=device
+            ),
+        }
+    )
+    return data
+
+
+# ---------------------------------------------------------------------------
 # Model loading
 # ---------------------------------------------------------------------------
 
@@ -294,7 +354,9 @@ def load_model(
     pme_alpha: float = None,
     pme_spline_order: int = 4,
     pme_accuracy: float = 1e-6,
+    skin: float = 0.0,
     compile_model: bool = False,
+    fullgraph: bool | None = None,
     electrostatic_energy_scale: float = None,
     dispersion_energy_scale: float = None,
     dispersion_energy_cutoff_lr_damping: float = None,
@@ -304,7 +366,10 @@ def load_model(
     Returns a NVAlchemi ``BaseModelMixin`` — either a bare ``NVAlchemiSO3LR``
     (``electrostatics`` in {"model", "none"}) or a ``PipelineModelWrapper``
     composing the short-range model with NVAlchemi-native PME
-    (``electrostatics="nvalchemi"``).
+    (``electrostatics="nvalchemi"``).  ``skin`` (Verlet skin, Å) is
+    forwarded to the wrapper's ``model_config.neighbor_config.skin`` so
+    ``model.make_neighbor_hooks()`` builds the neighbor list with the
+    requested skin.
     """
     raw = torch.load(path, map_location=device, weights_only=False)
     if isinstance(raw, dict) and "model" in raw:
@@ -325,9 +390,21 @@ def load_model(
     _print_model_diagnostics(raw)
 
     if compile_model:
+        if torch.device(device).type != "cuda" and getattr(
+            raw, "use_lr", False
+        ):
+            raise RuntimeError(
+                "torch.compile is not supported on this device "
+                f"({device}) for long-range SO3LR models: PyTorch's "
+                "Inductor CPU backend crashes on the "
+                "ZBL/electrostatics/dispersion scatter-reductions. Run "
+                "without --compile or on CUDA."
+            )
+        if fullgraph is None:
+            fullgraph = torch.device(device).type == "cuda"
         # Compile the inner So3krates/SO3LR forward pass before NVAlchemi
         # wrapping.  dynamic=True handles varying neighbor-list sizes.
-        raw = torch.compile(raw, dynamic=True)
+        raw = torch.compile(raw, dynamic=True, fullgraph=fullgraph)
 
     if electrostatics == "nvalchemi":
         model = build_nvalchemi_pme_model(
@@ -336,11 +413,12 @@ def load_model(
             alpha=pme_alpha,
             spline_order=pme_spline_order,
             accuracy=pme_accuracy,
+            skin=skin,
         )
     else:
         if electrostatics == "none":
             raw.electrostatic_energy_bool = False
-        model = NVAlchemiSO3LR(raw, electrostatics="model")
+        model = NVAlchemiSO3LR(raw, electrostatics="model", skin=skin)
 
     model = model.to(device=device, dtype=dtype)
     model.eval()
@@ -439,13 +517,7 @@ class _PrintHook:
 
         # Per-graph quantities (one row per system in the batch).
         energy = batch.energy.reshape(-1)  # [B]
-        temps = temperature_per_graph(
-            batch.velocities,
-            batch.atomic_masses,
-            batch.batch_idx,
-            batch.num_graphs,
-            batch.num_nodes_per_graph,
-        )  # [B]
+        temps = _temperature_per_graph(batch)  # [B]
 
         if self._npt:
             cell = batch.cell
@@ -475,19 +547,12 @@ class _PrintHook:
 
 def _make_hooks(
     model: NVAlchemiSO3LR,
-    skin: float,
     log_file: str,
     log_freq: int,
     dt_fs: float,
     ensemble: str,
     start_time_ref: list[float],
 ) -> list:
-    nl_hook = NeighborListHook(
-        config=model.model_config.neighbor_config,
-        skin=skin,
-        stage=DynamicsStage.BEFORE_COMPUTE,
-    )
-
     def _volume(ctx):
         return torch.abs(torch.linalg.det(ctx.batch.cell))  # [B] Å³
 
@@ -528,7 +593,10 @@ def _make_hooks(
         },
     )
     print_hook = _PrintHook(log_freq, dt_fs, ensemble, start_time_ref)
-    return [nl_hook, log_hook, print_hook]
+    # The neighbor list is managed by the model's own make_neighbor_hooks()
+    # (NVAlchemi's BaseModelMixin), which already encodes the model's skin
+    # (model_config.neighbor_config.skin, set via load_model(skin=...)).
+    return [*model.make_neighbor_hooks(), log_hook, print_hook]
 
 
 # ---------------------------------------------------------------------------
@@ -550,6 +618,7 @@ def main() -> None:
         pme_alpha=args.pme_alpha,
         pme_spline_order=args.pme_spline_order,
         pme_accuracy=args.pme_accuracy,
+        skin=args.skin,
         compile_model=args.compile,
         electrostatic_energy_scale=args.electrostatic_energy_scale,
         dispersion_energy_scale=args.dispersion_energy_scale,
@@ -588,24 +657,7 @@ def main() -> None:
                 "the cell and sets pbc=True."
             )
 
-    data_list = []
-    for atoms in frames:
-        data = AtomicData.from_atoms(atoms, device=args.device, dtype=dtype)
-        data = data.model_copy(
-            update={
-                "forces": torch.zeros(
-                    len(atoms), 3, dtype=dtype, device=args.device
-                ),
-                "energy": torch.zeros(1, 1, dtype=dtype, device=args.device),
-                "stress": torch.zeros(
-                    1, 3, 3, dtype=dtype, device=args.device
-                ),
-            }
-        )
-        # Zero-initialize velocities so Batch.from_data_list can aggregate
-        # them even if the input file has no velocity data.
-        data.use_default_velocities()
-        data_list.append(data)
+    data_list = [atoms_to_data(atoms, args.device, dtype) for atoms in frames]
     batch = Batch.from_data_list(data_list)
 
     if not args.skip_vel_init:
@@ -633,7 +685,6 @@ def main() -> None:
     start_time_ref: list[float] = [0.0, 0.0]
     hooks = _make_hooks(
         model,
-        args.skin,
         args.log_file,
         args.log_freq,
         args.dt,
@@ -648,6 +699,7 @@ def main() -> None:
             dt=args.dt,
             temperature=args.temperature,
             friction=args.friction,
+            random_seed=args.seed,
             n_steps=args.steps,
             hooks=hooks,
         )

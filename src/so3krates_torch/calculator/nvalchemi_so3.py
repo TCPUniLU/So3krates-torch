@@ -363,6 +363,7 @@ def build_nvalchemi_pme_model(
     accuracy: float = 1e-6,
     coulomb_constant: float = _KE_EV_ANG,
     hybrid_forces: bool = True,
+    skin: float = 0.0,
 ):
     """Compose an SO3LR model with NVAlchemi-native PME electrostatics.
 
@@ -392,6 +393,10 @@ def build_nvalchemi_pme_model(
     mesh_spacing, spline_order, accuracy, coulomb_constant, hybrid_forces:
         Forwarded to :class:`nvalchemi.models.pme.PMEModelWrapper`.  The
         default ``coulomb_constant`` matches the model's ``ke``.
+    skin:
+        Verlet skin (Å) forwarded to the short-range :class:`NVAlchemiSO3LR`
+        step's ``model_config.neighbor_config.skin`` (see its docstring).
+        Default ``0.0``.
     """
     from nvalchemi.models.pme import PMEModelWrapper
     from nvalchemi.models.pipeline import (
@@ -409,7 +414,7 @@ def build_nvalchemi_pme_model(
     model.electrostatic_energy_bool = False
     model.output_partial_charges = True
 
-    sr = NVAlchemiSO3LR(model, electrostatics="nvalchemi")
+    sr = NVAlchemiSO3LR(model, electrostatics="nvalchemi", skin=skin)
     pme = PMEModelWrapper(
         cutoff=float(model.r_max_lr),
         mesh_spacing=mesh_spacing,
