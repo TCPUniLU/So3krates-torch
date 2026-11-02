@@ -1299,8 +1299,9 @@ class DispersionInteraction(nn.Module):
             use_pme_dispersion: when True, the C6 term is replaced by its
                 real-space residual (full damped C6 minus the geometric-
                 mean long-range part that `PMEDispersionInteraction` adds
-                back in k-space). C8/C10 and the switching-function cutoff
-                are unaffected. Default False reproduces today's exact
+                back in k-space). The whole real-space residual
+                (C6 + C8 + C10) is multiplied by the switching function
+                at `cutoff_lr`. Default False reproduces today's exact
                 real-space-only behaviour byte-for-byte.
             pme_dispersion_smearing: PME-dispersion smearing width, in
                 Angstrom (same convention as `PMEDispersionInteraction`'s
@@ -1360,7 +1361,7 @@ class DispersionInteraction(nn.Module):
             # C6 becomes a real-space residual: the full damped
             # Casimir-Polder C6 term minus the geometric-mean long-range
             # part that PMEDispersionInteraction adds back in k-space.
-            # C8/C10 keep their existing form and cutoff treatment.
+            # C8/C10 keep their existing form.
             C6_term, C8_term, C10_term, _p = _vdw_qdo_disp_damp_terms(
                 distances_au,
                 gamma_ij,
@@ -1404,9 +1405,12 @@ class DispersionInteraction(nn.Module):
             V_C6_residual = C6_term + C6_geom_ij * lr_r
             V_C8C10 = C8_term + C10_term
 
-            # Apply smooth cutoff to C8/C10 only — the C6 residual is
-            # deliberately left uncut (the Ewald split already localizes
-            # it near zero well before cutoff_lr).
+            # The complete real-space residual (C6 + C8 + C10) disappears
+            # with the neighbor pair, so it is switched off together before
+            # cutoff_lr (matches so3lr_dev's DispersionEnergySparse since
+            # its "make PME residual cutoff consistent" fix). The k-space
+            # C6 part stays untruncated.
+            V_real_space_residual = V_C6_residual + V_C8C10
             if cutoff_lr is not None:
                 w = switching_fn(
                     lengths_lr,
@@ -1415,13 +1419,13 @@ class DispersionInteraction(nn.Module):
                 )
                 mask = lengths_lr > 0
                 w = torch.where(mask, w, torch.zeros_like(w))
-                V_C8C10 = V_C8C10 * w
+                V_real_space_residual = V_real_space_residual * w
 
             hartree_factor = torch.tensor(
                 HARTREE, dtype=input_dtype, device=device
             )
             dispersion_energy_ij = (
-                self.c * (V_C6_residual + V_C8C10) * hartree_factor
+                self.c * V_real_space_residual * hartree_factor
             )
         else:
             # Get dispersion energy per edge
