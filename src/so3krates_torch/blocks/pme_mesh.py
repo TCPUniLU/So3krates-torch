@@ -15,6 +15,8 @@ between it (``"jax"``, the default everywhere) and stock torch-pme
 (``"torchpme"``).
 """
 
+from typing import Optional
+
 import torch
 import torchpme
 
@@ -40,7 +42,16 @@ class JaxMeshPMECalculator(torchpme.PMECalculator):
     ``_compute_kspace`` is a copy of torch-pme 0.5.0's with the single
     ``get_ns_mesh`` call replaced by ``jax_ns_mesh``; re-verify it when
     upgrading torch-pme (``test_torchpme_version_pinned``).
+
+    ``ns_mesh_override``, if set, is used instead of deriving the mesh
+    from ``cell`` and ``mesh_spacing``. The dispersion wrapper runs
+    torch-pme in Bohr but so3lr_dev derives the mesh from the Angstrom
+    cell and spacing; at ``L/h`` exactly an integer the Angstrom -> Bohr
+    round trip can flip the inner ``ceil``, so it passes the Angstrom
+    result in here.
     """
+
+    ns_mesh_override: Optional[torch.Tensor] = None
 
     def _compute_kspace(
         self,
@@ -55,7 +66,11 @@ class JaxMeshPMECalculator(torchpme.PMECalculator):
             raise NotImplementedError(
                 "Batching not implemented for mesh-based calculators"
             )
-        ns = jax_ns_mesh(cell, self.mesh_spacing)
+        ns = (
+            self.ns_mesh_override
+            if self.ns_mesh_override is not None
+            else jax_ns_mesh(cell, self.mesh_spacing)
+        )
 
         self.mesh_interpolator.update(cell, ns)
 

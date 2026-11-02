@@ -253,3 +253,47 @@ def test_so3lr_calculator_forwards_pme_mesh_rule():
         type(stock.pme_electrostatic_potential.calculator)
         is torchpme.PMECalculator
     )
+
+
+@pytest.mark.parametrize(
+    "edge,spacing",
+    [(7.75, 0.25), (15.5, 0.5), (3.875, 0.125), (9.3, 0.3)],
+)
+def test_pme_dispersion_mesh_matches_jax_when_ratio_is_an_exact_integer(
+    edge, spacing
+):
+    """The dispersion path runs torch-pme in Bohr, but so3lr_dev derives
+    the mesh from the Angstrom cell and spacing. L/h integer cells sit
+    exactly on the inner ceil, where the Angstrom -> Bohr round trip used
+    to flip the mesh size (e.g. 7.75 A at 0.25 A: JAX 64^3, torch 128^3)."""
+    from so3krates_torch.blocks.physical_potentials import (
+        PMEDispersionInteraction,
+    )
+
+    cell_np = np.diag([edge] * 3)
+    expected = _jax_mesh(cell_np, spacing)
+
+    gen = torch.Generator().manual_seed(1)
+    n = 6
+    positions = torch.rand(n, 3, generator=gen, dtype=torch.float64) * edge
+    c6 = torch.rand(n, generator=gen, dtype=torch.float64) + 0.5
+    cell = torch.tensor(cell_np, dtype=torch.float64)
+
+    pme = PMEDispersionInteraction(smearing=0.5, mesh_spacing=spacing)
+    seen = []
+    update = pme.calculator.mesh_interpolator.update
+
+    def spy(cell_arg, ns_arg):
+        seen.append(tuple(ns_arg.tolist()))
+        return update(cell_arg, ns_arg)
+
+    pme.calculator.mesh_interpolator.update = spy
+    pme(
+        c6_pseudo_charges=c6,
+        positions=positions,
+        cell=cell,
+        batch_segments=torch.zeros(n, dtype=torch.long),
+        num_graphs=1,
+        num_nodes=n,
+    )
+    assert seen == [expected]

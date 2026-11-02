@@ -6,7 +6,11 @@ import math
 import numpy as np
 from so3krates_torch.tools.scatter import scatter_sum
 from so3krates_torch.blocks.dispersion_ref_data import NHL_AA, NHL_BB
-from so3krates_torch.blocks.pme_mesh import make_pme_calculator
+from so3krates_torch.blocks.pme_mesh import (
+    JaxMeshPMECalculator,
+    jax_ns_mesh,
+    make_pme_calculator,
+)
 
 
 # Constants for dispersion energy calculations
@@ -1175,6 +1179,7 @@ class PMEDispersionInteraction(nn.Module):
         # not passed again on every `forward` call.
         smearing_bohr = smearing / BOHR
         mesh_spacing_bohr = mesh_spacing / BOHR
+        self.mesh_spacing = mesh_spacing  # Angstrom
 
         potential = torchpme.InversePowerLawPotential(
             exponent=6, smearing=smearing_bohr
@@ -1241,13 +1246,22 @@ class PMEDispersionInteraction(nn.Module):
             empty_dist = torch.zeros((0,), dtype=input_dtype, device=device)
 
             # charges: (N_g, 1); output: (N_g, 1)
-            potentials_g = self.calculator.forward(
-                charges=c_g.unsqueeze(1),
-                cell=cell_g,
-                positions=pos_g,
-                neighbor_indices=empty_idx,
-                neighbor_distances=empty_dist,
-            )
+            if isinstance(self.calculator, JaxMeshPMECalculator):
+                # mesh from the Angstrom cell/spacing, like so3lr_dev
+                self.calculator.ns_mesh_override = jax_ns_mesh(
+                    cell[g], self.mesh_spacing
+                )
+            try:
+                potentials_g = self.calculator.forward(
+                    charges=c_g.unsqueeze(1),
+                    cell=cell_g,
+                    positions=pos_g,
+                    neighbor_indices=empty_idx,
+                    neighbor_distances=empty_dist,
+                )
+            finally:
+                if isinstance(self.calculator, JaxMeshPMECalculator):
+                    self.calculator.ns_mesh_override = None
 
             # E_i = -q_i * phi_i * Hartree (no 0.5, no ke prefactor)
             e_g = -c_g.unsqueeze(1) * potentials_g * HARTREE
