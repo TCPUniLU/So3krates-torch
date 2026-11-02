@@ -18,7 +18,7 @@ larger CLI command.
 
 import copy
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 import numpy as np
 import torch
@@ -571,6 +571,82 @@ def _torch_energy_forces_stress(torch_model: torch.nn.Module, batch):
     return energy_np, forces_np, stress_np
 
 
+# observable name -> (JAX output keys tried in order, torch output key).
+# so3lr-tauri-* checkpoints call the Hirshfeld head ``a0_ratios``, legacy
+# so3lr ``hirshfeld_ratios``; torch always uses ``hirshfeld_ratios``.
+_OBSERVABLES = {
+    "partial_charges": (("partial_charges",), "partial_charges"),
+    "dipole_vec": (("dipole_vec",), "dipole"),
+    "hirshfeld_ratios": (
+        ("hirshfeld_ratios", "a0_ratios"),
+        "hirshfeld_ratios",
+    ),
+    "c6_ratios": (("c6_ratios",), "c6_ratios"),
+}
+
+
+def _check_observable_names(names) -> None:
+    for name in names:
+        if name not in _OBSERVABLES:
+            raise ValueError(
+                f"compare_observables: unknown name {name!r}, expected "
+                f"one of {sorted(_OBSERVABLES)}"
+            )
+
+
+def _jax_observables(
+    cfg,
+    flax_params: dict,
+    inputs: dict,
+    names,
+    model_factory: Optional[Callable] = None,
+) -> dict:
+    """``{name: array}`` of the requested observables, real atoms/graph
+    only (same masking as ``_jax_energy_forces``). Partial charges are an
+    intermediate quantity and need the model built with
+    ``output_intermediate_quantities``."""
+    if model_factory is None:
+        from so3lr.mlff.config import (
+            make_so3krates_sparse_from_config as model_factory,
+        )
+
+    kwargs = {}
+    if "partial_charges" in names:
+        kwargs["output_intermediate_quantities"] = ["partial_charges"]
+    out = model_factory(cfg, **kwargs).apply(flax_params, inputs)
+
+    node_mask = np.asarray(inputs["node_mask"])
+    graph_mask = np.asarray(inputs["graph_mask"])
+    result = {}
+    for name in names:
+        jax_keys, _ = _OBSERVABLES[name]
+        key = next((k for k in jax_keys if k in out), None)
+        if key is None:
+            raise KeyError(
+                f"JAX model output has none of {jax_keys} (has {sorted(out)})"
+            )
+        value = np.asarray(out[key])
+        mask = (
+            node_mask if value.shape[0] == node_mask.shape[0] else graph_mask
+        )
+        result[name] = value[mask]
+    return result
+
+
+def _torch_observables(torch_model: torch.nn.Module, batch, names) -> dict:
+    batch = batch.clone()
+    batch.positions.requires_grad_(True)
+    out = torch_model(batch.to_dict(), compute_stress=False)
+    result = {}
+    for name in names:
+        _, torch_key = _OBSERVABLES[name]
+        value = out.get(torch_key)
+        if value is None:
+            raise KeyError(f"torch model output has no {torch_key!r}")
+        result[name] = value.detach().cpu().numpy()
+    return result
+
+
 def _max_abs_rel_diff(a: np.ndarray, b: np.ndarray):
     """Diagnostic ``(max_abs_diff, max_rel_diff)`` of ``a`` vs. ``b``."""
     abs_diff = np.abs(a - b)
@@ -597,6 +673,9 @@ def check_model_parity(
     compare_stress: bool = False,
     atol_stress: float = 1e-6,
     rtol_stress: float = 1e-4,
+    compare_observables: Sequence[str] = (),
+    atol_observables: float = 1e-6,
+    rtol_observables: float = 1e-4,
 ) -> bool:
     """Run both models on one real structure and compare energy+forces.
 
@@ -638,6 +717,11 @@ def check_model_parity(
     ``(1/V) dE/d strain``) at ``atol_stress``/``rtol_stress``; the
     structure must be periodic (``ValueError`` otherwise).
 
+    ``compare_observables`` names extra per-structure outputs to compare
+    at ``atol_observables``/``rtol_observables``, from
+    ``"partial_charges"``, ``"dipole_vec"``, ``"hirshfeld_ratios"`` and
+    ``"c6_ratios"`` (``ValueError`` for anything else).
+
     ``theory_level`` selects which theory-level head both models use
     (``ValueError`` if it is not a valid column of ``flax_params``'s
     ``num_theory_levels``); ``None`` keeps the automatic choice
@@ -676,6 +760,7 @@ def check_model_parity(
 
     cfg = _with_final_bias_bool(cfg, torch_model)
 
+    _check_observable_names(compare_observables)
     num_theory_levels = _detect_num_theory_levels(flax_params)
     if theory_level is not None and not 0 <= theory_level < num_theory_levels:
         raise ValueError(
@@ -764,4 +849,33 @@ def check_model_parity(
             f"{stress_abs:>14.3e} {stress_rel:>14.3e}"
         )
 
-    return energy_ok and forces_ok and stress_ok
+    observables_ok = True
+    if compare_observables:
+        obs_jax = _jax_observables(
+            cfg,
+            flax_params,
+            inputs_jax,
+            compare_observables,
+            model_factory=model_factory,
+        )
+        obs_torch = _torch_observables(
+            torch_model, batch_torch, compare_observables
+        )
+        for name in compare_observables:
+            a = obs_jax[name].reshape(-1)
+            b = obs_torch[name].reshape(-1)
+            this_ok = a.shape == b.shape and bool(
+                np.allclose(a, b, atol=atol_observables, rtol=rtol_observables)
+            )
+            observables_ok = observables_ok and this_ok
+            abs_diff, rel_diff = (
+                _max_abs_rel_diff(a, b)
+                if a.shape == b.shape
+                else (np.inf,) * 2
+            )
+            print(
+                f"{name:<10} {'PASS' if this_ok else 'FAIL':<6} "
+                f"{abs_diff:>14.3e} {rel_diff:>14.3e}"
+            )
+
+    return energy_ok and forces_ok and stress_ok and observables_ok

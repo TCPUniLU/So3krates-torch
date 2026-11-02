@@ -815,6 +815,42 @@ def test_torch_stress_matches_finite_difference_of_energy(
         assert fd / volume == pytest.approx(stress[a, b], abs=2e-5), (a, b)
 
 
+ALL_OBSERVABLES = (
+    "partial_charges",
+    "dipole_vec",
+    "hirshfeld_ratios",
+    "c6_ratios",
+)
+
+
+@pytest.mark.parametrize("kind", ["molecule", "nacl"])
+def test_so3lr_checkpoint_s_observables_parity(kind, generation, tmp_path):
+    """Per-atom partial charges, Hirshfeld ratios, C6 ratios and the
+    molecular dipole agree with JAX, on an isolated molecule and on a
+    periodic NaCl cell."""
+    parity_kwargs = {"compare_observables": ALL_OBSERVABLES}
+    if kind == "molecule":
+        assert _check_checkpoint_parity(
+            "s", generation, **parity_kwargs
+        )  # bundled aqm_small.xyz
+    else:
+        assert _check_checkpoint_parity_on_structure(
+            "s",
+            generation,
+            _build_rattled_nacl_structure(tmp_path),
+            tmp_path,
+            parity_kwargs=parity_kwargs,
+            cutoff_lr=10.0,
+        )
+
+
+def test_compare_observables_rejects_unknown_name(generation):
+    with pytest.raises(ValueError, match="not_an_observable"):
+        _check_checkpoint_parity(
+            "s", generation, compare_observables=("not_an_observable",)
+        )
+
+
 def test_so3lr_checkpoint_s_pme_mesh_boundary_parity(tmp_path, generation):
     """PME parity on a cell whose torch-pme and jax-pme mesh sizes would
     differ without the JAX mesh rule: ``a=5.55`` gives 7.849 A cell edges
