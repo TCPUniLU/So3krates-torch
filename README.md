@@ -452,10 +452,10 @@ This writes `hyperparameters.json` and `params.pkl` into the two given directori
 |------|---------|-------------|
 | `--check_parity` / `--no-check_parity` | `True` | After conversion, verify the two model representations agree on a real structure's energy/forces. |
 | `--parity_structure` | bundled `aqm_small.xyz` | ASE-readable structure file to check parity on. |
-
-The check behind these flags is `so3krates_torch.tools.model_parity.check_model_parity`. Besides energy and forces it can also compare the stress (`compare_stress=True`, periodic structures only), the partial charges, dipole, Hirshfeld and C6 ratios (`compare_observables=(...)`), and any theory-level head (`theory_level=<int>`; the default is so3lr_dev's level 5). See `src/so3krates_torch/tests/test_v2_parity.py` for the tolerances the test suite uses.
 | `--parity_atol` | `1e-5` | Absolute tolerance for the parity check. |
 | `--parity_rtol` | `1e-4` | Relative tolerance for the parity check. |
+
+The check behind these flags is `so3krates_torch.tools.model_parity.check_model_parity`. Besides energy and forces it can also compare the stress (`compare_stress=True`, periodic structures only), the partial charges, dipole, Hirshfeld and C6 ratios (`compare_observables=(...)`), and any theory-level head (`theory_level=<int>`; the default is so3lr_dev's level 5). See `src/so3krates_torch/tests/test_v2_parity.py` for the tolerances the test suite uses.
 
 ---
 
