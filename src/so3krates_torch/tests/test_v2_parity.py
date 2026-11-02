@@ -134,10 +134,16 @@ def _check_checkpoint_parity(
 
 
 def _check_checkpoint_parity_on_structure(
-    size: str, generation: str, structure_path: str, tmp_path, **overrides
+    size: str,
+    generation: str,
+    structure_path: str,
+    tmp_path,
+    parity_kwargs: dict | None = None,
+    **overrides,
 ) -> bool:
     """``_check_checkpoint_parity`` on ``structure_path`` with optional
-    ``hyperparameters.json`` ``model`` overrides (e.g. ``cutoff_lr``)."""
+    ``hyperparameters.json`` ``model`` overrides (e.g. ``cutoff_lr``) and
+    extra ``check_model_parity`` keyword arguments in ``parity_kwargs``."""
     params_path, _hp_path, flax_params, _cfg_unused = _load_checkpoint(
         size, generation
     )
@@ -161,6 +167,7 @@ def _check_checkpoint_parity_on_structure(
         r_max=cfg.model.cutoff,
         r_max_lr=cfg.model.cutoff_lr,
         structure_path=structure_path,
+        **(parity_kwargs or {}),
     )
 
 
@@ -553,6 +560,7 @@ def _check_checkpoint_pme_parity_on_structure(
     structure_path: str,
     tmp_path,
     label: str,
+    parity_kwargs: dict | None = None,
     **model_overrides,
 ) -> bool:
     """Build the torch model for real checkpoint ``size`` with PME
@@ -589,6 +597,7 @@ def _check_checkpoint_pme_parity_on_structure(
         r_max=cfg.model.cutoff,
         r_max_lr=cfg.model.cutoff_lr,
         structure_path=structure_path,
+        **(parity_kwargs or {}),
     )
 
 
@@ -671,6 +680,139 @@ def test_so3lr_checkpoint_s_term_switch_parity(
             cutoff_lr=10.0,
             **{flag: False},
         )
+
+
+STRESS_PME_SPACING = 0.125
+
+
+@pytest.mark.parametrize("pme", [False, True], ids=["realspace", "pme"])
+def test_so3lr_checkpoint_s_stress_parity(pme, generation, tmp_path):
+    """Stress (eV/A^3, ``(1/V) dE/d strain``) agrees with JAX on the
+    rattled NaCl cell, in real space and with PME."""
+    structure_path = _build_rattled_nacl_structure(tmp_path)
+    parity_kwargs = {"compare_stress": True}
+    if pme:
+        assert _check_checkpoint_pme_parity_on_structure(
+            "s",
+            generation,
+            structure_path,
+            tmp_path,
+            "stress",
+            parity_kwargs=parity_kwargs,
+            kspace_spacing=STRESS_PME_SPACING,
+        )
+    else:
+        assert _check_checkpoint_parity_on_structure(
+            "s",
+            generation,
+            structure_path,
+            tmp_path,
+            parity_kwargs=parity_kwargs,
+            cutoff_lr=10.0,
+        )
+
+
+def test_compare_stress_requires_periodic_structure(generation):
+    with pytest.raises(ValueError, match="periodic"):
+        _check_checkpoint_parity(
+            "s", generation, compare_stress=True
+        )  # default structure is an isolated molecule
+
+
+def test_stress_cell_not_on_mesh_boundary(tmp_path):
+    """Review focus: a finite strain of the stress test cell must not
+    change the PME mesh size, otherwise stress is discontinuous there."""
+    from ase.io import read
+
+    from so3krates_torch.blocks.pme_mesh import jax_ns_mesh
+
+    cell = torch.tensor(
+        read(_build_rattled_nacl_structure(tmp_path)).cell.array,
+        dtype=torch.float64,
+    )
+    base = jax_ns_mesh(cell, STRESS_PME_SPACING)
+    for scale in (1 - 1e-3, 1 + 1e-3):
+        assert torch.equal(jax_ns_mesh(cell * scale, STRESS_PME_SPACING), base)
+
+
+@pytest.mark.parametrize("pme", [False, True], ids=["realspace", "pme"])
+def test_torch_stress_matches_finite_difference_of_energy(
+    pme, generation, tmp_path
+):
+    """Torch-only self-consistency: sigma_ab = (1/V) dE/d eps_ab from
+    central finite differences of the energy agrees with the model's
+    analytic stress. Separates a convention error from an implementation
+    error in the JAX comparison above."""
+    from ase.io import read, write
+
+    from so3krates_torch.tools.model_parity import (
+        _build_torch_batch,
+        _torch_energy_forces,
+    )
+
+    params_path, _hp, _fp, _cfg = _load_checkpoint("s", generation)
+    with open(params_path.replace("params.pkl", "hyperparameters.json")) as f:
+        hyperparams = json.load(f)
+    hyperparams["model"]["cutoff_lr"] = 10.0
+    if pme:
+        hyperparams = _pme_hyperparams(
+            hyperparams, kspace_spacing=STRESS_PME_SPACING
+        )
+    hp_path = tmp_path / "hp_fd.json"
+    with open(hp_path, "w") as f:
+        json.dump(hyperparams, f)
+    torch_model = convert_flax_to_torch(
+        path_to_flax_params=params_path,
+        path_to_flax_hyperparams=str(hp_path),
+        dtype=torch.float64,
+    ).eval()
+    cfg = config_dict.ConfigDict(hyperparams)
+
+    atoms = read(_build_rattled_nacl_structure(tmp_path))
+    volume = atoms.get_volume()
+
+    def energy_for(strain: np.ndarray) -> float:
+        strained = atoms.copy()
+        strained.set_cell(
+            atoms.cell.array @ (np.eye(3) + strain), scale_atoms=True
+        )
+        path = tmp_path / "strained.xyz"
+        write(str(path), strained)
+        batch = _build_torch_batch(
+            cfg.model.cutoff,
+            cfg.model.cutoff_lr,
+            str(path),
+            0,
+            torch.float64,
+            theory_level=5,
+        )
+        return _torch_energy_forces(torch_model, batch)[0]
+
+    batch = _build_torch_batch(
+        cfg.model.cutoff,
+        cfg.model.cutoff_lr,
+        str(tmp_path / "nacl_pme.xyz"),
+        0,
+        torch.float64,
+        theory_level=5,
+    )
+    batch.positions.requires_grad_(True)
+    stress = (
+        torch_model(batch.to_dict(), compute_stress=True)["stress"]
+        .detach()
+        .numpy()
+        .reshape(3, 3)
+    )
+
+    delta = 1e-4
+    for a, b in ((0, 0), (1, 1), (0, 1)):
+        direction = np.zeros((3, 3))
+        direction[a, b] += 0.5
+        direction[b, a] += 0.5
+        fd = (
+            energy_for(delta * direction) - energy_for(-delta * direction)
+        ) / (2 * delta)
+        assert fd / volume == pytest.approx(stress[a, b], abs=2e-5), (a, b)
 
 
 def test_so3lr_checkpoint_s_pme_mesh_boundary_parity(tmp_path, generation):

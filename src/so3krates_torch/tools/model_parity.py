@@ -494,6 +494,56 @@ def _jax_energy_forces(
     return energy_np, forces_np
 
 
+def _jax_energy_forces_stress(
+    cfg,
+    flax_params: dict,
+    inputs: dict,
+    model_factory: Optional[Callable] = None,
+):
+    """Like ``_jax_energy_forces`` plus the stress ``(3, 3)`` in
+    eV/A^3, ``(1/V) dE/d strain`` at zero strain (the convention of
+    so3lr_dev's ASE calculator, ``so3lr/mlff/calculators/ase_calculator.py``
+    with ``glp.strain_system``; positive for a cell that wants to shrink).
+
+    The strain ``eps`` is applied to ``positions`` and to ``cell``; the
+    integer ``cell_offset``/``cell_offset_lr`` entries then give strained
+    periodic images through ``inputs["cell"]``. ``V`` is the volume of the
+    first (real) graph's cell.
+    """
+    import jax
+    import jax.numpy as jnp
+
+    if model_factory is None:
+        from so3lr.mlff.config import (
+            make_so3krates_sparse_from_config as model_factory,
+        )
+
+    model = model_factory(cfg)
+    graph_mask = inputs["graph_mask"]
+    node_mask = np.asarray(inputs["node_mask"])
+    cell = inputs["cell"]
+
+    def energy_fn(positions, strain):
+        inputs_r = dict(
+            inputs,
+            positions=positions + positions @ strain,
+            cell=cell + cell @ strain,
+        )
+        out = model.apply(flax_params, inputs_r)
+        return (out["energy"] * graph_mask).sum()
+
+    energy, (grad_pos, grad_strain) = jax.value_and_grad(
+        energy_fn, argnums=(0, 1)
+    )(inputs["positions"], jnp.zeros((3, 3), dtype=cell.dtype))
+    volume = abs(float(np.linalg.det(np.asarray(cell[0]))))
+    stress = 0.5 * (grad_strain + grad_strain.T) / volume
+    return (
+        float(np.asarray(energy)),
+        np.asarray(-grad_pos)[node_mask],
+        np.asarray(stress),
+    )
+
+
 def _torch_energy_forces(torch_model: torch.nn.Module, batch):
     """Energy (scalar) + forces (n_atoms, 3) from the torch model.
 
@@ -507,6 +557,18 @@ def _torch_energy_forces(torch_model: torch.nn.Module, batch):
     energy_np = float(out["energy"].detach().cpu().reshape(-1)[0])
     forces_np = out["forces"].detach().cpu().numpy()
     return energy_np, forces_np
+
+
+def _torch_energy_forces_stress(torch_model: torch.nn.Module, batch):
+    """Like ``_torch_energy_forces`` plus the model's stress ``(3, 3)``
+    (eV/A^3, ``(1/V) dE/d strain``, see ``compute_forces_virials``)."""
+    batch = batch.clone()
+    batch.positions.requires_grad_(True)
+    out = torch_model(batch.to_dict(), compute_stress=True)
+    energy_np = float(out["energy"].detach().cpu().reshape(-1)[0])
+    forces_np = out["forces"].detach().cpu().numpy()
+    stress_np = out["stress"].detach().cpu().numpy().reshape(3, 3)
+    return energy_np, forces_np, stress_np
 
 
 def _max_abs_rel_diff(a: np.ndarray, b: np.ndarray):
@@ -532,6 +594,9 @@ def check_model_parity(
     jax_input_builder: Optional[Callable] = None,
     *,
     theory_level: Optional[int] = None,
+    compare_stress: bool = False,
+    atol_stress: float = 1e-6,
+    rtol_stress: float = 1e-4,
 ) -> bool:
     """Run both models on one real structure and compare energy+forces.
 
@@ -568,6 +633,10 @@ def check_model_parity(
     ``_build_jax_inputs`` for building the JAX-side ``inputs`` dict from
     ``cfg``/``structure_path``/``index``. Independent of
     ``model_factory``.
+
+    ``compare_stress`` also compares the ``(3, 3)`` stress (eV/A^3,
+    ``(1/V) dE/d strain``) at ``atol_stress``/``rtol_stress``; the
+    structure must be periodic (``ValueError`` otherwise).
 
     ``theory_level`` selects which theory-level head both models use
     (``ValueError`` if it is not a valid column of ``flax_params``'s
@@ -634,10 +703,25 @@ def check_model_parity(
         ),
     )
 
-    energy_jax, forces_jax = _jax_energy_forces(
-        cfg, flax_params, inputs_jax, model_factory=model_factory
-    )
-    energy_torch, forces_torch = _torch_energy_forces(torch_model, batch_torch)
+    stress_jax = stress_torch = None
+    if compare_stress:
+        if not bool(np.asarray(inputs_jax["pbc"])[0].all()):
+            raise ValueError(
+                "compare_stress=True needs a fully periodic structure"
+            )
+        energy_jax, forces_jax, stress_jax = _jax_energy_forces_stress(
+            cfg, flax_params, inputs_jax, model_factory=model_factory
+        )
+        energy_torch, forces_torch, stress_torch = _torch_energy_forces_stress(
+            torch_model, batch_torch
+        )
+    else:
+        energy_jax, forces_jax = _jax_energy_forces(
+            cfg, flax_params, inputs_jax, model_factory=model_factory
+        )
+        energy_torch, forces_torch = _torch_energy_forces(
+            torch_model, batch_torch
+        )
 
     energy_jax_arr = np.asarray(energy_jax)
     energy_torch_arr = np.asarray(energy_torch)
@@ -667,4 +751,17 @@ def check_model_parity(
         f"{forces_abs:>14.3e} {forces_rel:>14.3e}"
     )
 
-    return energy_ok and forces_ok
+    stress_ok = True
+    if compare_stress:
+        stress_ok = bool(
+            np.allclose(
+                stress_jax, stress_torch, atol=atol_stress, rtol=rtol_stress
+            )
+        )
+        stress_abs, stress_rel = _max_abs_rel_diff(stress_jax, stress_torch)
+        print(
+            f"{'stress':<10} {'PASS' if stress_ok else 'FAIL':<6} "
+            f"{stress_abs:>14.3e} {stress_rel:>14.3e}"
+        )
+
+    return energy_ok and forces_ok and stress_ok
