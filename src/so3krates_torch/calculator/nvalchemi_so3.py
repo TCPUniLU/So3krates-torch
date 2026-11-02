@@ -81,8 +81,11 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
     Notes
     -----
     *Active outputs.*  ``forward`` requests forces / stress from the model
-    only when they are in ``model_config.active_outputs`` (e.g. NVT
-    integrators do not need stress).  With neither active, the wrapper runs
+    only when they are in ``model_config.active_outputs``.  The default is
+    all outputs (including stress); nvalchemi-toolkit 0.2 integrators do
+    **not** narrow it, so callers that do not need stress (e.g. NVT) should
+    call :func:`set_active_outputs` (the ``torchkrates-md-nvalchemi`` CLI
+    does this per ensemble).  With neither active, the wrapper runs
     an energy-only forward and returns an ``energy`` that stays attached to
     ``data.positions`` (used as given, not cloned, when it already requires
     grad), so autograd pipeline groups can differentiate through it.
@@ -94,8 +97,14 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
     interpreted like the calculator's ``atoms.info["total_spin"]``: the
     total spin *S* (the model uses ``2 * S`` unpaired electrons), **not**
     the multiplicity.  ``AtomicData.from_atoms`` does not populate
-    ``spin``; set it explicitly (e.g. ``data.spin = torch.tensor([[S]])``)
-    for spin-embedding models.  Both default to 0 when absent.
+    ``spin``; :func:`so3krates_torch.cli.run_md_nvalchemi.atoms_to_data`
+    fills it from ``atoms.info["total_spin"]``, otherwise set it explicitly
+    (e.g. ``data.spin = torch.tensor([[S]])``) for spin-embedding models.
+    Both default to 0 when absent.
+
+    *Dtype.*  Inputs are cast to the dtype of the wrapped model's
+    parameters at call time, so ``wrapper.to(dtype)`` (or converting the
+    inner model) is honoured; there is no dtype frozen at construction.
     """
 
     def __init__(
@@ -126,7 +135,6 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
                     "build_nvalchemi_pme_model()."
                 )
         self.model = model
-        self._cached_dtype: torch.dtype = next(model.parameters()).dtype
 
         self.r_sr: float = float(model.r_max)
         self.has_lr: bool = (
@@ -140,7 +148,7 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
         node_emb = torch.zeros(
             self.num_elements + 1,
             self.num_elements,
-            dtype=self._cached_dtype,
+            dtype=self._model_dtype,
         )
         for z in range(1, self.num_elements + 1):
             node_emb[z, z - 1] = 1.0
@@ -169,6 +177,12 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
             ),
         )
 
+    @property
+    def _model_dtype(self) -> torch.dtype:
+        """Floating dtype of the wrapped model's parameters (read live, so
+        it follows ``.to(dtype)`` / ``.double()`` / ``.float()``)."""
+        return next(self.model.parameters()).dtype
+
     # ------------------------------------------------------------------
     # BaseModelMixin required interface
     # ------------------------------------------------------------------
@@ -194,7 +208,7 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
         if isinstance(data, AtomicData):
             data = Batch.from_data_list([data])
 
-        dtype = self._cached_dtype
+        dtype = self._model_dtype
         device = data.positions.device
 
         # ── Positions ─────────────────────────────────────────────────
@@ -275,9 +289,11 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
 
         d: dict[str, Any] = {
             # One-hot via lookup table — single GPU op, no CPU round-trip
+            # (.to is a no-op unless the inner model was converted
+            # directly, bypassing this wrapper's .to()).
             "node_attrs": self._node_emb.index_select(
                 0, data.atomic_numbers.long()
-            ),
+            ).to(dtype=dtype, device=device),
             "atomic_numbers": data.atomic_numbers.long(),
             "batch": data.batch_idx.long(),
             # CSR-style batch pointer [B+1]: needed by So3krates.forward
@@ -347,6 +363,31 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
             compute_stress="stress" in active,
         )
         return self.adapt_output(raw, data)
+
+
+def set_active_outputs(model: nn.Module, outputs) -> None:
+    """Narrow ``model_config.active_outputs`` for MD.
+
+    nvalchemi-toolkit 0.2 integrators do not set ``active_outputs``
+    themselves, so without this every step computes stress (needed only
+    for NPT).  Use ``{"energy", "forces"}`` for NVT and
+    ``{"energy", "forces", "stress"}`` for NPT.
+
+    Works on a bare :class:`NVAlchemiSO3LR` and on the
+    ``PipelineModelWrapper`` from :func:`build_nvalchemi_pme_model`.  For a
+    pipeline, every step's model is narrowed too (direct groups use each
+    sub-model's own ``active_outputs``), but a step's ``charges`` output is
+    kept active so the SR -> PME charge wiring stays intact.
+    """
+    outputs = set(outputs)
+    for group in getattr(model, "groups", ()):
+        for step in group.steps:
+            sub = step.model
+            want = (outputs | {"charges"}) & set(sub.model_config.outputs)
+            sub.set_config("active_outputs", want)
+    model.set_config(
+        "active_outputs", outputs & set(model.model_config.outputs)
+    )
 
 
 # Standard Coulomb constant in eV·Å/e² — matches the model's `ke`

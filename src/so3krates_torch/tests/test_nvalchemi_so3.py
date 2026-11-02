@@ -39,6 +39,7 @@ def _make_so3lr(
     output_partial_charges: bool = False,
     dispersion_bool: bool = False,
     zbl_bool: bool = False,
+    **extra,
 ) -> SO3LR:
     """Minimal SO3LR model for testing.
 
@@ -46,7 +47,8 @@ def _make_so3lr(
     model has electrostatics off); pass it explicitly to enable the
     real-space erf-Coulomb electrostatics with ``use_pme=False``.
     ``dispersion_bool`` / ``zbl_bool`` switch on the real-space dispersion
-    and ZBL repulsion terms (off by default).
+    and ZBL repulsion terms (off by default).  ``extra`` is forwarded to
+    ``SO3LR`` (e.g. ``use_spin_embed=True``).
     """
     es = use_pme if electrostatics_bool is None else electrostatics_bool
     model = SO3LR(
@@ -70,6 +72,7 @@ def _make_so3lr(
         # cutoff_lr is set (SO3LR always passes r_max_lr).
         dispersion_energy_cutoff_lr_damping=1.0 if dispersion_bool else None,
         zbl_repulsion_bool=zbl_bool,
+        **extra,
     ).to(dtype=DTYPE, device=DEVICE)
     model.eval()
     return model
@@ -547,6 +550,109 @@ def test_lr_terms_match_calculator(lr_kwargs, periodic):
             voigt_6_to_full_3x3_stress(atoms.get_stress()),
             atol=1e-6,
         )
+
+
+# ---------------------------------------------------------------------------
+# Dtype follows the model; active-output narrowing; spin
+# ---------------------------------------------------------------------------
+
+
+def test_wrapper_dtype_follows_model_after_to():
+    """A float32 model wrapped and then moved to float64 runs in float64
+    (no silent float32 cast of positions/shifts/cell) and matches a
+    float64 reference built from the same weights."""
+    import copy
+
+    model32 = _make_so3lr(electrostatics_bool=True).float()
+    ref = NVAlchemiSO3LR(copy.deepcopy(model32).double())
+    w = NVAlchemiSO3LR(model32).to(torch.float64)
+    atoms = bulk("NaCl", "rocksalt", a=5.64)
+    atoms.rattle(0.05, seed=2)
+    batch = _make_batch_with_nl(w, atoms)
+    d = w.adapt_input(batch)
+    assert d["positions"].dtype == torch.float64
+    assert d["shifts_lr"].dtype == torch.float64
+    assert d["cell"].dtype == torch.float64
+    assert d["node_attrs"].dtype == torch.float64
+    out, out_ref = w(batch), ref(batch)
+    assert out["energy"].dtype == torch.float64
+    torch.testing.assert_close(
+        out["energy"], out_ref["energy"], rtol=0, atol=1e-12
+    )
+    torch.testing.assert_close(
+        out["forces"], out_ref["forces"], rtol=0, atol=1e-12
+    )
+
+
+def test_wrapper_float64_model_to_float32_does_not_crash():
+    """The reverse (float64 model -> float32) must run, not raise
+    'mat1 and mat2 must have the same dtype'."""
+    model = _make_so3lr(electrostatics_bool=True)
+    e64 = NVAlchemiSO3LR(model)(
+        _make_batch_with_nl(NVAlchemiSO3LR(model), _small_nacl())
+    )["energy"]
+    w = NVAlchemiSO3LR(model).to(torch.float32)
+    out = w(_make_batch_with_nl(w, _small_nacl()))
+    assert out["energy"].dtype == torch.float32
+    assert out["energy"].item() == pytest.approx(e64.item(), abs=1e-3)
+
+
+def test_set_active_outputs_bare_wrapper():
+    from so3krates_torch.calculator.nvalchemi_so3 import set_active_outputs
+
+    w = NVAlchemiSO3LR(_make_so3lr())
+    set_active_outputs(w, {"energy", "forces"})
+    assert w.model_config.active_outputs == {"energy", "forces"}
+    set_active_outputs(w, {"energy", "forces", "stress"})
+    assert w.model_config.active_outputs == {"energy", "forces", "stress"}
+
+
+def test_set_active_outputs_pme_pipeline_keeps_charges():
+    """NVT narrowing on the native-PME pipeline drops stress everywhere
+    but keeps the SR step's charges output (wired into PME)."""
+    from so3krates_torch.calculator.nvalchemi_so3 import (
+        build_nvalchemi_pme_model,
+        set_active_outputs,
+    )
+
+    pipe = build_nvalchemi_pme_model(_make_so3lr(electrostatics_bool=True))
+    set_active_outputs(pipe, {"energy", "forces"})
+    assert pipe.model_config.active_outputs == {"energy", "forces"}
+    (group,) = pipe.groups
+    sr, pme = (step.model for step in group.steps)
+    assert sr.model_config.active_outputs == {"energy", "forces", "charges"}
+    assert "stress" not in pme.model_config.active_outputs
+
+    calls = []
+    orig = sr.model.forward
+    sr.model.forward = lambda *a, **k: calls.append(k) or orig(*a, **k)
+    # One NVT step through the pipeline (PME needs the hook-built list).
+    from nvalchemi.dynamics.base import DynamicsStage
+    from nvalchemi.dynamics.integrators.nvt_langevin import NVTLangevin
+    from nvalchemi.hooks.neighbor_list import NeighborListHook
+
+    from so3krates_torch.cli.run_md_nvalchemi import atoms_to_data
+
+    batch = Batch.from_data_list(
+        [atoms_to_data(_small_nacl(), str(DEVICE), DTYPE)]
+    )
+    hook = NeighborListHook(
+        config=pipe.model_config.neighbor_config,
+        skin=0.0,
+        stage=DynamicsStage.BEFORE_COMPUTE,
+    )
+    out = NVTLangevin(
+        model=pipe,
+        dt=0.5,
+        temperature=300.0,
+        friction=1e-2,
+        n_steps=1,
+        hooks=[hook],
+    ).run(batch)
+    assert calls and calls[-1]["compute_stress"] is False
+    assert calls[-1]["compute_force"] is True
+    assert torch.isfinite(out.forces).all()
+    assert torch.isfinite(out.energy).all()
 
 
 # ---------------------------------------------------------------------------
