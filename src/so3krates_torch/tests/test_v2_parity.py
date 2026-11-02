@@ -636,6 +636,43 @@ def test_so3lr_checkpoint_s_structure_parity(
         )
 
 
+@pytest.mark.parametrize("pme", [False, True], ids=["realspace", "pme"])
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "zbl_repulsion_bool",
+        "electrostatic_energy_bool",
+        "dispersion_energy_bool",
+    ],
+)
+def test_so3lr_checkpoint_s_term_switch_parity(
+    flag, pme, generation, tmp_path
+):
+    """Switching one term off in the hyperparameters removes it from both
+    the JAX and the torch model, with and without PME, on the rattled
+    NaCl cell. (so3lr_dev has no separate NHL switch: it follows
+    ``legacy_so3lr_bool``, so only these three flags exist.)"""
+    structure_path = _build_rattled_nacl_structure(tmp_path)
+    if pme:
+        assert _check_checkpoint_pme_parity_on_structure(
+            "s",
+            generation,
+            structure_path,
+            tmp_path,
+            f"off_{flag}",
+            **{flag: False},
+        )
+    else:
+        assert _check_checkpoint_parity_on_structure(
+            "s",
+            generation,
+            structure_path,
+            tmp_path,
+            cutoff_lr=10.0,
+            **{flag: False},
+        )
+
+
 def test_so3lr_checkpoint_s_pme_mesh_boundary_parity(tmp_path, generation):
     """PME parity on a cell whose torch-pme and jax-pme mesh sizes would
     differ without the JAX mesh rule: ``a=5.55`` gives 7.849 A cell edges
@@ -716,49 +753,6 @@ def test_so3lr_checkpoint_l_pme_electrostatics_charged_parity(
     structure_path = _build_rattled_nacl_structure(tmp_path)
     assert _check_checkpoint_pme_parity_on_structure(
         "l", generation, structure_path, tmp_path, "electro"
-    )
-
-
-def test_so3lr_checkpoint_s_pme_dispersion_charged_regression(
-    tmp_path, generation
-):
-    """PME-dispersion-only regression check on the same charged rattled
-    NaCl supercell (cheapest checkpoint only -- this closes a coverage
-    gap, it is not re-validating a fix: dispersion's PME real-space
-    residual formula is already believed correct, per this plan's own
-    empirical finding recorded in
-    ``.superpowers/sdd/pme-elec-task-1-report.md``/plan docs; no code
-    change was needed or made to the dispersion path).
-
-    Isolates dispersion by setting ``electrostatic_energy_bool=False``
-    in the hyperparameters override (rather than keeping both terms on
-    and treating it as a combined check, as the electrostatics tests
-    above do) -- ``get_model_settings_flax_to_torch`` reads
-    ``cfg.model.electrostatic_energy_bool``/``dispersion_energy_bool``
-    directly from the (here, modified) hyperparameters dict on both the
-    JAX-model-construction side (``make_so3krates_sparse_from_config``)
-    and the torch side, so this cleanly removes electrostatics from
-    both models' energy rather than merely occluding it -- a strictly
-    stronger isolation than "keep both on".
-
-    Freshly observed: energy max_abs_diff=1.302e-06 eV
-    (max_rel_diff=3.302e-08), forces max_abs_diff=1.727e-08
-    eV/Angstrom (max_rel_diff=7.474e-07) -- comfortably inside the
-    default ``atol=1e-5, rtol=1e-4`` tolerance (~7.7x margin on energy,
-    ~580x on forces), confirming the already-correct PME-dispersion
-    real-space/k-space split holds up on a genuinely charged structure
-    too (charge only matters here insofar as it changes which atoms'
-    Hirshfeld ratios/C6 coefficients get evaluated at which positions,
-    not the dispersion formula itself).
-    """
-    structure_path = _build_rattled_nacl_structure(tmp_path)
-    assert _check_checkpoint_pme_parity_on_structure(
-        "s",
-        generation,
-        structure_path,
-        tmp_path,
-        "disp_only",
-        electrostatic_energy_bool=False,
     )
 
 
