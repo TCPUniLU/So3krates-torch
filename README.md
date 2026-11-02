@@ -422,7 +422,7 @@ torchkrates-jax2torch \
 
 This writes a loadable torch `SO3LR` model (via `torch.save`) to `--save_model_path`.
 
-Instead of `--path_to_params`/`--path_to_hyperparams`, you can point at one of the bundled `so3lr_dev` checkpoints (so3lr-s/-m/-l) by size via `--so3lr_dev_checkpoint {s,m,l}` (requires `so3lr_dev` to be installed):
+Instead of `--path_to_params`/`--path_to_hyperparams`, you can point at one of the bundled `so3lr_dev` checkpoints (`so3lr-tauri-{s,m,l}-{2602,2606}`) by size via `--so3lr_dev_checkpoint {s,m,l}` and, optionally, generation via `--so3lr_dev_generation {2602,2606}` (default `2606`; requires `so3lr_dev` to be installed):
 
 ```bash
 torchkrates-jax2torch \

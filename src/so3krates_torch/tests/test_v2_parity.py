@@ -66,13 +66,26 @@ from ml_collections import config_dict
 from so3krates_torch.tools.jax_torch_conversion import convert_flax_to_torch
 from so3krates_torch.tools.model_parity import check_model_parity
 
+# so3lr_dev bundles two generations of each SO3LR Tauri size
+# (``so3lr-tauri-{s,m,l}-{2602,2606}``); every checkpoint test below runs
+# against both.
+SO3LR_GENERATIONS = ("2602", "2606")
 
-def _load_checkpoint(size: str):
-    """Resolve + load a real bundled ``so3lr-{size}`` checkpoint's
+
+@pytest.fixture(params=SO3LR_GENERATIONS)
+def generation(request):
+    return request.param
+
+
+def _load_checkpoint(size: str, generation: str):
+    """Resolve + load a real bundled ``so3lr-tauri-{size}-{generation}``
+    checkpoint's
     ``params.pkl``/``hyperparameters.json``, exactly as
     ``test_so3lr_dev_checkpoint_s_parity_at_machine_precision_ceiling``
     (``test_jax_torch_conversion.py``) does."""
-    checkpoint_dir = files("so3lr") / "models" / f"so3lr-{size}"
+    checkpoint_dir = (
+        files("so3lr") / "models" / f"so3lr-tauri-{size}-{generation}"
+    )
     params_path = str(checkpoint_dir / "params.pkl")
     hyperparams_path = str(checkpoint_dir / "hyperparameters.json")
 
@@ -84,7 +97,7 @@ def _load_checkpoint(size: str):
     return params_path, hyperparams_path, flax_params, cfg
 
 
-def _check_checkpoint_parity(size: str) -> bool:
+def _check_checkpoint_parity(size: str, generation: str) -> bool:
     """Build the torch model for real checkpoint ``size`` and check its
     parity against the JAX reference, at ``check_model_parity``'s own
     (tightened, Task-4-fix-#5-calibrated) default tolerance.
@@ -97,7 +110,9 @@ def _check_checkpoint_parity(size: str) -> bool:
     anything in this plan's history -- see
     ``.superpowers/sdd/v2arch-task-4-fix-report.md``).
     """
-    params_path, hyperparams_path, flax_params, cfg = _load_checkpoint(size)
+    params_path, hyperparams_path, flax_params, cfg = _load_checkpoint(
+        size, generation
+    )
 
     torch_model = convert_flax_to_torch(
         path_to_flax_params=params_path,
@@ -114,20 +129,20 @@ def _check_checkpoint_parity(size: str) -> bool:
     )
 
 
-def test_so3lr_checkpoint_s_parity():
+def test_so3lr_checkpoint_s_parity(generation):
     """Cheapest real checkpoint (2 layers, 128 features)."""
-    assert _check_checkpoint_parity("s")
+    assert _check_checkpoint_parity("s", generation)
 
 
-def test_so3lr_checkpoint_m_parity():
+def test_so3lr_checkpoint_m_parity(generation):
     """Mid-size real checkpoint (3 layers, 128 features)."""
-    assert _check_checkpoint_parity("m")
+    assert _check_checkpoint_parity("m", generation)
 
 
-def test_so3lr_checkpoint_l_parity():
+def test_so3lr_checkpoint_l_parity(generation):
     """Largest real checkpoint (3 layers, 256 features, doubled
     degrees) -- most expensive, run last."""
-    assert _check_checkpoint_parity("l")
+    assert _check_checkpoint_parity("l", generation)
 
 
 # ---------------------------------------------------------------------
@@ -177,7 +192,7 @@ def test_so3lr_checkpoint_l_parity():
 # ---------------------------------------------------------------------
 
 
-def test_so3lr_checkpoint_s_pme_enabled_parity(tmp_path):
+def test_so3lr_checkpoint_s_pme_enabled_parity(tmp_path, generation):
     """PME/Ewald forced on (both electrostatics and dispersion) for the
     real so3lr-s checkpoint, against a small self-contained periodic
     structure.
@@ -267,7 +282,7 @@ def test_so3lr_checkpoint_s_pme_enabled_parity(tmp_path):
         _hyperparams_path,
         flax_params,
         _cfg_unused,
-    ) = _load_checkpoint("s")
+    ) = _load_checkpoint("s", generation)
 
     with open(params_path.replace("params.pkl", "hyperparameters.json")) as f:
         raw_hyperparams = json.load(f)
@@ -404,6 +419,7 @@ def _pme_hyperparams(raw_hyperparams: dict, **model_overrides) -> dict:
 
 def _check_checkpoint_pme_parity_on_structure(
     size: str,
+    generation: str,
     structure_path: str,
     tmp_path,
     label: str,
@@ -416,13 +432,15 @@ def _check_checkpoint_pme_parity_on_structure(
     (``atol=1e-5, rtol=1e-4``) -- see the calling test functions'
     docstrings below for the real observed numbers that justify relying
     on the default here rather than a custom looser one."""
-    params_path, _hp_path, flax_params, _cfg_unused = _load_checkpoint(size)
+    params_path, _hp_path, flax_params, _cfg_unused = _load_checkpoint(
+        size, generation
+    )
     with open(params_path.replace("params.pkl", "hyperparameters.json")) as f:
         raw_hyperparams = json.load(f)
 
     modified_hyperparams = _pme_hyperparams(raw_hyperparams, **model_overrides)
     modified_hyperparams_path = (
-        tmp_path / f"hyperparameters_pme_{size}_{label}.json"
+        tmp_path / f"hyperparameters_pme_{size}_{generation}_{label}.json"
     )
     with open(modified_hyperparams_path, "w") as f:
         json.dump(modified_hyperparams, f)
@@ -444,7 +462,9 @@ def _check_checkpoint_pme_parity_on_structure(
     )
 
 
-def test_so3lr_checkpoint_s_pme_electrostatics_charged_parity(tmp_path):
+def test_so3lr_checkpoint_s_pme_electrostatics_charged_parity(
+    tmp_path, generation
+):
     """Charged-system PME electrostatics(+dispersion) parity, cheapest
     real checkpoint (2 layers, 128 features), on the rattled 2x2x2 NaCl
     supercell.
@@ -469,11 +489,13 @@ def test_so3lr_checkpoint_s_pme_electrostatics_charged_parity(tmp_path):
     """
     structure_path = _build_rattled_nacl_structure(tmp_path)
     assert _check_checkpoint_pme_parity_on_structure(
-        "s", structure_path, tmp_path, "electro"
+        "s", generation, structure_path, tmp_path, "electro"
     )
 
 
-def test_so3lr_checkpoint_m_pme_electrostatics_charged_parity(tmp_path):
+def test_so3lr_checkpoint_m_pme_electrostatics_charged_parity(
+    tmp_path, generation
+):
     """Same as the ``-s`` test above, mid-size checkpoint (3 layers,
     128 features).
 
@@ -485,11 +507,13 @@ def test_so3lr_checkpoint_m_pme_electrostatics_charged_parity(tmp_path):
     """
     structure_path = _build_rattled_nacl_structure(tmp_path)
     assert _check_checkpoint_pme_parity_on_structure(
-        "m", structure_path, tmp_path, "electro"
+        "m", generation, structure_path, tmp_path, "electro"
     )
 
 
-def test_so3lr_checkpoint_l_pme_electrostatics_charged_parity(tmp_path):
+def test_so3lr_checkpoint_l_pme_electrostatics_charged_parity(
+    tmp_path, generation
+):
     """Same as the ``-s``/``-m`` tests above, largest checkpoint (3
     layers, 256 features, doubled degrees).
 
@@ -505,11 +529,13 @@ def test_so3lr_checkpoint_l_pme_electrostatics_charged_parity(tmp_path):
     """
     structure_path = _build_rattled_nacl_structure(tmp_path)
     assert _check_checkpoint_pme_parity_on_structure(
-        "l", structure_path, tmp_path, "electro"
+        "l", generation, structure_path, tmp_path, "electro"
     )
 
 
-def test_so3lr_checkpoint_s_pme_dispersion_charged_regression(tmp_path):
+def test_so3lr_checkpoint_s_pme_dispersion_charged_regression(
+    tmp_path, generation
+):
     """PME-dispersion-only regression check on the same charged rattled
     NaCl supercell (cheapest checkpoint only -- this closes a coverage
     gap, it is not re-validating a fix: dispersion's PME real-space
@@ -542,6 +568,7 @@ def test_so3lr_checkpoint_s_pme_dispersion_charged_regression(tmp_path):
     structure_path = _build_rattled_nacl_structure(tmp_path)
     assert _check_checkpoint_pme_parity_on_structure(
         "s",
+        generation,
         structure_path,
         tmp_path,
         "disp_only",
@@ -551,6 +578,7 @@ def test_so3lr_checkpoint_s_pme_dispersion_charged_regression(tmp_path):
 
 def test_so3lr_checkpoint_s_pme_electrostatics_only_charged_parity(
     tmp_path,
+    generation,
 ):
     """PME-electrostatics-only (``dispersion_energy_bool=False``)
     numeric JAX parity check on the charged rattled NaCl supercell --
@@ -587,6 +615,7 @@ def test_so3lr_checkpoint_s_pme_electrostatics_only_charged_parity(
     structure_path = _build_rattled_nacl_structure(tmp_path)
     assert _check_checkpoint_pme_parity_on_structure(
         "s",
+        generation,
         structure_path,
         tmp_path,
         "electro_only",

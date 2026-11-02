@@ -116,6 +116,7 @@ class Jax2TorchArgs(BaseModel):
     path_to_params: Optional[str] = None
     path_to_hyperparams: Optional[str] = None
     so3lr_dev_checkpoint: Optional[Literal["s", "m", "l"]] = None
+    so3lr_dev_generation: Literal["2602", "2606"] = "2606"
     save_settings_path: Optional[str] = None
     save_state_dict_path: Optional[str] = None
     save_model_path: Optional[str] = None

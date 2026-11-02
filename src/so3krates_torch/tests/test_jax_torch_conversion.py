@@ -670,7 +670,7 @@ def test_flax_to_torch_mapping_derives_simple_hirshfeld_false_for_v1():
 # Task 4: `--so3lr_dev_checkpoint {s,m,l}` on `torchkrates-jax2torch`.
 #
 # Lets callers point at one of the three real, bundled `so3lr_dev`
-# checkpoints (so3lr-s/-m/-l) by name instead of spelling out
+# checkpoints (so3lr-tauri-s/-m/-l-{2602,2606}) by name instead of spelling out
 # `--path_to_params`/`--path_to_hyperparams` -- resolved via
 # `importlib.resources.files("so3lr")`. `Jax2TorchArgs` itself gets an
 # independent `@model_validator` enforcing the same mutual-exclusivity/
@@ -690,6 +690,7 @@ def test_jax2torch_args_accepts_so3lr_dev_checkpoint():
         save_model_path="/tmp/does_not_need_to_exist.model",
     )
     assert args.so3lr_dev_checkpoint == "s"
+    assert args.so3lr_dev_generation == "2606"
     assert args.path_to_params is None
     assert args.path_to_hyperparams is None
 
@@ -708,9 +709,13 @@ def test_jax2torch_args_rejects_neither_given():
         Jax2TorchArgs(save_model_path="/tmp/does_not_need_to_exist.model")
 
 
-def test_so3lr_dev_checkpoint_resolves_to_real_existing_files():
+SO3LR_DEV_GENERATIONS = ("2602", "2606")
+
+
+@pytest.mark.parametrize("generation", SO3LR_DEV_GENERATIONS)
+def test_so3lr_dev_checkpoint_resolves_to_real_existing_files(generation):
     """Confirms `importlib.resources.files("so3lr")` genuinely resolves
-    each bundled so3lr-s/-m/-l checkpoint to real, existing
+    each bundled so3lr-tauri-s/-m/-l checkpoint to real, existing
     `params.pkl`/`hyperparameters.json` files in this environment --
     the core claim `--so3lr_dev_checkpoint` relies on -- independent of
     whether `convert_flax_to_torch`/`SO3LR.__init__` can currently
@@ -721,14 +726,19 @@ def test_so3lr_dev_checkpoint_resolves_to_real_existing_files():
     from importlib.resources import files
 
     for size in ("s", "m", "l"):
-        checkpoint_dir = files("so3lr") / "models" / f"so3lr-{size}"
+        checkpoint_dir = (
+            files("so3lr") / "models" / f"so3lr-tauri-{size}-{generation}"
+        )
         params_path = checkpoint_dir / "params.pkl"
         hyperparams_path = checkpoint_dir / "hyperparameters.json"
         assert params_path.is_file()
         assert hyperparams_path.is_file()
 
 
-def test_jax2torch_cli_so3lr_dev_checkpoint_end_to_end(tmp_path, monkeypatch):
+@pytest.mark.parametrize("generation", SO3LR_DEV_GENERATIONS)
+def test_jax2torch_cli_so3lr_dev_checkpoint_end_to_end(
+    tmp_path, monkeypatch, generation
+):
     """Real end-to-end run of `torchkrates-jax2torch
     --so3lr_dev_checkpoint s`, exercising the full CLI wiring (argv ->
     --so3lr_dev_checkpoint resolution -> Jax2TorchArgs validation ->
@@ -761,6 +771,8 @@ def test_jax2torch_cli_so3lr_dev_checkpoint_end_to_end(tmp_path, monkeypatch):
         "torchkrates-jax2torch",
         "--so3lr_dev_checkpoint",
         "s",
+        "--so3lr_dev_generation",
+        generation,
         "--save_model_path",
         str(save_model_path),
         "--no-check_parity",
@@ -771,7 +783,10 @@ def test_jax2torch_cli_so3lr_dev_checkpoint_end_to_end(tmp_path, monkeypatch):
     assert save_model_path.exists()
 
 
-def test_so3lr_dev_checkpoint_s_parity_at_machine_precision_ceiling():
+@pytest.mark.parametrize("generation", SO3LR_DEV_GENERATIONS)
+def test_so3lr_dev_checkpoint_s_parity_at_machine_precision_ceiling(
+    generation,
+):
     """Tight-tolerance regression test for the `c6_ratios_bool`
     conversion bug (v2arch-task-4-fix4): before that fix,
     `get_flax_to_torch_mapping`/`get_model_settings_flax_to_torch` gated
@@ -813,7 +828,7 @@ def test_so3lr_dev_checkpoint_s_parity_at_machine_precision_ceiling():
     )
     from so3krates_torch.tools.model_parity import check_model_parity
 
-    checkpoint_dir = files("so3lr") / "models" / "so3lr-s"
+    checkpoint_dir = files("so3lr") / "models" / f"so3lr-tauri-s-{generation}"
     params_path = str(checkpoint_dir / "params.pkl")
     hyperparams_path = str(checkpoint_dir / "hyperparameters.json")
 

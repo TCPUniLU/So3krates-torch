@@ -26,10 +26,21 @@ def main():
         choices=["s", "m", "l"],
         default=None,
         help=(
-            "Load one of the bundled so3lr_dev checkpoints (so3lr-s/-m/-l) "
-            "by size instead of --path_to_params/--path_to_hyperparams. "
-            "Requires so3lr_dev (`pip install -e <so3lr_dev checkout>`) to "
-            "be installed."
+            "Load one of the bundled so3lr_dev checkpoints "
+            "(so3lr-tauri-s/-m/-l) by size instead of "
+            "--path_to_params/--path_to_hyperparams. Requires so3lr_dev "
+            "(`pip install -e <so3lr_dev checkout>`) to be installed."
+        ),
+    )
+    argparser.add_argument(
+        "--so3lr_dev_generation",
+        type=str,
+        choices=["2602", "2606"],
+        default="2606",
+        help=(
+            "Generation of the bundled so3lr_dev checkpoint selected by "
+            "--so3lr_dev_checkpoint (so3lr-tauri-<size>-<generation>). "
+            "Defaults to the newest (2606)."
         ),
     )
     argparser.add_argument(
@@ -116,7 +127,10 @@ def main():
         from importlib.resources import files
 
         checkpoint_dir = (
-            files("so3lr") / "models" / f"so3lr-{args.so3lr_dev_checkpoint}"
+            files("so3lr")
+            / "models"
+            / f"so3lr-tauri-{args.so3lr_dev_checkpoint}"
+            f"-{args.so3lr_dev_generation}"
         )
         args.path_to_params = str(checkpoint_dir / "params.pkl")
         args.path_to_hyperparams = str(checkpoint_dir / "hyperparameters.json")
