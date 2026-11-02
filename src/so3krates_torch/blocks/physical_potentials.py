@@ -1180,6 +1180,9 @@ class PMEDispersionInteraction(nn.Module):
             exponent=6, smearing=smearing_bohr
         )
         self.calculator = (
+            # Ewald k-grid: torch-pme's ceil(k_cutoff*L/2pi) equals jax-pme's
+            # ceil(L/h) except for off-by-one float noise when L/h is an exact
+            # integer; do_ewald is not reachable from SO3LR, so left as is.
             torchpme.EwaldCalculator(
                 potential=potential, lr_wavelength=mesh_spacing_bohr
             )
