@@ -608,6 +608,10 @@ class SO3LRCalculator(TorchkratesCalculator):
     ``"v2-s"``/``"v2-m"``/``"v2-l"`` (the three sizes of the newer v2
     architecture). See ``load_pretrained_so3lr`` for how the
     checkpoint is resolved and constructed.
+
+    The v2 models have 16 theory-level heads, so ``theory_level`` is
+    required for them (``ValueError`` otherwise); ``so3lr_dev`` uses
+    level 5. The single-head ``"v1"`` model needs no ``theory_level``.
     """
 
     def __init__(
@@ -622,7 +626,7 @@ class SO3LRCalculator(TorchkratesCalculator):
         default_dtype="",
         charges_key="Qs",
         key_specification=None,
-        theory_level: int = 0,
+        theory_level: Optional[int] = None,
         use_pme: Optional[bool] = None,
         pme_smearing: Optional[float] = None,
         pme_mesh_spacing: Optional[float] = None,
@@ -650,6 +654,22 @@ class SO3LRCalculator(TorchkratesCalculator):
                 model, device=device, **architecture_overrides
             )
         ]
+        num_theory_levels = max(
+            getattr(
+                getattr(m, "atomic_energy_output_block", None),
+                "num_theory_levels",
+                1,
+            )
+            for m in models
+        )
+        if theory_level is None:
+            if num_theory_levels > 1:
+                raise ValueError(
+                    f"model {model!r} has {num_theory_levels} theory-level "
+                    "heads; pass theory_level=<int> to choose one. "
+                    "so3lr_dev uses theory level 5 by default."
+                )
+            theory_level = 0
         super().__init__(
             model_paths=None,
             models=models,

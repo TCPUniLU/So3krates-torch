@@ -57,6 +57,7 @@ from so3krates_torch.calculator.so3 import SO3LRCalculator
 atoms = molecule("H2O")
 atoms.calc = SO3LRCalculator(
     model="v2-s",       # "v1", "v2-s", "v2-m", or "v2-l"
+    theory_level=5,     # required for v2 (16 heads); so3lr_dev uses 5
     device="cpu",
     r_max_lr=12.0,
     dispersion_energy_cutoff_lr_damping=2.0,
@@ -65,7 +66,7 @@ print(atoms.get_potential_energy())
 print(atoms.get_forces())
 ```
 
-`model` is a required keyword selecting which bundled checkpoint to load. The remaining constructor keywords cover general calculator settings (`r_max_lr` (default `12.0`, long-range cutoff for electrostatics/dispersion), `dispersion_energy_cutoff_lr_damping` (default `2.0`, damping cutoff for the TS dispersion damping function), `compute_stress`, `device`, `energy_units_to_eV`, `length_units_to_A`, `default_dtype`, `charges_key`, `key_specification`, `theory_level`) plus PME electrostatics/dispersion (`use_pme`, `pme_smearing`, `pme_mesh_spacing`, `use_pme_dispersion`, `pme_dispersion_smearing`, `pme_dispersion_mesh_spacing` — all `None`/off by default; see [PME Electrostatics](#pme-electrostatics-particle-mesh-ewald) below for what each one does). For example, to enable PME on a periodic system:
+`model` is a required keyword selecting which bundled checkpoint to load. The remaining constructor keywords cover general calculator settings (`r_max_lr` (default `12.0`, long-range cutoff for electrostatics/dispersion), `dispersion_energy_cutoff_lr_damping` (default `2.0`, damping cutoff for the TS dispersion damping function), `compute_stress`, `device`, `energy_units_to_eV`, `length_units_to_A`, `default_dtype`, `charges_key`, `key_specification`, `theory_level` (required for the v2 models, which have 16 theory-level heads; `so3lr_dev` uses 5. The single-head `v1` model needs none)) plus PME electrostatics/dispersion (`use_pme`, `pme_smearing`, `pme_mesh_spacing`, `use_pme_dispersion`, `pme_dispersion_smearing`, `pme_dispersion_mesh_spacing` — all `None`/off by default; see [PME Electrostatics](#pme-electrostatics-particle-mesh-ewald) below for what each one does). For example, to enable PME on a periodic system:
 
 ```python
 from ase.build import bulk
@@ -74,6 +75,7 @@ from so3krates_torch.calculator.so3 import SO3LRCalculator
 atoms = bulk("NaCl", "rocksalt", a=5.64) * (2, 2, 2)
 atoms.calc = SO3LRCalculator(
     model="v2-s",
+    theory_level=5,
     device="cpu",
     use_pme=True,
     pme_smearing=1.18,

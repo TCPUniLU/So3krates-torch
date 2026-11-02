@@ -59,6 +59,13 @@ argparser.add_argument(
     "real-space Coulomb sum. Requires torch-pme and a periodic "
     "--start_path structure (a cell). Only applies with --so3lr.",
 )
+argparser.add_argument(
+    "--theory_level",
+    type=int,
+    default=5,
+    help="Theory-level head of the v2 SO3LR models (16 heads; so3lr_dev "
+    "uses 5). Ignored for --so3lr_model v1.",
+)
 argparser.add_argument("--dtype", type=str, default="float32")
 args = argparser.parse_args()
 
@@ -95,6 +102,9 @@ if args.so3lr:
         device=args.device,
         default_dtype=args.dtype,
         use_pme=args.use_pme,
+        # v2 models have 16 theory-level heads and require a choice;
+        # 5 is the level so3lr_dev uses. Ignored by the v1 model.
+        theory_level=args.theory_level if args.so3lr_model != "v1" else None,
     )
 
 else:
