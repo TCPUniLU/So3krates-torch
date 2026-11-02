@@ -401,7 +401,15 @@ def _build_torch_batch(
     xyz_path = structure_path if structure_path is not None else _AQM_SMALL
     atoms = read(str(xyz_path), index=index)
     z_table = AtomicNumberTable([int(z) for z in range(1, 119)])
-    config = config_from_atoms(atoms, key_specification=KeySpecification())
+    # so3lr_dev's ``ASE_to_jraph`` reads the total charge from
+    # ``atoms.info["charge"]``; read the same key on the torch side so a
+    # charged structure feeds both models the same total charge.
+    config = config_from_atoms(
+        atoms,
+        key_specification=KeySpecification(
+            info_keys={"total_charge": "charge"}
+        ),
+    )
     if theory_level is not None:
         config.theory_level = theory_level
     data_loader = torch_geometric.dataloader.DataLoader(

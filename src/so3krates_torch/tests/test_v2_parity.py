@@ -54,6 +54,7 @@ import json
 import pickle
 from importlib.resources import files
 
+import numpy as np
 import pytest
 
 pytest.importorskip("so3lr")
@@ -126,6 +127,37 @@ def _check_checkpoint_parity(size: str, generation: str) -> bool:
         torch_model=torch_model,
         r_max=cfg.model.cutoff,
         r_max_lr=cfg.model.cutoff_lr,
+    )
+
+
+def _check_checkpoint_parity_on_structure(
+    size: str, generation: str, structure_path: str, tmp_path, **overrides
+) -> bool:
+    """``_check_checkpoint_parity`` on ``structure_path`` with optional
+    ``hyperparameters.json`` ``model`` overrides (e.g. ``cutoff_lr``)."""
+    params_path, _hp_path, flax_params, _cfg_unused = _load_checkpoint(
+        size, generation
+    )
+    with open(params_path.replace("params.pkl", "hyperparameters.json")) as f:
+        hyperparams = json.load(f)
+    hyperparams["model"].update(overrides)
+    hyperparams_path = tmp_path / f"hyperparameters_{size}_{generation}.json"
+    with open(hyperparams_path, "w") as f:
+        json.dump(hyperparams, f)
+
+    torch_model = convert_flax_to_torch(
+        path_to_flax_params=params_path,
+        path_to_flax_hyperparams=str(hyperparams_path),
+        dtype=torch.float64,
+    )
+    cfg = config_dict.ConfigDict(hyperparams)
+    return check_model_parity(
+        cfg=cfg,
+        flax_params=flax_params,
+        torch_model=torch_model,
+        r_max=cfg.model.cutoff,
+        r_max_lr=cfg.model.cutoff_lr,
+        structure_path=structure_path,
     )
 
 
@@ -397,6 +429,51 @@ def _build_rattled_nacl_structure(tmp_path, seed=7, a=5.6402):
     return str(structure_path)
 
 
+def _build_structure(kind: str, tmp_path) -> str:
+    """xyz path of a parity test structure.
+
+    ``"molecule"``: isolated rattled ethanol (non-periodic).
+    ``"triclinic_water"``: three rattled water molecules in a triclinic
+    periodic cell (mixed H/O, non-orthogonal lattice).
+    ``"nacl_4x4x4"``: rattled 4x4x4 rock-salt primitive cells (128 atoms).
+    ``"nacl_charged"``: rattled 2x2x2 NaCl cell with one Na removed and
+    total charge -1 (``info["charge"]``, read by both harness sides), so the
+    PME background correction sees a net-charged cell.
+    """
+    from ase import Atoms
+    from ase.build import bulk, molecule
+    from ase.io import write as ase_write
+
+    if kind == "molecule":
+        atoms = molecule("CH3CH2OH")
+        atoms.rattle(stdev=0.05, seed=3)
+    elif kind == "triclinic_water":
+        cell = np.array([[9.0, 0.0, 0.0], [1.5, 9.3, 0.0], [-1.0, 2.0, 9.6]])
+        atoms = Atoms(cell=cell, pbc=True)
+        for frac in ([0.2, 0.2, 0.2], [0.7, 0.3, 0.6], [0.4, 0.8, 0.4]):
+            water = molecule("H2O")
+            water.translate(np.array(frac) @ cell)
+            atoms += water
+        atoms.rattle(stdev=0.05, seed=5)
+    elif kind == "nacl_4x4x4":
+        atoms = bulk("NaCl", crystalstructure="rocksalt", a=5.64).repeat(
+            (4, 4, 4)
+        )
+        atoms.rattle(stdev=0.05, seed=11)
+    elif kind == "nacl_charged":
+        atoms = bulk("NaCl", crystalstructure="rocksalt", a=5.6402).repeat(
+            (2, 2, 2)
+        )
+        del atoms[0]
+        atoms.rattle(stdev=0.05, seed=13)
+        atoms.info["charge"] = -1
+    else:
+        raise ValueError(kind)
+    structure_path = tmp_path / f"{kind}.xyz"
+    ase_write(str(structure_path), atoms)
+    return str(structure_path)
+
+
 def _pme_hyperparams(raw_hyperparams: dict, **model_overrides) -> dict:
     """Deep-copy a checkpoint's raw ``hyperparameters.json`` dict, force
     PME kspace electrostatics (and, per ``get_model_settings_flax_to_
@@ -458,6 +535,50 @@ def _check_checkpoint_pme_parity_on_structure(
         r_max_lr=cfg.model.cutoff_lr,
         structure_path=structure_path,
     )
+
+
+# (structure kind, PME spacing or None for real space). Spacings keep the
+# PME mesh <= 256^3: 0.25 A for the ~9 A triclinic cell, 0.5 A for the
+# ~16 A 128-atom cell, 0.125 A for the ~8 A NaCl cell.
+STRUCTURE_CASES = [
+    ("molecule", None),
+    ("triclinic_water", None),
+    ("triclinic_water", 0.25),
+    ("nacl_4x4x4", None),
+    ("nacl_4x4x4", 0.5),
+    ("nacl_charged", None),
+    ("nacl_charged", 0.125),
+]
+
+
+@pytest.mark.parametrize(
+    "kind,pme_spacing",
+    STRUCTURE_CASES,
+    ids=[f"{k}-{'pme' if h else 'realspace'}" for k, h in STRUCTURE_CASES],
+)
+def test_so3lr_checkpoint_s_structure_parity(
+    kind, pme_spacing, generation, tmp_path
+):
+    """JAX parity on an isolated molecule, a triclinic mixed-element cell,
+    a 128-atom cell and a net-charged cell, in real space and with PME."""
+    structure_path = _build_structure(kind, tmp_path)
+    if pme_spacing is None and kind == "molecule":
+        assert _check_checkpoint_parity_on_structure(
+            "s", generation, structure_path, tmp_path
+        )
+    elif pme_spacing is None:
+        assert _check_checkpoint_parity_on_structure(
+            "s", generation, structure_path, tmp_path, cutoff_lr=10.0
+        )
+    else:
+        assert _check_checkpoint_pme_parity_on_structure(
+            "s",
+            generation,
+            structure_path,
+            tmp_path,
+            f"{kind}_structure",
+            kspace_spacing=pme_spacing,
+        )
 
 
 def test_so3lr_checkpoint_s_pme_mesh_boundary_parity(tmp_path, generation):
