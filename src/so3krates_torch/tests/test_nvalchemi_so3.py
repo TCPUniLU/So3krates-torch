@@ -655,6 +655,36 @@ def test_set_active_outputs_pme_pipeline_keeps_charges():
     assert torch.isfinite(out.energy).all()
 
 
+def test_total_spin_is_forwarded():
+    """atoms.info['total_spin'] (calculator key) reaches the model via
+    atoms_to_data and matches TorchkratesCalculator."""
+    from so3krates_torch.cli.run_md_nvalchemi import atoms_to_data
+
+    model = _make_so3lr(electrostatics_bool=True, use_spin_embed=True)
+    w = NVAlchemiSO3LR(model).to(DEVICE)
+    atoms = bulk("NaCl", "rocksalt", a=5.64)
+
+    def _energy(at):
+        nl = _make_data_with_nl(w, at)
+        data = atoms_to_data(at, str(DEVICE), DTYPE).model_copy(
+            update={
+                "neighbor_list": nl.neighbor_list,
+                "neighbor_list_shifts": nl.neighbor_list_shifts,
+            }
+        )
+        return data, w(Batch.from_data_list([data]))["energy"]
+
+    _, e0 = _energy(atoms)
+    atoms.info["total_spin"] = 1.0
+    data, e1 = _energy(atoms)
+    assert data.spin is not None
+    assert data.spin.shape == (1, 1)
+    assert data.spin.item() == pytest.approx(1.0)
+    assert not torch.allclose(e0, e1), "model energy must depend on spin"
+    atoms.calc = _parity_calc(model)
+    assert e1.item() == pytest.approx(atoms.get_potential_energy(), abs=1e-5)
+
+
 # ---------------------------------------------------------------------------
 # Helper: build AtomicData with neighbor list set, then batch
 # ---------------------------------------------------------------------------

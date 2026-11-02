@@ -25,7 +25,11 @@ Usage (NPT)::
 
 CSV log columns:
     step, graph_idx, status, energy (eV), fmax (eV/Å), temperature (K),
-    volume_A3 (Å³), density_g_cm3 (g/cm³), elapsed_s (s), s_per_step (s)
+    elapsed_s (s), s_per_step (s); plus volume_A3 (Å³) and density_g_cm3
+    (g/cm³) for periodic structures, and pressure_bar (bar) for NPT.
+
+Total charge and spin are read from ``atoms.info["charge"]`` and
+``atoms.info["total_spin"]`` (the keys ``TorchkratesCalculator`` uses).
 """
 
 from __future__ import annotations
@@ -37,19 +41,37 @@ import time
 import torch
 from ase.io import read as ase_read
 
-from nvalchemi.data.atomic_data import AtomicData
-from nvalchemi.data.batch import Batch
-from nvalchemi.dynamics.base import DynamicsStage
-from nvalchemi.dynamics import initialize_velocities
-from nvalchemi.dynamics.hooks.logging import LoggingHook
-from nvalchemi.dynamics.integrators.npt import NPT
-from nvalchemi.dynamics.integrators.nvt_langevin import NVTLangevin
-from nvalchemi.models.base import BaseModelMixin
+try:
+    from nvalchemi.data.atomic_data import AtomicData
+    from nvalchemi.data.batch import Batch
+    from nvalchemi.dynamics.base import DynamicsStage
+    from nvalchemi.dynamics import initialize_velocities
+    from nvalchemi.dynamics.hooks.logging import LoggingHook
+    from nvalchemi.dynamics.integrators.npt import NPT
+    from nvalchemi.dynamics.integrators.nvt_langevin import NVTLangevin
+    from nvalchemi.models.base import BaseModelMixin
 
-from so3krates_torch.calculator.nvalchemi_so3 import (
-    NVAlchemiSO3LR,
-    build_nvalchemi_pme_model,
+    from so3krates_torch.calculator.nvalchemi_so3 import (
+        NVAlchemiSO3LR,
+        build_nvalchemi_pme_model,
+        set_active_outputs,
+    )
+except ImportError as _err:  # e.g. Python 3.10: the extra installs nothing
+    _NVALCHEMI_IMPORT_ERROR: ImportError | None = _err
+else:
+    _NVALCHEMI_IMPORT_ERROR = None
+
+_NVALCHEMI_MISSING_MSG = (
+    "Error: torchkrates-md-nvalchemi needs nvalchemi-toolkit, which could "
+    "not be imported ({err}).\n"
+    "nvalchemi-toolkit requires Python >= 3.11; on Python >= 3.11 install "
+    'it with:  pip install ".[nvalchemi]"'
 )
+
+# Outputs NVT needs.  nvalchemi-toolkit 0.2 integrators do not narrow
+# model_config.active_outputs themselves, so without this NVT would compute
+# (unused) stress every step.  NPT keeps the wrapper's defaults.
+_NVT_OUTPUTS = frozenset({"energy", "forces"})
 
 # ---------------------------------------------------------------------------
 # Unit conversion constants
@@ -108,7 +130,7 @@ def _pressure_bar_per_graph(batch) -> torch.Tensor:
 # ---------------------------------------------------------------------------
 
 
-def _parse_args() -> argparse.Namespace:
+def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="NVT / NPT MD with So3krates-torch + NVAlchemi"
     )
@@ -269,11 +291,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Compile the inner model with torch.compile(dynamic=True). "
         "Adds ~30-60 s first-step overhead, then typically 2-4× speedup "
-        "for large systems. Remaining intended graph-breaks: "
-        "torch.autograd.grad (forces/stress) and the model's own "
-        "torch-pme per-graph loop when use_pme=True. "
-        "The default erf-Coulomb path and NVAlchemi-native PME "
-        "(--electrostatics nvalchemi) are unaffected.",
+        "for large systems. On CUDA the model is compiled with "
+        "fullgraph=True (no graph breaks allowed; compilation fails "
+        "loudly if one occurs). On CPU, long-range SO3LR models are "
+        "refused (Inductor CPU backend crash). NVAlchemi-native PME "
+        "(--electrostatics nvalchemi) runs outside the compiled module.",
     )
     p.add_argument(
         "--electrostatic-energy-scale",
@@ -296,7 +318,11 @@ def _parse_args() -> argparse.Namespace:
         help="Override the dispersion LR cutoff damping (Å) stored in the "
         "model (e.g. 2.0). Default: use the value saved with the model.",
     )
-    args = p.parse_args()
+    return p
+
+
+def _parse_args() -> argparse.Namespace:
+    args = _build_parser().parse_args()
 
     # Resolve NPT coupling time constants as multiples of the timestep,
     # mirroring the LAMMPS convention (tdamp ~ 100 steps, pdamp ~ 1000 steps).
@@ -321,20 +347,29 @@ def atoms_to_data(atoms, device: str, dtype: torch.dtype) -> AtomicData:
     internal time unit equals ASE's (``sqrt(amu*Å^2/eV)``), so
     ``atoms.get_velocities()`` is copied unchanged (zeros when the
     structure file carries no velocity data).
+
+    The total charge comes from ``atoms.info["charge"]`` (via
+    ``AtomicData.from_atoms``) and the total spin *S* (not the
+    multiplicity) from ``atoms.info["total_spin"]`` — the same keys
+    ``TorchkratesCalculator`` uses.  Spin is stored as ``data.spin``
+    ``[1, 1]``; absent means 0.
     """
     n = len(atoms)
     data = AtomicData.from_atoms(atoms, device=device, dtype=dtype)
-    data = data.model_copy(
-        update={
-            "forces": torch.zeros(n, 3, dtype=dtype, device=device),
-            "energy": torch.zeros(1, 1, dtype=dtype, device=device),
-            "stress": torch.zeros(1, 3, 3, dtype=dtype, device=device),
-            "velocities": torch.as_tensor(
-                atoms.get_velocities(), dtype=dtype, device=device
-            ),
-        }
-    )
-    return data
+    update = {
+        "forces": torch.zeros(n, 3, dtype=dtype, device=device),
+        "energy": torch.zeros(1, 1, dtype=dtype, device=device),
+        "stress": torch.zeros(1, 3, 3, dtype=dtype, device=device),
+        "velocities": torch.as_tensor(
+            atoms.get_velocities(), dtype=dtype, device=device
+        ),
+    }
+    total_spin = atoms.info.get("total_spin")
+    if total_spin is not None:
+        update["spin"] = torch.tensor(
+            [[float(total_spin)]], dtype=dtype, device=device
+        )
+    return data.model_copy(update=update)
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +407,13 @@ def load_model(
     if isinstance(raw, dict) and "model" in raw:
         raw = raw["model"]
 
+    # Convert to the requested device/dtype BEFORE wrapping or compiling
+    # (as TorchkratesCalculator does), and freeze the weights: MD only
+    # needs gradients w.r.t. positions/strain.
+    raw = raw.to(device=device, dtype=dtype)
+    for param in raw.parameters():
+        param.requires_grad = False
+
     # Apply scale overrides BEFORE torch.compile so Inductor sees the
     # final float values (it bakes Python-float attributes as constants).
     if electrostatic_energy_scale is not None:
@@ -383,8 +425,18 @@ def load_model(
             dispersion_energy_cutoff_lr_damping
         )
 
+    # Apply the electrostatics backend switch on the raw module BEFORE
+    # compiling (attribute writes on a compiled OptimizedModule would not
+    # reach the inner model) and before printing the diagnostics.
+    if electrostatics == "none":
+        raw.electrostatic_energy_bool = False
+    elif electrostatics == "nvalchemi":
+        # build_nvalchemi_pme_model sets these again; harmless.
+        raw.electrostatic_energy_bool = False
+        raw.output_partial_charges = True
+
     # Print a diagnostic so there's no ambiguity about what is active.
-    _print_model_diagnostics(raw)
+    _print_model_diagnostics(raw, electrostatics)
 
     if compile_model:
         if torch.device(device).type != "cuda" and getattr(
@@ -413,8 +465,6 @@ def load_model(
             skin=skin,
         )
     else:
-        if electrostatics == "none":
-            raw.electrostatic_energy_bool = False
         model = NVAlchemiSO3LR(raw, electrostatics="model", skin=skin)
 
     model = model.to(device=device, dtype=dtype)
@@ -422,8 +472,12 @@ def load_model(
     return model
 
 
-def _print_model_diagnostics(raw) -> None:
-    """Print which long-range terms are active and their scale factors."""
+def _print_model_diagnostics(raw, electrostatics: str = "model") -> None:
+    """Print which long-range terms are active and their scale factors.
+
+    Called after the ``electrostatics`` backend switch has been applied to
+    ``raw``, so the report reflects what will actually run.
+    """
     r_sr = getattr(raw, "r_max", None)
     r_lr = getattr(raw, "r_max_lr", None)
     elec_bool = getattr(raw, "electrostatic_energy_bool", False)
@@ -436,12 +490,14 @@ def _print_model_diagnostics(raw) -> None:
     def _yn(b):
         return "yes" if b else "NO"
 
+    if electrostatics == "nvalchemi":
+        elec = "NVAlchemi PME (from model partial charges)"
+    else:
+        elec = _yn(elec_bool) + (f"  scale={elec_scale}" if elec_bool else "")
     print(
         f"  SR cutoff: {r_sr} Å   LR cutoff: {r_lr} Å\n"
         f"  ZBL repulsion:  {_yn(zbl_bool)}\n"
-        f"  Electrostatics: {_yn(elec_bool)}"
-        + (f"  scale={elec_scale}" if elec_bool else "")
-        + "\n"
+        f"  Electrostatics: {elec}\n"
         f"  Dispersion:     {_yn(disp_bool)}"
         + (
             f"  scale={disp_scale}  lr_damping={disp_damp}"
@@ -549,7 +605,16 @@ def _make_hooks(
     dt_fs: float,
     ensemble: str,
     start_time_ref: list[float],
+    has_cell: bool = True,
 ) -> list:
+    """Neighbor, CSV-logging and stdout hooks.
+
+    Cell-derived CSV columns (``volume_A3``, ``density_g_cm3``) are only
+    registered when the batch has a cell (periodic input), and
+    ``pressure_bar`` only for NPT (NVT does not compute stress); a
+    non-periodic ``Batch`` has no ``cell`` attribute at all.
+    """
+
     def _volume(ctx):
         return torch.abs(torch.linalg.det(ctx.batch.cell))  # [B] Å³
 
@@ -577,17 +642,20 @@ def _make_hooks(
         md_elapsed = _elapsed(ctx) - start_time_ref[1]
         return md_elapsed / step
 
+    custom_scalars = {}
+    if has_cell:
+        custom_scalars["volume_A3"] = _volume
+        custom_scalars["density_g_cm3"] = _density
+    if ensemble == "npt":
+        custom_scalars["pressure_bar"] = _pressure
+    custom_scalars["elapsed_s"] = _elapsed
+    custom_scalars["s_per_step"] = _s_per_step
+
     log_hook = LoggingHook(
         backend="csv",
         log_path=log_file,
         frequency=log_freq,
-        custom_scalars={
-            "volume_A3": _volume,
-            "density_g_cm3": _density,
-            "pressure_bar": _pressure,
-            "elapsed_s": _elapsed,
-            "s_per_step": _s_per_step,
-        },
+        custom_scalars=custom_scalars,
     )
     print_hook = _PrintHook(log_freq, dt_fs, ensemble, start_time_ref)
     # The neighbor list is managed by the model's own make_neighbor_hooks()
@@ -602,8 +670,38 @@ def _make_hooks(
 
 
 def main() -> None:
+    if _NVALCHEMI_IMPORT_ERROR is not None:
+        sys.exit(_NVALCHEMI_MISSING_MSG.format(err=_NVALCHEMI_IMPORT_ERROR))
     args = _parse_args()
     dtype = torch.float64 if args.dtype == "float64" else torch.float32
+
+    # Read and validate the structures before the (slow) model load.
+    print(f"Reading structure(s) from {args.atoms} (index={args.index}) …")
+    frames = ase_read(args.atoms, index=args.index)
+    if not isinstance(frames, list):  # single-frame selection
+        frames = [frames]
+    print(
+        f"  {len(frames)} system(s), "
+        f"{sum(len(a) for a in frames)} atoms total"
+    )
+    periodic = [bool(a.get_pbc().any()) for a in frames]
+    if len(set(periodic)) > 1:
+        sys.exit(
+            "Error: the selected frames are a mix of periodic and "
+            "non-periodic structures (periodic: "
+            f"{[i for i, p in enumerate(periodic) if p]}, non-periodic: "
+            f"{[i for i, p in enumerate(periodic) if not p]}); they cannot "
+            "share one batch. Select only one kind with --index or run "
+            "them separately."
+        )
+    if args.ensemble == "npt" and not all(periodic):
+        sys.exit(
+            "Error: NPT requires a periodic cell, but the structure(s) have "
+            "pbc=False.\n"
+            "Ensure your structure file uses extended-XYZ format with a "
+            "'Lattice=' header, or use a POSCAR/CIF file so ASE reads "
+            "the cell and sets pbc=True."
+        )
 
     print(f"Loading model from {args.model} …")
     model = load_model(
@@ -623,6 +721,8 @@ def main() -> None:
             args.dispersion_energy_cutoff_lr_damping
         ),
     )
+    if args.ensemble == "nvt":
+        set_active_outputs(model, _NVT_OUTPUTS)
     cutoff = model.model_config.neighbor_config.cutoff
     compile_note = "  compiled=yes (first step slow)" if args.compile else ""
     print(
@@ -630,30 +730,8 @@ def main() -> None:
         f"neighbor cutoff={cutoff:.2f} Å{compile_note}"
     )
 
-    print(f"Reading structure(s) from {args.atoms} (index={args.index}) …")
-    frames = ase_read(args.atoms, index=args.index)
-    if not isinstance(frames, list):  # single-frame selection
-        frames = [frames]
-    print(
-        f"  {len(frames)} system(s), "
-        f"{sum(len(a) for a in frames)} atoms total"
-    )
-
     # Build one AtomicData per system; initialise forces/energy/stress to
     # zeros so compute() can write back in-place (filled at BEFORE_COMPUTE).
-    if args.ensemble == "npt":
-        non_periodic = [
-            i for i, a in enumerate(frames) if not a.get_pbc().any()
-        ]
-        if non_periodic:
-            sys.exit(
-                f"Error: NPT requires a periodic cell, but structure(s) at "
-                f"index {non_periodic} have pbc=False.\n"
-                "Ensure your structure file uses extended-XYZ format with a "
-                "'Lattice=' header, or use a POSCAR/CIF file so ASE reads "
-                "the cell and sets pbc=True."
-            )
-
     data_list = [atoms_to_data(atoms, args.device, dtype) for atoms in frames]
     batch = Batch.from_data_list(data_list)
 
@@ -687,6 +765,7 @@ def main() -> None:
         args.dt,
         args.ensemble,
         start_time_ref,
+        has_cell=getattr(batch, "cell", None) is not None,
     )
 
     # dt, friction, barostat_time, thermostat_time are all in fs
