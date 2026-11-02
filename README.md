@@ -444,12 +444,16 @@ torchkrates-torch2jax \
 
 This writes `hyperparameters.json` and `params.pkl` into the two given directories, matching mlff's expected JAX checkpoint layout.
 
+**Precision:** `--dtype float32` rounds the weights to float32 in the saved file, which costs about 4e-6 eV in total energy even when you later evaluate in float64. For parity work convert with `--dtype float64`.
+
 **Parity check:** by default, both CLIs verify after conversion that the JAX and PyTorch model representations produce the same energy/forces on a real structure (the bundled `tests/data/aqm_small.xyz` unless `--parity_structure` is given). The converted model/params are saved regardless of the check's outcome, but the CLI exits with status `1` if the check fails, so the failure isn't silently missed.
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--check_parity` / `--no-check_parity` | `True` | After conversion, verify the two model representations agree on a real structure's energy/forces. |
 | `--parity_structure` | bundled `aqm_small.xyz` | ASE-readable structure file to check parity on. |
+
+The check behind these flags is `so3krates_torch.tools.model_parity.check_model_parity`. Besides energy and forces it can also compare the stress (`compare_stress=True`, periodic structures only), the partial charges, dipole, Hirshfeld and C6 ratios (`compare_observables=(...)`), and any theory-level head (`theory_level=<int>`; the default is so3lr_dev's level 5). See `src/so3krates_torch/tests/test_v2_parity.py` for the tolerances the test suite uses.
 | `--parity_atol` | `1e-5` | Absolute tolerance for the parity check. |
 | `--parity_rtol` | `1e-4` | Relative tolerance for the parity check. |
 
@@ -541,6 +545,7 @@ These enable the physics-based long-range interactions that distinguish SO3LR fr
 | `use_pme_dispersion` | `bool` | `False` | Enable PME dispersion for periodic systems. See [PME Dispersion](#pme-dispersion-particle-mesh-ewald). |
 | `pme_dispersion_smearing` | `float` | `r_max_lr / 5` | Ewald splitting width (Å) for PME dispersion. |
 | `pme_dispersion_mesh_spacing` | `float` | `smearing / 2` | FFT grid spacing (Å) for PME dispersion. |
+| `pme_mesh_rule` | `str` | `"jax"` | How the PME mesh size is rounded for a given spacing, for both PME terms: `"jax"` matches so3lr_dev (`jax-pme`), `"torchpme"` is stock torch-pme. See [PME Electrostatics](#pme-electrostatics-particle-mesh-ewald). |
 
 #### PME Electrostatics (Particle Mesh Ewald)
 
@@ -558,6 +563,7 @@ For periodic systems, the direct-space Coulomb sum is conditionally convergent a
 | `use_pme` | `bool` | `False` | Enable PME electrostatics. Replaces the direct cutoff scheme (`ElectrostaticInteraction`) with `PMEElectrostaticInteraction`. When `True`, `r_max_lr` is not required for the electrostatic contribution. |
 | `pme_smearing` | `float` | `r_max / 5` | Ewald splitting width in Å. Controls the split between real- and reciprocal-space contributions. Smaller values shift more work to the mesh but reduce real-space accuracy. Run `torchkrates-tune-pme` to find the optimal value. |
 | `pme_mesh_spacing` | `float` | `smearing / 2` | FFT grid spacing in Å. Finer grids improve reciprocal-space accuracy at higher computational cost. |
+| `pme_mesh_rule` | `str` | `"jax"` | Mesh-size rounding rule, also used by PME dispersion. `jax-pme` (so3lr_dev) picks `2**ceil(log2(2*ceil(L/h)+1))` points per cell axis, stock torch-pme `2**ceil(log2(2*L/h+1))`; near power-of-two boundaries these differ (e.g. a 7.85 Å cell at `h=0.25` Å: 128 vs 64 points, ~0.2 eV). The JAX rule is the default so energies match so3lr_dev; its mesh is never smaller, so accuracy does not drop. Use `"torchpme"` for the previous behavior. |
 
 Example config with PME enabled:
 ```yaml
