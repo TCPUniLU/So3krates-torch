@@ -629,6 +629,7 @@ class SO3LRCalculator(TorchkratesCalculator):
         use_pme_dispersion: Optional[bool] = None,
         pme_dispersion_smearing: Optional[float] = None,
         pme_dispersion_mesh_spacing: Optional[float] = None,
+        pme_mesh_rule: Optional[str] = None,
         **kwargs,
     ):
         architecture_overrides = {
@@ -640,6 +641,7 @@ class SO3LRCalculator(TorchkratesCalculator):
                 "use_pme_dispersion": use_pme_dispersion,
                 "pme_dispersion_smearing": pme_dispersion_smearing,
                 "pme_dispersion_mesh_spacing": pme_dispersion_mesh_spacing,
+                "pme_mesh_rule": pme_mesh_rule,
             }.items()
             if v is not None
         }

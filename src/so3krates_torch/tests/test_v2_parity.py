@@ -379,7 +379,7 @@ def test_so3lr_checkpoint_s_pme_enabled_parity(tmp_path, generation):
 # ---------------------------------------------------------------------
 
 
-def _build_rattled_nacl_structure(tmp_path, seed=7):
+def _build_rattled_nacl_structure(tmp_path, seed=7, a=5.6402):
     """2x2x2 NaCl rock-salt supercell (16 atoms), rattled to avoid the
     same periodic-boundary-aligned PME mesh-interpolation edge case
     documented in Part B's test docstring above (this exact convention
@@ -390,9 +390,7 @@ def _build_rattled_nacl_structure(tmp_path, seed=7):
     from ase.build import bulk
     from ase.io import write as ase_write
 
-    nacl = bulk("NaCl", crystalstructure="rocksalt", a=5.6402).repeat(
-        (2, 2, 2)
-    )
+    nacl = bulk("NaCl", crystalstructure="rocksalt", a=a).repeat((2, 2, 2))
     nacl.rattle(stdev=0.05, seed=seed)
     structure_path = tmp_path / "nacl_pme.xyz"
     ase_write(str(structure_path), nacl)
@@ -459,6 +457,18 @@ def _check_checkpoint_pme_parity_on_structure(
         r_max=cfg.model.cutoff,
         r_max_lr=cfg.model.cutoff_lr,
         structure_path=structure_path,
+    )
+
+
+def test_so3lr_checkpoint_s_pme_mesh_boundary_parity(tmp_path, generation):
+    """PME parity on a cell whose torch-pme and jax-pme mesh sizes would
+    differ without the JAX mesh rule: ``a=5.55`` gives 7.849 A cell edges
+    and ``kspace_spacing=0.25`` (set by ``_pme_hyperparams``) gives a 128^3
+    mesh in jax-pme versus 64^3 in stock torch-pme. Before the JAX mesh
+    rule became the default this disagreed by ~0.17 eV."""
+    structure_path = _build_rattled_nacl_structure(tmp_path, seed=2, a=5.55)
+    assert _check_checkpoint_pme_parity_on_structure(
+        "s", generation, structure_path, tmp_path, "mesh_boundary"
     )
 
 

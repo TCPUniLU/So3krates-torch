@@ -70,6 +70,9 @@ class ArchitectureConfig(BaseModel):
     use_pme_dispersion: bool = False
     pme_dispersion_smearing: Optional[float] = None
     pme_dispersion_mesh_spacing: Optional[float] = None
+    # Mesh-size rounding rule for both PME terms: "jax" matches so3lr_dev
+    # (jax-pme), "torchpme" is the stock torch-pme rule.
+    pme_mesh_rule: Literal["jax", "torchpme"] = "jax"
     legacy_dispersion_bool: bool = True
     compute_avg_num_neighbors: bool = True
     # Multi-head

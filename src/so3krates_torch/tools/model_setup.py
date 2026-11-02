@@ -125,6 +125,7 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
         "pme_dispersion_mesh_spacing": arch_config.get(
             "pme_dispersion_mesh_spacing", None
         ),
+        "pme_mesh_rule": arch_config.get("pme_mesh_rule", "jax"),
         "legacy_dispersion_bool": arch_config.get(
             "legacy_dispersion_bool", True
         ),

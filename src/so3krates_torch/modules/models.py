@@ -595,6 +595,7 @@ class SO3LR(So3krates):
         use_pme_dispersion: bool = False,
         pme_dispersion_smearing: Optional[float] = None,
         pme_dispersion_mesh_spacing: Optional[float] = None,
+        pme_mesh_rule: str = "jax",
         legacy_dispersion_bool: bool = True,
         c6_ratios_bool: bool = False,
         use_simple_hirshfeld: bool = False,
@@ -661,6 +662,7 @@ class SO3LR(So3krates):
             self.pme_electrostatic_potential = PMEElectrostaticInteraction(
                 smearing=_smearing,
                 mesh_spacing=_mesh_spacing,
+                pme_mesh_rule=pme_mesh_rule,
             )
 
         # Dispersion
@@ -700,6 +702,7 @@ class SO3LR(So3krates):
             self.pme_dispersion_potential = PMEDispersionInteraction(
                 smearing=_disp_smearing,
                 mesh_spacing=_disp_mesh_spacing,
+                pme_mesh_rule=pme_mesh_rule,
             )
 
         # Independent C6 ratio head (new JAX feature)

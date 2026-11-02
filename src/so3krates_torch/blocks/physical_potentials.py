@@ -6,6 +6,7 @@ import math
 import numpy as np
 from so3krates_torch.tools.scatter import scatter_sum
 from so3krates_torch.blocks.dispersion_ref_data import NHL_AA, NHL_BB
+from so3krates_torch.blocks.pme_mesh import make_pme_calculator
 
 
 # Constants for dispersion energy calculations
@@ -1051,13 +1052,15 @@ class PMEElectrostaticInteraction(nn.Module):
         mesh_spacing: float,
         interpolation_nodes: int = 4,
         ke: float = 14.399645351950548,
+        pme_mesh_rule: str = "jax",
     ) -> None:
         super().__init__()
         import torchpme  # lazy import — only required when use_pme=True
 
         self.ke = ke
         potential = torchpme.CoulombPotential(smearing=smearing)
-        self.calculator = torchpme.PMECalculator(
+        self.calculator = make_pme_calculator(
+            pme_mesh_rule,
             potential=potential,
             mesh_spacing=mesh_spacing,
             interpolation_nodes=interpolation_nodes,
@@ -1156,6 +1159,7 @@ class PMEDispersionInteraction(nn.Module):
         mesh_spacing: float,
         interpolation_nodes: int = 4,
         do_ewald: bool = False,
+        pme_mesh_rule: str = "jax",
     ) -> None:
         super().__init__()
         import torchpme  # lazy import — only required when use_pme_dispersion=True
@@ -1180,7 +1184,8 @@ class PMEDispersionInteraction(nn.Module):
                 potential=potential, lr_wavelength=mesh_spacing_bohr
             )
             if do_ewald
-            else torchpme.PMECalculator(
+            else make_pme_calculator(
+                pme_mesh_rule,
                 potential=potential,
                 mesh_spacing=mesh_spacing_bohr,
                 interpolation_nodes=interpolation_nodes,
