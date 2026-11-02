@@ -948,15 +948,15 @@ class SO3LR(So3krates):
                     use_pme=True,
                     pme_smearing=getattr(self, "pme_smearing", None),
                 )
-                kspace_electrostatic_energies = (
-                    self.pme_electrostatic_potential(
-                        partial_charges=partial_charges,
-                        positions=self.positions,
-                        cell=self.cell,
-                        batch_segments=self.batch_segments,
-                        num_graphs=self.num_graphs,
-                        num_nodes=inv_features.shape[0],
-                    )
+                kspace_electrostatic_energies = self.pme_electrostatic_potential(
+                    partial_charges=partial_charges,
+                    # strained positions (== self.positions without
+                    # strain) so k-space matches the strained cell
+                    positions=data["positions"],
+                    cell=self.cell,
+                    batch_segments=self.batch_segments,
+                    num_graphs=self.num_graphs,
+                    num_nodes=inv_features.shape[0],
                 )
                 electrostatic_energies = (
                     electrostatic_energies + kspace_electrostatic_energies
@@ -1018,7 +1018,7 @@ class SO3LR(So3krates):
                 c6_pseudo_charges = torch.sqrt(torch.clamp(c6_i, min=0))
                 kspace_dispersion_energies = self.pme_dispersion_potential(
                     c6_pseudo_charges=c6_pseudo_charges,
-                    positions=self.positions,
+                    positions=data["positions"],
                     cell=self.cell,
                     batch_segments=self.batch_segments,
                     num_graphs=self.num_graphs,
