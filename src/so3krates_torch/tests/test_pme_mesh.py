@@ -216,6 +216,7 @@ def test_so3lr_model_threads_pme_mesh_rule():
         )
 
     default = build()
+    assert default.pme_mesh_rule == "jax"
     assert isinstance(
         default.pme_electrostatic_potential.calculator, JaxMeshPMECalculator
     )
@@ -224,6 +225,7 @@ def test_so3lr_model_threads_pme_mesh_rule():
     )
 
     stock = build(pme_mesh_rule="torchpme")
+    assert stock.pme_mesh_rule == "torchpme"
     assert (
         type(stock.pme_electrostatic_potential.calculator)
         is torchpme.PMECalculator

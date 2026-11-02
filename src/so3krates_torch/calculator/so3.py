@@ -7,6 +7,8 @@
 from typing import Optional, Union, List
 from pathlib import Path
 from glob import glob
+import warnings
+
 import torch
 import yaml
 from ase.calculators.calculator import Calculator, all_changes
@@ -600,6 +602,30 @@ class TorchkratesCalculator(Calculator):
                 )
 
 
+def _shared_theory_levels(block) -> set:
+    """Theory levels whose per-level parameters (energy shifts, final
+    layer row, energy scales) are bitwise identical to another level's:
+    heads that were never trained and share their initial value."""
+    levels = range(block.num_theory_levels)
+    signatures = [
+        (
+            block.energy_shifts[:, level],
+            block.final_layer.weight[level],
+            block.energy_scales.weight[level],
+        )
+        for level in levels
+    ]
+    return {
+        a
+        for a in levels
+        for b in levels
+        if a != b
+        and all(
+            torch.equal(x, y) for x, y in zip(signatures[a], signatures[b])
+        )
+    }
+
+
 class SO3LRCalculator(TorchkratesCalculator):
     """Calculator for the bundled pretrained SO3LR models.
 
@@ -662,6 +688,29 @@ class SO3LRCalculator(TorchkratesCalculator):
             )
             for m in models
         )
+        if theory_level is not None and not (
+            0 <= theory_level < num_theory_levels
+        ):
+            raise ValueError(
+                f"theory_level={theory_level} is out of range for model "
+                f"{model!r}, which has {num_theory_levels} theory-level "
+                f"head(s) (valid: 0..{num_theory_levels - 1})."
+            )
+        if theory_level is not None and num_theory_levels > 1:
+            for m in models:
+                if theory_level in _shared_theory_levels(
+                    m.atomic_energy_output_block
+                ):
+                    warnings.warn(
+                        f"theory_level={theory_level} has parameters "
+                        "identical to those of other theory levels, so it "
+                        "was most likely never trained and returns the "
+                        "same value as them. For the bundled v2 models "
+                        "only levels 0, 4 and 5 are trained.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                    break
         if theory_level is None:
             if num_theory_levels > 1:
                 raise ValueError(

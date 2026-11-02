@@ -50,3 +50,30 @@ def test_so3lr_calculator_requires_theory_level_for_multihead_model():
 def test_so3lr_calculator_single_head_model_needs_no_theory_level():
     calc = SO3LRCalculator(model="v1")
     assert calc.theory_level == 0
+
+
+def test_so3lr_calculator_rejects_out_of_range_theory_level():
+    import pytest
+
+    for level in (16, -1):
+        with pytest.raises(ValueError, match="theory_level"):
+            SO3LRCalculator(model="v2-s", theory_level=level)
+    # v1 has a single head: only level 0 exists
+    with pytest.raises(ValueError, match="theory_level"):
+        SO3LRCalculator(model="v1", theory_level=5)
+    assert SO3LRCalculator(model="v1", theory_level=0).theory_level == 0
+
+
+def test_so3lr_calculator_warns_for_shared_untrained_theory_levels():
+    """Only levels 0, 4 and 5 of the bundled v2 models are trained; the
+    other 13 heads share identical parameters and return one value."""
+    import warnings
+
+    import pytest
+
+    with pytest.warns(UserWarning, match="theory_level=6"):
+        SO3LRCalculator(model="v2-s", theory_level=6)
+    for level in (0, 4, 5):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            SO3LRCalculator(model="v2-s", theory_level=level)

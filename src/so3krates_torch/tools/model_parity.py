@@ -18,6 +18,7 @@ larger CLI command.
 
 import copy
 from pathlib import Path
+import inspect
 from typing import Callable, Optional, Sequence
 
 import numpy as np
@@ -612,6 +613,14 @@ def _jax_observables(
 
     kwargs = {}
     if "partial_charges" in names:
+        if (
+            "output_intermediate_quantities"
+            not in inspect.signature(model_factory).parameters
+        ):
+            raise ValueError(
+                "comparing partial_charges needs a model_factory that "
+                "accepts the output_intermediate_quantities keyword"
+            )
         kwargs["output_intermediate_quantities"] = ["partial_charges"]
     out = model_factory(cfg, **kwargs).apply(flax_params, inputs)
 

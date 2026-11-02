@@ -844,6 +844,32 @@ def test_so3lr_checkpoint_s_observables_parity(kind, generation, tmp_path):
         )
 
 
+def test_partial_charges_need_a_factory_that_accepts_intermediates(
+    generation,
+):
+    """A custom ``model_factory`` that only takes ``cfg`` cannot expose
+    partial charges (an intermediate quantity); that must be a clear error,
+    while observables that need no intermediates still work."""
+    from so3lr.mlff.config import make_so3krates_sparse_from_config
+
+    def cfg_only_factory(cfg):
+        return make_so3krates_sparse_from_config(cfg)
+
+    with pytest.raises(ValueError, match="output_intermediate_quantities"):
+        _check_checkpoint_parity(
+            "s",
+            generation,
+            model_factory=cfg_only_factory,
+            compare_observables=("partial_charges",),
+        )
+    assert _check_checkpoint_parity(
+        "s",
+        generation,
+        model_factory=cfg_only_factory,
+        compare_observables=("dipole_vec", "hirshfeld_ratios"),
+    )
+
+
 def test_compare_observables_rejects_unknown_name(generation):
     with pytest.raises(ValueError, match="not_an_observable"):
         _check_checkpoint_parity(

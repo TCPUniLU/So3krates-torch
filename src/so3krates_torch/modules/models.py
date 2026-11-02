@@ -654,6 +654,7 @@ class SO3LR(So3krates):
             neighborlist_format_lr=self.neighborlist_format_lr
         )
         self.use_pme = use_pme
+        self.pme_mesh_rule = pme_mesh_rule
         if use_pme:
             _smearing = pme_smearing or self.r_max / 5.0
             _mesh_spacing = pme_mesh_spacing or _smearing / 2.0
