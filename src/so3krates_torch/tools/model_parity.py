@@ -206,21 +206,34 @@ def _theory_level_index(num_theory_levels: int) -> int:
     )
 
 
-def _match_theory_levels(inputs_jax: dict, num_theory_levels: int) -> dict:
+def _match_theory_levels(
+    inputs_jax: dict,
+    num_theory_levels: int,
+    theory_level: Optional[int] = None,
+) -> dict:
     """Override ``inputs_jax``'s ``theory_mask``/``theory_level`` to
     have exactly ``num_theory_levels`` columns (one-hot at
     ``_theory_level_index(num_theory_levels)``) when they don't already
     match -- see the module-level comment above
     ``_SO3LR_DEV_MAX_THEORY_LEVELS`` for why this is needed. A clean
     no-op (returns ``inputs_jax`` unchanged) when they already match,
-    which is always true for the real shipped so3lr-s/-m/-l checkpoints.
+    which is always true for the real shipped so3lr-s/-m/-l checkpoints
+    when ``theory_level`` is ``None``. An explicit ``theory_level`` always
+    rewrites the one-hot to that column.
     """
-    if inputs_jax["theory_mask"].shape[-1] == num_theory_levels:
+    if (
+        theory_level is None
+        and inputs_jax["theory_mask"].shape[-1] == num_theory_levels
+    ):
         return inputs_jax
     import jax.numpy as jnp
 
     n_graphs = inputs_jax["theory_mask"].shape[0]
-    idx = _theory_level_index(num_theory_levels)
+    idx = (
+        theory_level
+        if theory_level is not None
+        else _theory_level_index(num_theory_levels)
+    )
     theory_mask = (
         jnp.zeros((n_graphs, num_theory_levels), dtype=bool)
         .at[:, idx]
@@ -517,6 +530,8 @@ def check_model_parity(
     rtol: float = 1e-4,
     model_factory: Optional[Callable] = None,
     jax_input_builder: Optional[Callable] = None,
+    *,
+    theory_level: Optional[int] = None,
 ) -> bool:
     """Run both models on one real structure and compare energy+forces.
 
@@ -554,6 +569,11 @@ def check_model_parity(
     ``cfg``/``structure_path``/``index``. Independent of
     ``model_factory``.
 
+    ``theory_level`` selects which theory-level head both models use
+    (``ValueError`` if it is not a valid column of ``flax_params``'s
+    ``num_theory_levels``); ``None`` keeps the automatic choice
+    described next.
+
     The JAX-side ``theory_mask``/``theory_level`` (and the matching
     torch-side ``theory_level``) are reconciled automatically against
     ``flax_params``'s own ``num_theory_levels`` (see
@@ -588,11 +608,18 @@ def check_model_parity(
     cfg = _with_final_bias_bool(cfg, torch_model)
 
     num_theory_levels = _detect_num_theory_levels(flax_params)
+    if theory_level is not None and not 0 <= theory_level < num_theory_levels:
+        raise ValueError(
+            f"theory_level={theory_level} is out of range for a model with "
+            f"{num_theory_levels} theory levels"
+        )
     flax_params = _reshape_legacy_energy_head_params(
         flax_params, num_theory_levels
     )
     inputs_jax = _match_theory_levels(
-        jax_input_builder(cfg, structure_path, index), num_theory_levels
+        jax_input_builder(cfg, structure_path, index),
+        num_theory_levels,
+        theory_level,
     )
     batch_torch = _build_torch_batch(
         r_max,
@@ -600,7 +627,11 @@ def check_model_parity(
         structure_path,
         index,
         model_dtype,
-        theory_level=_theory_level_index(num_theory_levels),
+        theory_level=(
+            theory_level
+            if theory_level is not None
+            else _theory_level_index(num_theory_levels)
+        ),
     )
 
     energy_jax, forces_jax = _jax_energy_forces(

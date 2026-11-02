@@ -98,7 +98,9 @@ def _load_checkpoint(size: str, generation: str):
     return params_path, hyperparams_path, flax_params, cfg
 
 
-def _check_checkpoint_parity(size: str, generation: str) -> bool:
+def _check_checkpoint_parity(
+    size: str, generation: str, **parity_kwargs
+) -> bool:
     """Build the torch model for real checkpoint ``size`` and check its
     parity against the JAX reference, at ``check_model_parity``'s own
     (tightened, Task-4-fix-#5-calibrated) default tolerance.
@@ -127,6 +129,7 @@ def _check_checkpoint_parity(size: str, generation: str) -> bool:
         torch_model=torch_model,
         r_max=cfg.model.cutoff,
         r_max_lr=cfg.model.cutoff_lr,
+        **parity_kwargs,
     )
 
 
@@ -159,6 +162,58 @@ def _check_checkpoint_parity_on_structure(
         r_max_lr=cfg.model.cutoff_lr,
         structure_path=structure_path,
     )
+
+
+@pytest.mark.parametrize("level", range(16))
+def test_so3lr_checkpoint_s_theory_level_parity(level, generation):
+    """Every one of the 16 theory-level heads agrees with JAX, not just
+    the default (5) the other tests run."""
+    assert _check_checkpoint_parity("s", generation, theory_level=level)
+
+
+def test_theory_level_out_of_range_raises(generation):
+    with pytest.raises(ValueError, match="theory_level"):
+        _check_checkpoint_parity("s", generation, theory_level=16)
+
+
+def test_trained_theory_level_heads_are_distinct(generation):
+    """Guards the per-level parity test against passing vacuously. The
+    shipped checkpoint only has three trained heads (levels 0, 4 and 5);
+    the other 13 all return the same untrained value, so parity at those
+    is the same check repeated. The three trained heads must give
+    clearly different energies on one structure."""
+    from so3krates_torch.tools.model_parity import (
+        _build_torch_batch,
+        _torch_energy_forces,
+    )
+
+    params_path, hyperparams_path, _flax_params, cfg = _load_checkpoint(
+        "s", generation
+    )
+    torch_model = convert_flax_to_torch(
+        path_to_flax_params=params_path,
+        path_to_flax_hyperparams=hyperparams_path,
+        dtype=torch.float64,
+    ).eval()
+    energies = {}
+    for level in (0, 4, 5, 6):
+        batch = _build_torch_batch(
+            cfg.model.cutoff,
+            cfg.model.cutoff_lr,
+            None,
+            0,
+            torch.float64,
+            theory_level=level,
+        )
+        energies[level] = _torch_energy_forces(torch_model, batch)[0]
+    trained = [energies[0], energies[4], energies[5]]
+    assert (
+        min(
+            abs(a - b) for i, a in enumerate(trained) for b in trained[i + 1 :]
+        )
+        > 1.0
+    ), energies
+    assert all(abs(e - energies[6]) > 1.0 for e in trained), energies
 
 
 def test_so3lr_checkpoint_s_parity(generation):
