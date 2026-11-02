@@ -260,7 +260,9 @@ torchkrates-md-nvalchemi \
 
 **Stress and pressure convention.** The model emits stress in the ASE convention (tensile-positive Cauchy stress); nvalchemi-toolkit 0.2 uses the same convention, so it is passed through unchanged. The reported pressure is `P = N kB T / V − tr(σ)/3`, matching ASE and LAMMPS's `thermo press` so the two engines can be compared directly at the same configuration.
 
-**Charge and spin.** Total charge is read from `atoms.info["charge"]` (an integer, the same key `TorchkratesCalculator` uses); total spin from the `AtomicData` `spin` field (the total spin *S*, not the multiplicity) — `AtomicData.from_atoms` does not populate it from ASE automatically, so set it explicitly if your model uses spin embedding.
+**Charge and spin.** Total charge is read from `atoms.info["charge"]` (an integer, the same key `TorchkratesCalculator` uses); total spin from `atoms.info["total_spin"]` (the total spin *S*, not the multiplicity — again the calculator's key), stored as the `AtomicData` `spin` field. Both default to 0 when absent. (Programmatic users building `AtomicData.from_atoms` themselves must set `spin` explicitly, since nvalchemi does not read it from ASE; `atoms_to_data` in the CLI module does.)
+
+**Logged quantities.** The CSV log always has energy, fmax, temperature and timing; `volume_A3`/`density_g_cm3` are added for periodic structures and `pressure_bar` for NPT. NVT runs request only energy and forces from the model (no stress). All frames selected with `--index` must be either periodic or non-periodic.
 
 See `examples/md/nvalchemi_md.py` for the equivalent programmatic API, including how to configure NVAlchemi-native PME via `build_nvalchemi_pme_model(...)`.
 

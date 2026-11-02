@@ -38,6 +38,7 @@ from nvalchemi.dynamics.integrators.nvt_langevin import NVTLangevin
 from so3krates_torch.calculator.nvalchemi_so3 import (
     NVAlchemiSO3LR,
     build_nvalchemi_pme_model,
+    set_active_outputs,
 )
 from so3krates_torch.cli.run_md_nvalchemi import atoms_to_data
 
@@ -68,6 +69,11 @@ def main() -> None:
     raw = torch.load(args.model, map_location=args.device, weights_only=False)
     if isinstance(raw, dict) and "model" in raw:
         raw = raw["model"]
+    # Convert to the run dtype/device BEFORE wrapping (the wrapper casts its
+    # inputs to the model's parameter dtype) and freeze the weights.
+    raw = raw.to(device=args.device, dtype=dtype)
+    for param in raw.parameters():
+        param.requires_grad = False
 
     if args.electrostatics == "nvalchemi":
         # SR model emits charges -> NVAlchemi-native PME supplies Coulomb.
@@ -85,6 +91,10 @@ def main() -> None:
             raw.electrostatic_energy_bool = False
         model = NVAlchemiSO3LR(raw, electrostatics="model", skin=args.skin)
     model = model.to(device=args.device, dtype=dtype).eval()
+    if args.ensemble == "nvt":
+        # nvalchemi 0.2 integrators do not narrow active_outputs; NVT needs
+        # no stress, so skip computing it every step.
+        set_active_outputs(model, {"energy", "forces"})
 
     # --- Build a (single-system) batch -------------------------------------
     atoms = ase_read(args.atoms)
