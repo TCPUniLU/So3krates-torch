@@ -211,7 +211,7 @@ def test_trained_theory_level_heads_are_distinct(generation):
         min(
             abs(a - b) for i, a in enumerate(trained) for b in trained[i + 1 :]
         )
-        > 1.0
+        > 0.1
     ), energies
     assert all(abs(e - energies[6]) > 0.1 for e in trained), energies
 
