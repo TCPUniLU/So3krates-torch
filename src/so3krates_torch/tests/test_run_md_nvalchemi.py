@@ -418,7 +418,60 @@ def test_compile_help_text_has_no_graph_break_claim():
 # ---------------------------------------------------------------------------
 
 
-def test_cli_friendly_error_without_nvalchemi(monkeypatch):
+@pytest.fixture
+def restore_cli_modules():
+    """Snapshot and restore the CLI and wrapper modules.
+
+    Re-importing a module rebinds it in ``sys.modules`` *and* as an
+    attribute of its parent package. ``monkeypatch`` only undoes the
+    former, so a test that re-imports the CLI against a blocked
+    ``nvalchemi`` would leave ``so3krates_torch.cli.run_md_nvalchemi``
+    pointing at the broken copy for every later test.
+    """
+    import importlib
+    import sys
+
+    missing = object()
+    targets = (
+        (
+            "so3krates_torch.cli.run_md_nvalchemi",
+            "so3krates_torch.cli",
+            "run_md_nvalchemi",
+        ),
+        (
+            "so3krates_torch.calculator.nvalchemi_so3",
+            "so3krates_torch.calculator",
+            "nvalchemi_so3",
+        ),
+    )
+    saved = []
+    for mod_name, pkg_name, attr in targets:
+        pkg = importlib.import_module(pkg_name)
+        saved.append(
+            (
+                mod_name,
+                sys.modules.get(mod_name, missing),
+                pkg,
+                attr,
+                getattr(pkg, attr, missing),
+            )
+        )
+    yield
+    for mod_name, mod, pkg, attr, attr_val in saved:
+        if mod is missing:
+            sys.modules.pop(mod_name, None)
+        else:
+            sys.modules[mod_name] = mod
+        if attr_val is missing:
+            if hasattr(pkg, attr):
+                delattr(pkg, attr)
+        else:
+            setattr(pkg, attr, attr_val)
+
+
+def test_cli_friendly_error_without_nvalchemi(
+    monkeypatch, restore_cli_modules
+):
     import importlib
     import sys
 
