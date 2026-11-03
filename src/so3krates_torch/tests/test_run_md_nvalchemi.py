@@ -283,6 +283,30 @@ def test_cli_nvt_sets_active_outputs_without_stress(monkeypatch, tmp_path):
     assert seen["active"] == {"energy", "forces"}
 
 
+def test_cli_nvt_passes_seed_to_langevin(monkeypatch, tmp_path):
+    """``--seed`` must reach the Langevin thermostat's RNG."""
+    from so3krates_torch.cli import run_md_nvalchemi
+
+    seen = {}
+    orig = run_md_nvalchemi.NVTLangevin
+
+    def _spy(*args, **kwargs):
+        seen["random_seed"] = kwargs["random_seed"]
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(run_md_nvalchemi, "NVTLangevin", _spy)
+    _run_cli(
+        monkeypatch,
+        tmp_path,
+        _nacl_crystal(),
+        "--ensemble",
+        "nvt",
+        "--seed",
+        "1234",
+    )
+    assert seen["random_seed"] == 1234
+
+
 def test_cli_npt_keeps_stress_active(monkeypatch, tmp_path):
     from so3krates_torch.cli import run_md_nvalchemi
 

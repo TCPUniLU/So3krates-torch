@@ -69,7 +69,8 @@ def _make_so3lr(
         output_partial_charges=output_partial_charges,
         dispersion_energy_bool=dispersion_bool,
         # DispersionInteraction requires a damping width whenever
-        # cutoff_lr is set (SO3LR always passes r_max_lr).
+        # cutoff_lr is set (SO3LR always passes r_max_lr). The value 1.0 is
+        # an arbitrary test value, not a physical parameter.
         dispersion_energy_cutoff_lr_damping=1.0 if dispersion_bool else None,
         zbl_repulsion_bool=zbl_bool,
         **extra,
