@@ -446,6 +446,7 @@ def build_nvalchemi_pme_model(
     model: nn.Module,
     *,
     alpha: float = None,
+    mesh_dimensions: tuple[int, int, int] | None = None,
     spline_order: int = 4,
     accuracy: float = 1e-6,
     coulomb_constant: float = _KE_EV_ANG,
@@ -487,12 +488,21 @@ def build_nvalchemi_pme_model(
         and shrinks like N**(-1/6): the NaCl Madelung energy at 12 Å is off
         by 1e-7 for 64 atoms but by 3e-4 for 512 and 1.5e-2 for 4096.  An
         explicit ``alpha`` with ``erfc(alpha * r_max_lr)`` above ten times
-        ``accuracy`` emits a ``UserWarning``.  The reciprocal mesh is sized
-        by NVAlchemi from its own accuracy-based estimate (there is no
-        ``mesh_spacing`` option: ``PMEModelWrapper`` stores it but never uses
-        it in nvalchemi-toolkit 0.2.0), so a large ``alpha`` loses a little
-        reciprocal accuracy on big cells (NaCl, derived alpha: 1.5e-5 at 64
-        atoms and 2.6e-4 at 4096 for a 6 Å cutoff).
+        ``accuracy`` emits a ``UserWarning``.
+    mesh_dimensions:
+        FFT grid points ``(nx, ny, nz)`` of the reciprocal-space part: the
+        charges are spread onto this grid with B-splines of order
+        ``spline_order``, Fourier-transformed, and the Coulomb kernel is
+        applied on it.  A finer grid gives a more accurate reciprocal sum
+        at a cost of roughly ``nx*ny*nz*log(nx*ny*nz)``.  ``None`` (default)
+        lets NVAlchemi size the mesh from its own accuracy-based estimate
+        (which is blind to a large ``alpha`` on big cells: NaCl, derived
+        alpha: 1.5e-5 at 64 atoms and 2.6e-4 at 4096 for a 6 Å cutoff).  A
+        given mesh is fixed for every structure and every cell, so under NPT
+        the grid spacing ``L / n`` follows the cell and a batch shares one
+        mesh; leave headroom.  (nvalchemi-toolkit 0.2.0 has no working
+        ``mesh_spacing`` option: ``PMEModelWrapper`` stores it but never
+        uses it, so this builder does not offer one.)
     spline_order, accuracy, coulomb_constant:
         Forwarded to :class:`nvalchemi.models.pme.PMEModelWrapper`.  The
         default ``coulomb_constant`` matches the model's ``ke``.
@@ -513,6 +523,17 @@ def build_nvalchemi_pme_model(
             "build_nvalchemi_pme_model requires a long-range cutoff "
             "(model.r_max_lr); short-range-only models have no electrostatics."
         )
+    if mesh_dimensions is not None:
+        try:
+            dims = tuple(int(n) for n in mesh_dimensions)
+        except TypeError:
+            dims = ()
+        if len(dims) != 3 or any(n < 1 for n in dims):
+            raise ValueError(
+                "mesh_dimensions must be three positive integers "
+                f"(nx, ny, nz), got {mesh_dimensions!r}"
+            )
+        mesh_dimensions = dims
     cutoff = float(model.r_max_lr)
     if alpha is None:
         # Not upstream's auto estimate: that one ignores both the cutoff and
@@ -530,6 +551,7 @@ def build_nvalchemi_pme_model(
     pme = PMEModelWrapper(
         cutoff=cutoff,
         alpha=alpha,
+        mesh_dimensions=mesh_dimensions,
         spline_order=spline_order,
         accuracy=accuracy,
         coulomb_constant=coulomb_constant,

@@ -618,3 +618,52 @@ def test_cli_has_no_pme_mesh_spacing_option():
         _build_parser().parse_args(
             ["--model", "m", "--atoms", "a", "--pme-mesh-spacing", "0.5"]
         )
+
+
+def test_cli_pme_mesh_dimensions_option():
+    from so3krates_torch.cli.run_md_nvalchemi import (
+        _build_parser,
+        load_model,
+    )
+
+    import inspect
+
+    assert "pme_mesh_dimensions" in inspect.signature(load_model).parameters
+    parser = _build_parser()
+    base = ["--model", "m", "--atoms", "a"]
+    assert parser.parse_args(base).pme_mesh_dimensions is None
+    args = parser.parse_args(
+        base + ["--pme-mesh-dimensions", "16", "20", "24"]
+    )
+    assert args.pme_mesh_dimensions == [16, 20, 24]
+    with pytest.raises(SystemExit):  # exactly three integers
+        parser.parse_args(base + ["--pme-mesh-dimensions", "16", "16"])
+
+
+def test_cli_native_pme_mesh_dimensions_reach_the_builder(
+    monkeypatch, tmp_path
+):
+    from so3krates_torch.cli import run_md_nvalchemi
+
+    seen = {}
+    orig = run_md_nvalchemi.build_nvalchemi_pme_model
+
+    def _spy(*args, **kwargs):
+        seen["mesh_dimensions"] = kwargs["mesh_dimensions"]
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(run_md_nvalchemi, "build_nvalchemi_pme_model", _spy)
+    log = _run_cli(
+        monkeypatch,
+        tmp_path,
+        _nacl_crystal(),
+        "--ensemble",
+        "nvt",
+        *_NATIVE_PME,
+        "--pme-mesh-dimensions",
+        "16",
+        "16",
+        "16",
+    )
+    assert tuple(seen["mesh_dimensions"]) == (16, 16, 16)
+    _assert_finite_rows(_read_csv_rows(log), ["energy"])

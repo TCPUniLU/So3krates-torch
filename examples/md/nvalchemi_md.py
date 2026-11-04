@@ -87,6 +87,9 @@ def main() -> None:
             # `accuracy` as sqrt(-ln(accuracy)) / r_max_lr (converged for any
             # cell size); an explicit value that under-converges warns.
             alpha=None,
+            # FFT grid (nx, ny, nz); None = NVAlchemi sizes it. A finer grid
+            # improves the reciprocal sum; it is fixed for every cell.
+            mesh_dimensions=None,
             spline_order=4,
             accuracy=1e-6,
             skin=args.skin,

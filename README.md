@@ -262,7 +262,8 @@ torchkrates-md-nvalchemi \
     | 6 Å | 64 | 1.9e-2 | 1.5e-5 |
     | 6 Å | 4096 | 0.34 | 2.6e-4 |
 
-    An explicit `--pme-alpha` is used as given, with a warning if `erfc(alpha · cutoff)` exceeds ten times `--pme-accuracy` (the real-space truncation error). The reciprocal mesh is sized by NVAlchemi from its own accuracy-based estimate (nvalchemi-toolkit 0.2.0 has no working mesh-spacing option, so this CLI offers none), so very large alphas lose a little reciprocal accuracy on big cells (the 6 Å row).
+    An explicit `--pme-alpha` is used as given, with a warning if `erfc(alpha · cutoff)` exceeds ten times `--pme-accuracy` (the real-space truncation error). By default NVAlchemi sizes the reciprocal FFT mesh itself, from an accuracy-based estimate that does not see a large `alpha`, so very large alphas lose a little reciprocal accuracy on big cells (the 6 Å row).
+  - **`--pme-mesh-dimensions NX NY NZ`** sets the FFT grid points per cell axis (charges are spread onto this grid with B-splines of order `--pme-spline-order`, transformed, and the Coulomb kernel applied on it). A finer grid makes the reciprocal sum more accurate at roughly `NX·NY·NZ·log(NX·NY·NZ)` cost; in a 64-atom NaCl cell a 16³ grid and a 48³ grid differed by 0.17 eV. The grid is fixed, so under NPT the spacing `L/N` follows the cell, and a batch of different cells shares one grid. nvalchemi-toolkit 0.2.0 has no working mesh-*spacing* option (it is stored and never used), so this is the only mesh control.
   - `alpha` is the same for every graph in a batch, so the per-batch averaging NVAlchemi applies to its auto estimate does not occur.
 
   Use `model` unless you specifically need NVAlchemi-native PME.

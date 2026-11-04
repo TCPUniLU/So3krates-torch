@@ -1086,3 +1086,59 @@ def test_build_nvalchemi_pme_model_has_no_mesh_spacing():
         "mesh_spacing"
         not in inspect.signature(build_nvalchemi_pme_model).parameters
     )
+
+
+def _pme_step(pipe):
+    (group,) = pipe.groups
+    return group.steps[1].model
+
+
+def test_build_nvalchemi_pme_model_forwards_mesh_dimensions():
+    from so3krates_torch.calculator.nvalchemi_so3 import (
+        build_nvalchemi_pme_model,
+    )
+
+    default = build_nvalchemi_pme_model(
+        _make_so3lr(electrostatics_bool=True), alpha=0.6
+    )
+    assert _pme_step(default).mesh_dimensions is None  # upstream's estimate
+    fixed = build_nvalchemi_pme_model(
+        _make_so3lr(electrostatics_bool=True),
+        alpha=0.6,
+        mesh_dimensions=[16, 16, 16],
+    )
+    assert _pme_step(fixed).mesh_dimensions == (16, 16, 16)
+
+
+@pytest.mark.parametrize("bad", [(16, 16), (0, 16, 16), (16, -2, 16), 16])
+def test_build_nvalchemi_pme_model_rejects_bad_mesh_dimensions(bad):
+    from so3krates_torch.calculator.nvalchemi_so3 import (
+        build_nvalchemi_pme_model,
+    )
+
+    with pytest.raises(ValueError, match="mesh_dimensions"):
+        build_nvalchemi_pme_model(
+            _make_so3lr(electrostatics_bool=True),
+            alpha=0.6,
+            mesh_dimensions=bad,
+        )
+
+
+def test_mesh_dimensions_changes_pme_energy():
+    """The FFT grid is the one reciprocal-space accuracy control that works
+    in nvalchemi-toolkit 0.2.0: a coarse mesh and a fine one give clearly
+    different energies for the same structure and weights."""
+    from so3krates_torch.calculator.nvalchemi_so3 import (
+        build_nvalchemi_pme_model,
+    )
+
+    model = _make_so3lr(electrostatics_bool=True)
+    coarse = build_nvalchemi_pme_model(
+        model, alpha=0.6, mesh_dimensions=(8, 8, 8)
+    )
+    fine = build_nvalchemi_pme_model(
+        model, alpha=0.6, mesh_dimensions=(48, 48, 48)
+    )
+    atoms = _rocksalt()
+    gap = abs(_pipeline_energy(coarse, atoms) - _pipeline_energy(fine, atoms))
+    assert gap > 1e-3

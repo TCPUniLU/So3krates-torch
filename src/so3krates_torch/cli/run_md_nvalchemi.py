@@ -263,6 +263,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "under-converges the real-space sum)",
     )
     p.add_argument(
+        "--pme-mesh-dimensions",
+        type=int,
+        nargs=3,
+        metavar=("NX", "NY", "NZ"),
+        default=None,
+        help="NVAlchemi PME FFT grid points per cell axis "
+        "(--electrostatics nvalchemi only; default: NVAlchemi sizes the "
+        "mesh itself). A finer grid improves the reciprocal-space sum; the "
+        "grid is fixed, so under NPT the spacing follows the cell",
+    )
+    p.add_argument(
         "--pme-spline-order",
         type=int,
         default=4,
@@ -381,6 +392,7 @@ def load_model(
     dtype: torch.dtype,
     electrostatics: str = "model",
     pme_alpha: float = None,
+    pme_mesh_dimensions=None,
     pme_spline_order: int = 4,
     pme_accuracy: float = 1e-6,
     skin: float = 0.0,
@@ -456,6 +468,7 @@ def load_model(
         model = build_nvalchemi_pme_model(
             raw,
             alpha=pme_alpha,
+            mesh_dimensions=pme_mesh_dimensions,
             spline_order=pme_spline_order,
             accuracy=pme_accuracy,
             skin=skin,
@@ -722,6 +735,7 @@ def main() -> None:
         dtype,
         electrostatics=args.electrostatics,
         pme_alpha=args.pme_alpha,
+        pme_mesh_dimensions=args.pme_mesh_dimensions,
         pme_spline_order=args.pme_spline_order,
         pme_accuracy=args.pme_accuracy,
         skin=args.skin,
