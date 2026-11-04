@@ -164,11 +164,16 @@ def test_compile_guard_cpu_lr(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _save_tiny_model(tmp_path, dtype=torch.float64):
+def _save_tiny_model(tmp_path, dtype=torch.float64, strip_lr_cutoff=False):
+    """Tiny long-range model.  ``strip_lr_cutoff`` stores no long-range
+    cutoff, like the packaged pre-trained ``so3lr.model``."""
     from so3krates_torch.tests.test_nvalchemi_so3 import _make_so3lr
 
     path = tmp_path / "tiny.model"
-    torch.save(_make_so3lr(electrostatics_bool=True).to(dtype), path)
+    model = _make_so3lr(electrostatics_bool=True).to(dtype)
+    if strip_lr_cutoff:
+        model.r_max_lr = None
+    torch.save(model, path)
     return path
 
 
@@ -189,12 +194,23 @@ def _nacl_crystal():
     return atoms
 
 
-def _run_cli(monkeypatch, tmp_path, frames, *extra, model_dtype=None):
+def _run_cli(
+    monkeypatch,
+    tmp_path,
+    frames,
+    *extra,
+    model_dtype=None,
+    strip_lr_cutoff=False,
+):
     from ase.io import write
 
     from so3krates_torch.cli import run_md_nvalchemi
 
-    model = _save_tiny_model(tmp_path, dtype=model_dtype or torch.float64)
+    model = _save_tiny_model(
+        tmp_path,
+        dtype=model_dtype or torch.float64,
+        strip_lr_cutoff=strip_lr_cutoff,
+    )
     xyz = tmp_path / "in.xyz"
     write(xyz, frames, format="extxyz")
     log = tmp_path / "md_log.csv"
@@ -667,3 +683,78 @@ def test_cli_native_pme_mesh_dimensions_reach_the_builder(
     )
     assert tuple(seen["mesh_dimensions"]) == (16, 16, 16)
     _assert_finite_rows(_read_csv_rows(log), ["energy"])
+
+
+# ---------------------------------------------------------------------------
+# Models that store no long-range cutoff (e.g. the packaged so3lr.model)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_r_max_lr_option():
+    import inspect
+
+    from so3krates_torch.cli.run_md_nvalchemi import (
+        _build_parser,
+        load_model,
+    )
+
+    assert "r_max_lr" in inspect.signature(load_model).parameters
+    parser = _build_parser()
+    base = ["--model", "m", "--atoms", "a"]
+    assert parser.parse_args(base).r_max_lr is None
+    assert parser.parse_args(base + ["--r-max-lr", "12"]).r_max_lr == 12.0
+    # the other CLIs spell it with underscores
+    assert parser.parse_args(base + ["--r_max_lr", "12"]).r_max_lr == 12.0
+
+
+def test_load_model_needs_a_long_range_cutoff(tmp_path):
+    """A long-range model without a stored cutoff fails early with a message
+    that names the flag; --r-max-lr supplies it."""
+    from so3krates_torch.cli.run_md_nvalchemi import load_model
+
+    path = _save_tiny_model(tmp_path, strip_lr_cutoff=True)
+    with pytest.raises(ValueError, match="--r-max-lr"):
+        load_model(str(path), "cpu", torch.float64)
+    model = load_model(str(path), "cpu", torch.float64, r_max_lr=6.0)
+    assert model.has_lr
+    assert model.r_lr == 6.0
+
+
+def test_load_model_r_max_lr_overrides_the_stored_cutoff(tmp_path):
+    from so3krates_torch.cli.run_md_nvalchemi import load_model
+
+    path = _save_tiny_model(tmp_path)  # stores r_max_lr = 6.0
+    model = load_model(str(path), "cpu", torch.float64, r_max_lr=5.0)
+    assert model.r_lr == 5.0
+
+
+@pytest.mark.parametrize("ensemble", ["nvt", "npt"])
+def test_cli_runs_model_without_stored_cutoff(monkeypatch, tmp_path, ensemble):
+    log = _run_cli(
+        monkeypatch,
+        tmp_path,
+        _nacl_crystal(),
+        "--ensemble",
+        ensemble,
+        "--r-max-lr",
+        "6.0",
+        strip_lr_cutoff=True,
+    )
+    required = ["energy", "volume_A3"]
+    if ensemble == "npt":
+        required.append("pressure_bar")
+    _assert_finite_rows(_read_csv_rows(log), required)
+
+
+def test_cli_without_cutoff_flag_fails_with_a_clear_message(
+    monkeypatch, tmp_path
+):
+    with pytest.raises(ValueError, match="--r-max-lr"):
+        _run_cli(
+            monkeypatch,
+            tmp_path,
+            _nacl_crystal(),
+            "--ensemble",
+            "nvt",
+            strip_lr_cutoff=True,
+        )

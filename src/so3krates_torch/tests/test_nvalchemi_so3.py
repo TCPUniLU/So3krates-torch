@@ -1170,3 +1170,36 @@ def test_geometry_charges_keep_the_system_neutral():
     _pipeline_eval(pipe, _rocksalt())
     assert totals
     assert abs(totals[-1]) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Long-range settings the model must carry (or be given)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"electrostatics_bool": True}, {"dispersion_bool": True}]
+)
+def test_wrapper_requires_lr_cutoff_for_long_range_terms(kwargs):
+    model = _make_so3lr(**kwargs)
+    model.r_max_lr = None
+    with pytest.raises(ValueError, match="r_max_lr") as exc:
+        NVAlchemiSO3LR(model)
+    assert "--r-max-lr" in str(exc.value)
+
+
+def test_wrapper_requires_dispersion_damping_when_dispersion_is_on():
+    model = _make_so3lr(dispersion_bool=True)
+    model.dispersion_energy_cutoff_lr_damping = None
+    with pytest.raises(
+        ValueError, match="dispersion_energy_cutoff_lr_damping"
+    ) as exc:
+        NVAlchemiSO3LR(model)
+    assert "--dispersion-energy-cutoff-lr-damping" in str(exc.value)
+
+
+def test_wrapper_without_long_range_terms_needs_no_lr_cutoff():
+    model = _make_so3lr()  # electrostatics and dispersion off
+    model.r_max_lr = None
+    wrapper = NVAlchemiSO3LR(model)
+    assert not wrapper.has_lr

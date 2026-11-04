@@ -321,6 +321,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "model (e.g. 1.2). Default: use the value saved with the model.",
     )
     p.add_argument(
+        "--r-max-lr",
+        "--r_max_lr",
+        dest="r_max_lr",
+        type=float,
+        default=None,
+        help="Long-range cutoff (Å). Supplies the cutoff for models that "
+        "store none (e.g. the packaged so3lr.model, where SO3LR's inference "
+        "default is 12.0) and overrides the stored value otherwise. "
+        "Default: use the value saved with the model.",
+    )
+    p.add_argument(
         "--dispersion-energy-cutoff-lr-damping",
         type=float,
         default=None,
@@ -396,6 +407,7 @@ def load_model(
     pme_spline_order: int = 4,
     pme_accuracy: float = 1e-6,
     skin: float = 0.0,
+    r_max_lr: float = None,
     compile_model: bool = False,
     fullgraph: bool | None = None,
     electrostatic_energy_scale: float = None,
@@ -425,6 +437,10 @@ def load_model(
 
     # Apply scale overrides BEFORE torch.compile so Inductor sees the
     # final float values (it bakes Python-float attributes as constants).
+    if r_max_lr is not None:
+        # The model reads self.r_max_lr on every forward pass, and
+        # NVAlchemiSO3LR builds its long-range edges from it.
+        raw.r_max_lr = float(r_max_lr)
     if electrostatic_energy_scale is not None:
         raw.electrostatic_energy_scale = electrostatic_energy_scale
     if dispersion_energy_scale is not None:
@@ -739,6 +755,7 @@ def main() -> None:
         pme_spline_order=args.pme_spline_order,
         pme_accuracy=args.pme_accuracy,
         skin=args.skin,
+        r_max_lr=args.r_max_lr,
         compile_model=args.compile,
         electrostatic_energy_scale=args.electrostatic_energy_scale,
         dispersion_energy_scale=args.dispersion_energy_scale,
