@@ -18,7 +18,10 @@ electrostatics. Pick the one that matches how your model was TRAINED:
       (full Ewald) supplies the Coulomb energy. Configured here via
       build_nvalchemi_pme_model(...). This is a DIFFERENT backend than the
       model's own term, so only use it with a model trained for full Ewald
-      electrostatics (use_pme: true). NOTE: NVAlchemi parameterizes the smearing
+      electrostatics (use_pme: true). The short-range model and PME run as one
+      autograd pipeline: forces are conservative and the NPT stress includes
+      the Coulomb virial. Requires a periodic cell.
+      NOTE: NVAlchemi parameterizes the smearing
       as the Ewald split `alpha` [1/Å] (alpha ~= 1/(sqrt(2)*pme_smearing)), not
       a length like torch-pme's pme_smearing.
 
@@ -81,7 +84,10 @@ def main() -> None:
         model = build_nvalchemi_pme_model(
             raw,
             mesh_spacing=0.8,  # FFT mesh spacing [Å]
-            alpha=None,  # Ewald split [1/Å]; None = auto-estimate
+            # Ewald split [1/Å]. None = NVAlchemi's auto estimate, which does
+            # not depend on the cutoff: below ~10 Å it under-converges and a
+            # warning suggests a value (sqrt(-ln(accuracy)) / r_max_lr).
+            alpha=None,
             spline_order=4,
             accuracy=1e-6,
             skin=args.skin,
@@ -91,10 +97,12 @@ def main() -> None:
             raw.electrostatic_energy_bool = False
         model = NVAlchemiSO3LR(raw, electrostatics="model", skin=args.skin)
     model = model.to(device=args.device, dtype=dtype).eval()
+    # nvalchemi 0.2 integrators do not narrow active_outputs: NVT needs no
+    # stress (skip computing it every step), NPT needs it for the barostat.
     if args.ensemble == "nvt":
-        # nvalchemi 0.2 integrators do not narrow active_outputs; NVT needs
-        # no stress, so skip computing it every step.
         set_active_outputs(model, {"energy", "forces"})
+    else:
+        set_active_outputs(model, {"energy", "forces", "stress"})
 
     # --- Build a (single-system) batch -------------------------------------
     atoms = ase_read(args.atoms)
