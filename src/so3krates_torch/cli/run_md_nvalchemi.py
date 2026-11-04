@@ -68,10 +68,13 @@ _NVALCHEMI_MISSING_MSG = (
     'it with:  pip install ".[nvalchemi]"'
 )
 
-# Outputs NVT needs.  nvalchemi-toolkit 0.2 integrators do not narrow
-# model_config.active_outputs themselves, so without this NVT would compute
-# (unused) stress every step.  NPT keeps the wrapper's defaults.
+# Outputs each ensemble needs.  nvalchemi-toolkit 0.2 integrators do not
+# narrow model_config.active_outputs themselves, so without this NVT would
+# compute (unused) stress every step.  NPT needs the stress for the barostat;
+# setting it explicitly also switches on the Coulomb virial of a direct
+# pipeline group.
 _NVT_OUTPUTS = frozenset({"energy", "forces"})
+_NPT_OUTPUTS = frozenset({"energy", "forces", "stress"})
 
 # ---------------------------------------------------------------------------
 # Unit conversion constants
@@ -673,6 +676,8 @@ def _configure_active_outputs(model, ensemble: str) -> None:
     """Narrow the model's ``active_outputs`` for the chosen ensemble."""
     if ensemble == "nvt":
         set_active_outputs(model, _NVT_OUTPUTS)
+    elif ensemble == "npt":
+        set_active_outputs(model, _NPT_OUTPUTS)
 
 
 def main() -> None:
@@ -707,6 +712,14 @@ def main() -> None:
             "Ensure your structure file uses extended-XYZ format with a "
             "'Lattice=' header, or use a POSCAR/CIF file so ASE reads "
             "the cell and sets pbc=True."
+        )
+
+    if args.electrostatics == "nvalchemi" and not all(periodic):
+        sys.exit(
+            "Error: --electrostatics nvalchemi (PME) needs a periodic cell, "
+            "but the structure(s) have pbc=False.\n"
+            "Use --electrostatics model or --electrostatics none for "
+            "molecules."
         )
 
     print(f"Loading model from {args.model} …")

@@ -31,6 +31,8 @@ Usage::
 
 from __future__ import annotations
 
+import math
+import warnings
 from typing import Any
 
 import torch
@@ -375,12 +377,18 @@ def set_active_outputs(model: nn.Module, outputs) -> None:
 
     Works on a bare :class:`NVAlchemiSO3LR` and on the
     ``PipelineModelWrapper`` from :func:`build_nvalchemi_pme_model`.  For a
-    pipeline, every step's model is narrowed too (direct groups use each
-    sub-model's own ``active_outputs``), but a step's ``charges`` output is
-    kept active so the SR -> PME charge wiring stays intact.
+    pipeline with a *direct* group, every step's model is narrowed too
+    (direct groups use each sub-model's own ``active_outputs``), but a
+    step's ``charges`` output is kept active so the SR -> PME charge wiring
+    stays intact.  The steps of an *autograd* group (the native-PME
+    pipeline) are left alone: they return energies only, and the pipeline
+    derives forces and stress from the summed energy, so only the
+    pipeline-level setting matters.
     """
     outputs = set(outputs)
     for group in getattr(model, "groups", ()):
+        if group.use_autograd:
+            continue
         for step in group.steps:
             sub = step.model
             want = (outputs | {"charges"}) & set(sub.model_config.outputs)
@@ -395,6 +403,38 @@ def set_active_outputs(model: nn.Module, outputs) -> None:
 _KE_EV_ANG = 14.399645351950548
 
 
+def _warn_if_alpha_unconverged(
+    cutoff: float,
+    alpha: float | None,
+    accuracy: float,
+    *,
+    stacklevel: int = 2,
+) -> None:
+    """Warn when the auto-estimated Ewald alpha will under-converge.
+
+    NVAlchemi's auto alpha does not depend on the cutoff (about 0.3 per
+    Angstrom for condensed systems), so the real-space sum truncated at
+    ``cutoff`` carries a relative error of about ``erfc(0.3 * cutoff)``:
+    1e-2 at 6 A, 2e-5 at 10 A, 4e-7 at 12 A.  Warn when that exceeds ten
+    times the requested ``accuracy``.  An explicit ``alpha`` is trusted.
+    """
+    if alpha is not None:
+        return
+    if math.erfc(0.3 * cutoff) <= 10.0 * accuracy:
+        return
+    suggested = math.sqrt(-math.log(accuracy)) / cutoff
+    warnings.warn(
+        f"NVAlchemi PME: the auto-estimated Ewald alpha does not depend on "
+        f"the cutoff, so the real-space sum at cutoff={cutoff:g} A is "
+        f"under-converged (relative error of order "
+        f"{math.erfc(0.3 * cutoff):.0e}; SO3LR's 12 A is fine). Pass an "
+        f"explicit alpha, e.g. --pme-alpha {suggested:.2f} (alpha= in "
+        f"Python), which converges to about 1e-5.",
+        UserWarning,
+        stacklevel=stacklevel,
+    )
+
+
 def build_nvalchemi_pme_model(
     model: nn.Module,
     *,
@@ -403,7 +443,6 @@ def build_nvalchemi_pme_model(
     spline_order: int = 4,
     accuracy: float = 1e-6,
     coulomb_constant: float = _KE_EV_ANG,
-    hybrid_forces: bool = True,
     skin: float = 0.0,
 ):
     """Compose an SO3LR model with NVAlchemi-native PME electrostatics.
@@ -413,9 +452,14 @@ def build_nvalchemi_pme_model(
     the long-range Coulomb energy from those charges.  ZBL repulsion and the
     (real-space) dispersion term are unchanged.
 
-    The returned object is a NVAlchemi ``PipelineModelWrapper`` that runs the
-    short-range model first, wires its ``charges`` output into the PME step,
-    and sums the energy/forces/stress of both.
+    The returned object is a NVAlchemi ``PipelineModelWrapper`` with one
+    *autograd* group: the short-range model runs first and its ``charges``
+    output is wired into the PME step; both return energies only, and the
+    pipeline differentiates the summed energy with respect to positions and
+    strain.  Forces are therefore conservative (they include the response
+    of the charges to the geometry) and the stress includes the Coulomb
+    virial.  Get the neighbor-list hooks from ``pipeline.make_neighbor_hooks()``
+    and narrow the reported outputs with :func:`set_active_outputs`.
 
     .. warning::
         This MUTATES ``model`` in place (sets ``electrostatic_energy_bool=False``
@@ -429,9 +473,13 @@ def build_nvalchemi_pme_model(
         An SO3LR model exposing ``r_max_lr`` (the PME real-space cutoff).
     alpha:
         Ewald splitting parameter (inverse Å) — NVAlchemi's analogue of the
-        Gaussian smearing.  ``None`` (default) auto-estimates it from
-        ``accuracy`` via the Kolafa-Perram formula each time the cell changes.
-    mesh_spacing, spline_order, accuracy, coulomb_constant, hybrid_forces:
+        Gaussian smearing.  ``None`` (default) lets NVAlchemi estimate it
+        from the cell and ``accuracy`` each time the cell changes.  That
+        estimate does **not** depend on the cutoff, so at short cutoffs the
+        real-space sum is under-converged (about 1.9 % in the energy at
+        6 A, 3e-6 at SO3LR's 12 A); a ``UserWarning`` is emitted then, and
+        ``sqrt(-ln(accuracy)) / r_max_lr`` is a converged choice.
+    mesh_spacing, spline_order, accuracy, coulomb_constant:
         Forwarded to :class:`nvalchemi.models.pme.PMEModelWrapper`.  The
         default ``coulomb_constant`` matches the model's ``ke``.
     skin:
@@ -451,6 +499,9 @@ def build_nvalchemi_pme_model(
             "build_nvalchemi_pme_model requires a long-range cutoff "
             "(model.r_max_lr); short-range-only models have no electrostatics."
         )
+    _warn_if_alpha_unconverged(
+        float(model.r_max_lr), alpha, accuracy, stacklevel=3
+    )
 
     model.electrostatic_energy_bool = False
     model.output_partial_charges = True
@@ -463,17 +514,19 @@ def build_nvalchemi_pme_model(
         spline_order=spline_order,
         accuracy=accuracy,
         coulomb_constant=coulomb_constant,
-        hybrid_forces=hybrid_forces,
+        hybrid_forces=False,
     )
+    # Autograd group: both steps return energies on the shared (strained)
+    # positions and cell, and the pipeline derives forces and stress from
+    # the summed energy.  That includes the charge response dq/dr and
+    # dq/d(strain), which a direct group (analytic PME forces at fixed
+    # charges) leaves out.  Upstream strips the derivative outputs from the
+    # steps of an autograd group during forward, so the steps need no manual
+    # narrowing.
     group = PipelineGroup(
         steps=[PipelineStep(sr, wire={"charges": "charges"}), pme],
-        use_autograd=False,
+        use_autograd=True,
     )
-    pipeline = PipelineModelWrapper(
-        [group], additive_keys={"energy", "forces", "stress"}
-    )
-    # The pipeline unions sub-model active_outputs (which includes the SR
-    # step's "charges"); narrow it to the MD-relevant outputs so integrators
-    # only request energy/forces/stress.
-    pipeline.model_config.active_outputs = {"energy", "forces", "stress"}
+    pipeline = PipelineModelWrapper([group])
+    pipeline.set_config("active_outputs", {"energy", "forces", "stress"})
     return pipeline
