@@ -31,6 +31,8 @@ Usage::
 
 from __future__ import annotations
 
+import math
+import warnings
 from typing import Any
 
 import torch
@@ -375,12 +377,18 @@ def set_active_outputs(model: nn.Module, outputs) -> None:
 
     Works on a bare :class:`NVAlchemiSO3LR` and on the
     ``PipelineModelWrapper`` from :func:`build_nvalchemi_pme_model`.  For a
-    pipeline, every step's model is narrowed too (direct groups use each
-    sub-model's own ``active_outputs``), but a step's ``charges`` output is
-    kept active so the SR -> PME charge wiring stays intact.
+    pipeline with a *direct* group, every step's model is narrowed too
+    (direct groups use each sub-model's own ``active_outputs``), but a
+    step's ``charges`` output is kept active so the SR -> PME charge wiring
+    stays intact.  The steps of an *autograd* group (the native-PME
+    pipeline) are left alone: they return energies only, and the pipeline
+    derives forces and stress from the summed energy, so only the
+    pipeline-level setting matters.
     """
     outputs = set(outputs)
     for group in getattr(model, "groups", ()):
+        if group.use_autograd:
+            continue
         for step in group.steps:
             sub = step.model
             want = (outputs | {"charges"}) & set(sub.model_config.outputs)
@@ -395,15 +403,53 @@ def set_active_outputs(model: nn.Module, outputs) -> None:
 _KE_EV_ANG = 14.399645351950548
 
 
+def _derive_alpha(cutoff: float, accuracy: float) -> float:
+    """Ewald alpha for which the real-space sum truncated at ``cutoff`` has
+    relative error ``erfc(alpha * cutoff) ~ accuracy`` (the Kolafa-Perram
+    real-space criterion): ``sqrt(-ln(accuracy)) / cutoff``."""
+    return math.sqrt(-math.log(accuracy)) / cutoff
+
+
+def _warn_if_alpha_unconverged(
+    cutoff: float,
+    alpha: float | None,
+    accuracy: float,
+    *,
+    stacklevel: int = 2,
+) -> None:
+    """Warn when an *explicit* Ewald alpha under-converges the real-space sum.
+
+    Truncating the real-space sum at ``cutoff`` leaves a relative error of
+    about ``erfc(alpha * cutoff)``.  Warn when that exceeds ten times the
+    requested ``accuracy``.  ``alpha=None`` is not judged: the builder
+    derives it from the cutoff (see :func:`_derive_alpha`).
+    """
+    if alpha is None:
+        return
+    error = math.erfc(alpha * cutoff)
+    if error <= 10.0 * accuracy:
+        return
+    suggested = _derive_alpha(cutoff, accuracy)
+    warnings.warn(
+        f"NVAlchemi PME: alpha={alpha:g} 1/A with cutoff={cutoff:g} A "
+        f"under-converges the real-space Ewald sum (truncation error of "
+        f"order erfc(alpha*cutoff) = {error:.0e}, requested accuracy "
+        f"{accuracy:g}). Use alpha >= {suggested:.2f} (--pme-alpha "
+        f"{suggested:.2f}; alpha= in Python), or omit it to derive it from "
+        f"the cutoff and accuracy.",
+        UserWarning,
+        stacklevel=stacklevel,
+    )
+
+
 def build_nvalchemi_pme_model(
     model: nn.Module,
     *,
-    mesh_spacing: float = 1.0,
     alpha: float = None,
+    mesh_dimensions: tuple[int, int, int] | None = None,
     spline_order: int = 4,
     accuracy: float = 1e-6,
     coulomb_constant: float = _KE_EV_ANG,
-    hybrid_forces: bool = True,
     skin: float = 0.0,
 ):
     """Compose an SO3LR model with NVAlchemi-native PME electrostatics.
@@ -413,9 +459,14 @@ def build_nvalchemi_pme_model(
     the long-range Coulomb energy from those charges.  ZBL repulsion and the
     (real-space) dispersion term are unchanged.
 
-    The returned object is a NVAlchemi ``PipelineModelWrapper`` that runs the
-    short-range model first, wires its ``charges`` output into the PME step,
-    and sums the energy/forces/stress of both.
+    The returned object is a NVAlchemi ``PipelineModelWrapper`` with one
+    *autograd* group: the short-range model runs first and its ``charges``
+    output is wired into the PME step; both return energies only, and the
+    pipeline differentiates the summed energy with respect to positions and
+    strain.  Forces are therefore conservative (they include the response
+    of the charges to the geometry) and the stress includes the Coulomb
+    virial.  Get the neighbor-list hooks from ``pipeline.make_neighbor_hooks()``
+    and narrow the reported outputs with :func:`set_active_outputs`.
 
     .. warning::
         This MUTATES ``model`` in place (sets ``electrostatic_energy_bool=False``
@@ -429,9 +480,30 @@ def build_nvalchemi_pme_model(
         An SO3LR model exposing ``r_max_lr`` (the PME real-space cutoff).
     alpha:
         Ewald splitting parameter (inverse Å) — NVAlchemi's analogue of the
-        Gaussian smearing.  ``None`` (default) auto-estimates it from
-        ``accuracy`` via the Kolafa-Perram formula each time the cell changes.
-    mesh_spacing, spline_order, accuracy, coulomb_constant, hybrid_forces:
+        Gaussian smearing.  ``None`` (default) derives it from the cutoff
+        and ``accuracy`` as ``sqrt(-ln(accuracy)) / r_max_lr`` (0.62 at
+        6 Å, 0.31 at SO3LR's 12 Å), so the real-space sum is converged
+        whatever the system size.  This deliberately does not use
+        NVAlchemi's own estimate, which ignores the cutoff and ``accuracy``
+        and shrinks like N**(-1/6): the NaCl Madelung energy at 12 Å is off
+        by 1e-7 for 64 atoms but by 3e-4 for 512 and 1.5e-2 for 4096.  An
+        explicit ``alpha`` with ``erfc(alpha * r_max_lr)`` above ten times
+        ``accuracy`` emits a ``UserWarning``.
+    mesh_dimensions:
+        FFT grid points ``(nx, ny, nz)`` of the reciprocal-space part: the
+        charges are spread onto this grid with B-splines of order
+        ``spline_order``, Fourier-transformed, and the Coulomb kernel is
+        applied on it.  A finer grid gives a more accurate reciprocal sum
+        at a cost of roughly ``nx*ny*nz*log(nx*ny*nz)``.  ``None`` (default)
+        lets NVAlchemi size the mesh from its own accuracy-based estimate
+        (which is blind to a large ``alpha`` on big cells: NaCl, derived
+        alpha: 1.5e-5 at 64 atoms and 2.6e-4 at 4096 for a 6 Å cutoff).  A
+        given mesh is fixed for every structure and every cell, so under NPT
+        the grid spacing ``L / n`` follows the cell and a batch shares one
+        mesh; leave headroom.  (nvalchemi-toolkit 0.2.0 has no working
+        ``mesh_spacing`` option: ``PMEModelWrapper`` stores it but never
+        uses it, so this builder does not offer one.)
+    spline_order, accuracy, coulomb_constant:
         Forwarded to :class:`nvalchemi.models.pme.PMEModelWrapper`.  The
         default ``coulomb_constant`` matches the model's ``ke``.
     skin:
@@ -451,29 +523,51 @@ def build_nvalchemi_pme_model(
             "build_nvalchemi_pme_model requires a long-range cutoff "
             "(model.r_max_lr); short-range-only models have no electrostatics."
         )
+    if mesh_dimensions is not None:
+        try:
+            dims = tuple(int(n) for n in mesh_dimensions)
+        except TypeError:
+            dims = ()
+        if len(dims) != 3 or any(n < 1 for n in dims):
+            raise ValueError(
+                "mesh_dimensions must be three positive integers "
+                f"(nx, ny, nz), got {mesh_dimensions!r}"
+            )
+        mesh_dimensions = dims
+    cutoff = float(model.r_max_lr)
+    if alpha is None:
+        # Not upstream's auto estimate: that one ignores both the cutoff and
+        # `accuracy` and shrinks like N**(-1/6) with the system size, so the
+        # real-space sum is badly under-converged for large cells (NaCl
+        # Madelung energy at 12 A: 1e-7 at 64 atoms, 1.5e-2 at 4096).
+        alpha = _derive_alpha(cutoff, accuracy)
+    else:
+        _warn_if_alpha_unconverged(cutoff, alpha, accuracy, stacklevel=3)
 
     model.electrostatic_energy_bool = False
     model.output_partial_charges = True
 
     sr = NVAlchemiSO3LR(model, electrostatics="nvalchemi", skin=skin)
     pme = PMEModelWrapper(
-        cutoff=float(model.r_max_lr),
-        mesh_spacing=mesh_spacing,
+        cutoff=cutoff,
         alpha=alpha,
+        mesh_dimensions=mesh_dimensions,
         spline_order=spline_order,
         accuracy=accuracy,
         coulomb_constant=coulomb_constant,
-        hybrid_forces=hybrid_forces,
+        hybrid_forces=False,
     )
+    # Autograd group: both steps return energies on the shared (strained)
+    # positions and cell, and the pipeline derives forces and stress from
+    # the summed energy.  That includes the charge response dq/dr and
+    # dq/d(strain), which a direct group (analytic PME forces at fixed
+    # charges) leaves out.  Upstream strips the derivative outputs from the
+    # steps of an autograd group during forward, so the steps need no manual
+    # narrowing.
     group = PipelineGroup(
         steps=[PipelineStep(sr, wire={"charges": "charges"}), pme],
-        use_autograd=False,
+        use_autograd=True,
     )
-    pipeline = PipelineModelWrapper(
-        [group], additive_keys={"energy", "forces", "stress"}
-    )
-    # The pipeline unions sub-model active_outputs (which includes the SR
-    # step's "charges"); narrow it to the MD-relevant outputs so integrators
-    # only request energy/forces/stress.
-    pipeline.model_config.active_outputs = {"energy", "forces", "stress"}
+    pipeline = PipelineModelWrapper([group])
+    pipeline.set_config("active_outputs", {"energy", "forces", "stress"})
     return pipeline

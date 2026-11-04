@@ -251,11 +251,22 @@ torchkrates-md-nvalchemi \
 **Electrostatics semantics.** `--electrostatics` selects which long-range Coulomb term is active, and the two non-`none` options are *different, non-interchangeable* electrostatics models:
 
 - `model` (default, **recommended**): the model computes its own electrostatics exactly as trained — damped real-space erf-Coulomb (`use_pme: false`) or the model's own torch-pme (`use_pme: true`). This is the validated path.
-- `nvalchemi` (**experimental**): the short-range model instead emits partial charges only, and NVAlchemi's GPU-native PME (full Ewald) supplies the Coulomb energy from those charges. Only meaningful for a model trained with `use_pme: true`, and even then it does **not** reproduce the model's own torch-pme energy numerically — it is a separate backend. Known limitations pending a later phase:
-  - in NPT, the Coulomb contribution to the stress/virial is currently **missing**, so the barostat does not see the correct pressure;
-  - PME forces omit the charge-response (`dq/dr`) term, so they are not fully conservative.
+- `nvalchemi`: the short-range model instead emits partial charges only, and NVAlchemi's GPU-native PME (full Ewald) supplies the Coulomb energy from those charges. Only meaningful for a model trained with `use_pme: true`, and even then it does **not** reproduce the model's own torch-pme energy numerically — it is a separate backend. Requires a periodic cell (molecules exit with an error). The short-range model and PME run as one autograd pipeline, so forces include the response of the charges to the geometry (`dq/dr`) and the NPT stress includes the Coulomb virial. Checked on CPU against finite differences (forces), the strain derivative of the energy (all six stress components, with geometry-dependent charges) and the analytical Madelung energy of NaCl. **Not yet validated:** GPU runs, and long NPT or NVE runs (see the cluster checklist in the pull request).
+  - **Ewald `alpha`.** By default (`--pme-alpha` not given) `alpha = sqrt(-ln(accuracy)) / r_max_lr` (0.31 Å⁻¹ at SO3LR's 12 Å cutoff, 0.62 at 6 Å), so the real-space sum is converged for any cell size. This deliberately replaces NVAlchemi's own estimate, which ignores the cutoff and `--pme-accuracy` and shrinks like N^(-1/6). Relative error of the NaCl Madelung energy (±1 charges, CPU):
 
-  Use `model` unless you specifically need NVAlchemi-native PME and have validated it for your use case.
+    | cutoff | atoms | NVAlchemi auto `alpha` | derived `alpha` |
+    |---|---|---|---|
+    | 12 Å | 64 | 1e-7 | 2e-7 |
+    | 12 Å | 512 | 3e-4 | 2e-7 |
+    | 12 Å | 4096 | 1.5e-2 | 4e-7 |
+    | 6 Å | 64 | 1.9e-2 | 1.5e-5 |
+    | 6 Å | 4096 | 0.34 | 2.6e-4 |
+
+    An explicit `--pme-alpha` is used as given, with a warning if `erfc(alpha · cutoff)` exceeds ten times `--pme-accuracy` (the real-space truncation error). By default NVAlchemi sizes the reciprocal FFT mesh itself, from an accuracy-based estimate that does not see a large `alpha`, so very large alphas lose a little reciprocal accuracy on big cells (the 6 Å row).
+  - **`--pme-mesh-dimensions NX NY NZ`** sets the FFT grid points per cell axis (charges are spread onto this grid with B-splines of order `--pme-spline-order`, transformed, and the Coulomb kernel applied on it). A finer grid makes the reciprocal sum more accurate at roughly `NX·NY·NZ·log(NX·NY·NZ)` cost; in a 64-atom NaCl cell a 16³ grid and a 48³ grid differed by 0.17 eV. The grid is fixed, so under NPT the spacing `L/N` follows the cell, and a batch of different cells shares one grid. nvalchemi-toolkit 0.2.0 has no working mesh-*spacing* option (it is stored and never used), so this is the only mesh control.
+  - `alpha` is the same for every graph in a batch, so the per-batch averaging NVAlchemi applies to its auto estimate does not occur.
+
+  Use `model` unless you specifically need NVAlchemi-native PME.
 - `none`: long-range electrostatics disabled entirely.
 
 **Stress and pressure convention.** The model emits stress in the ASE convention (tensile-positive Cauchy stress); nvalchemi-toolkit 0.2 uses the same convention, so it is passed through unchanged. The reported pressure is `P = N kB T / V − tr(σ)/3`, matching ASE and LAMMPS's `thermo press` so the two engines can be compared directly at the same configuration.

@@ -68,10 +68,13 @@ _NVALCHEMI_MISSING_MSG = (
     'it with:  pip install ".[nvalchemi]"'
 )
 
-# Outputs NVT needs.  nvalchemi-toolkit 0.2 integrators do not narrow
-# model_config.active_outputs themselves, so without this NVT would compute
-# (unused) stress every step.  NPT keeps the wrapper's defaults.
+# Outputs each ensemble needs.  nvalchemi-toolkit 0.2 integrators do not
+# narrow model_config.active_outputs themselves, so without this NVT would
+# compute (unused) stress every step.  NPT needs the stress for the barostat;
+# setting it explicitly also switches on the Coulomb virial of a direct
+# pipeline group.
 _NVT_OUTPUTS = frozenset({"energy", "forces"})
+_NPT_OUTPUTS = frozenset({"energy", "forces", "stress"})
 
 # ---------------------------------------------------------------------------
 # Unit conversion constants
@@ -250,19 +253,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Long-range electrostatics backend (default: the model's own)",
     )
     p.add_argument(
-        "--pme-mesh-spacing",
-        type=float,
-        default=1.0,
-        help="NVAlchemi PME target mesh spacing [Å] "
-        "(--electrostatics nvalchemi only; default: 1.0)",
-    )
-    p.add_argument(
         "--pme-alpha",
         type=float,
         default=None,
-        help="NVAlchemi PME Ewald splitting / smearing [1/Å] "
-        "(--electrostatics nvalchemi only; default: auto-estimated from "
-        "--pme-accuracy)",
+        help="NVAlchemi PME Ewald splitting [1/Å] "
+        "(--electrostatics nvalchemi only; default: derived from the "
+        "model's long-range cutoff and --pme-accuracy as "
+        "sqrt(-ln(accuracy)) / cutoff; warns if an explicit value "
+        "under-converges the real-space sum)",
+    )
+    p.add_argument(
+        "--pme-mesh-dimensions",
+        type=int,
+        nargs=3,
+        metavar=("NX", "NY", "NZ"),
+        default=None,
+        help="NVAlchemi PME FFT grid points per cell axis "
+        "(--electrostatics nvalchemi only; default: NVAlchemi sizes the "
+        "mesh itself). A finer grid improves the reciprocal-space sum; the "
+        "grid is fixed, so under NPT the spacing follows the cell",
     )
     p.add_argument(
         "--pme-spline-order",
@@ -275,7 +284,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--pme-accuracy",
         type=float,
         default=1e-6,
-        help="NVAlchemi PME target accuracy for auto parameter estimation "
+        help="NVAlchemi PME target accuracy; sets the derived alpha "
         "(--electrostatics nvalchemi only; default: 1e-6)",
     )
     p.add_argument(
@@ -382,8 +391,8 @@ def load_model(
     device: str,
     dtype: torch.dtype,
     electrostatics: str = "model",
-    pme_mesh_spacing: float = 1.0,
     pme_alpha: float = None,
+    pme_mesh_dimensions=None,
     pme_spline_order: int = 4,
     pme_accuracy: float = 1e-6,
     skin: float = 0.0,
@@ -458,8 +467,8 @@ def load_model(
     if electrostatics == "nvalchemi":
         model = build_nvalchemi_pme_model(
             raw,
-            mesh_spacing=pme_mesh_spacing,
             alpha=pme_alpha,
+            mesh_dimensions=pme_mesh_dimensions,
             spline_order=pme_spline_order,
             accuracy=pme_accuracy,
             skin=skin,
@@ -669,6 +678,14 @@ def _make_hooks(
 # ---------------------------------------------------------------------------
 
 
+def _configure_active_outputs(model, ensemble: str) -> None:
+    """Narrow the model's ``active_outputs`` for the chosen ensemble."""
+    if ensemble == "nvt":
+        set_active_outputs(model, _NVT_OUTPUTS)
+    elif ensemble == "npt":
+        set_active_outputs(model, _NPT_OUTPUTS)
+
+
 def main() -> None:
     if _NVALCHEMI_IMPORT_ERROR is not None:
         sys.exit(_NVALCHEMI_MISSING_MSG.format(err=_NVALCHEMI_IMPORT_ERROR))
@@ -703,14 +720,22 @@ def main() -> None:
             "the cell and sets pbc=True."
         )
 
+    if args.electrostatics == "nvalchemi" and not all(periodic):
+        sys.exit(
+            "Error: --electrostatics nvalchemi (PME) needs a periodic cell, "
+            "but the structure(s) have pbc=False.\n"
+            "Use --electrostatics model or --electrostatics none for "
+            "molecules."
+        )
+
     print(f"Loading model from {args.model} …")
     model = load_model(
         args.model,
         args.device,
         dtype,
         electrostatics=args.electrostatics,
-        pme_mesh_spacing=args.pme_mesh_spacing,
         pme_alpha=args.pme_alpha,
+        pme_mesh_dimensions=args.pme_mesh_dimensions,
         pme_spline_order=args.pme_spline_order,
         pme_accuracy=args.pme_accuracy,
         skin=args.skin,
@@ -721,8 +746,7 @@ def main() -> None:
             args.dispersion_energy_cutoff_lr_damping
         ),
     )
-    if args.ensemble == "nvt":
-        set_active_outputs(model, _NVT_OUTPUTS)
+    _configure_active_outputs(model, args.ensemble)
     cutoff = model.model_config.neighbor_config.cutoff
     compile_note = "  compiled=yes (first step slow)" if args.compile else ""
     print(
