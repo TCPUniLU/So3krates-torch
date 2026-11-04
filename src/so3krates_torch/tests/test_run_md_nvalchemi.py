@@ -517,3 +517,87 @@ def test_cli_friendly_error_without_nvalchemi(
     msg = str(exc.value)
     assert "3.11" in msg
     assert ".[nvalchemi]" in msg
+
+
+# ---------------------------------------------------------------------------
+# Native PME (--electrostatics nvalchemi)
+# ---------------------------------------------------------------------------
+
+_NATIVE_PME = ("--electrostatics", "nvalchemi", "--pme-alpha", "0.6")
+
+
+def test_cli_native_pme_rejects_non_periodic(monkeypatch, tmp_path):
+    """PME needs a periodic cell: a molecule exits with a clear message."""
+    with pytest.raises(SystemExit) as exc:
+        _run_cli(
+            monkeypatch,
+            tmp_path,
+            _h2o(),
+            "--ensemble",
+            "nvt",
+            "--electrostatics",
+            "nvalchemi",
+        )
+    assert "periodic" in str(exc.value)
+
+
+def test_configure_active_outputs_npt_native_pme_stress():
+    """NPT on the native-PME pipeline: the stress it reports equals the
+    strain derivative of the energy (Coulomb virial included)."""
+    from so3krates_torch.cli.run_md_nvalchemi import _configure_active_outputs
+    from so3krates_torch.tests.test_nvalchemi_so3 import (
+        _pme_pipeline,
+        _rocksalt,
+        _stress_vs_strain_fd,
+    )
+
+    pipe = _pme_pipeline()
+    _configure_active_outputs(pipe, "npt")
+    assert pipe.model_config.active_outputs == {"energy", "forces", "stress"}
+    analytic, fd = _stress_vs_strain_fd(pipe, _rocksalt(), 0, 0)
+    assert analytic == pytest.approx(fd, rel=1e-3, abs=1e-7)
+
+
+def test_configure_active_outputs_nvt_native_pme():
+    from so3krates_torch.cli.run_md_nvalchemi import _configure_active_outputs
+    from so3krates_torch.tests.test_nvalchemi_so3 import (
+        _pipeline_eval,
+        _pme_pipeline,
+        _rocksalt,
+    )
+
+    pipe = _pme_pipeline()
+    _configure_active_outputs(pipe, "nvt")
+    assert pipe.model_config.active_outputs == {"energy", "forces"}
+    out, _ = _pipeline_eval(pipe, _rocksalt())
+    assert "stress" not in out
+    assert torch.isfinite(out["forces"]).all()
+
+
+def test_cli_native_pme_nvt_runs(monkeypatch, tmp_path):
+    log = _run_cli(
+        monkeypatch,
+        tmp_path,
+        _nacl_crystal(),
+        "--ensemble",
+        "nvt",
+        *_NATIVE_PME,
+    )
+    rows = _read_csv_rows(log)
+    _assert_finite_rows(rows, ["energy", "volume_A3", "density_g_cm3"])
+    assert "pressure_bar" not in rows[0]
+
+
+def test_cli_native_pme_npt_runs(monkeypatch, tmp_path):
+    log = _run_cli(
+        monkeypatch,
+        tmp_path,
+        _nacl_crystal(),
+        "--ensemble",
+        "npt",
+        *_NATIVE_PME,
+    )
+    rows = _read_csv_rows(log)
+    _assert_finite_rows(
+        rows, ["energy", "volume_A3", "density_g_cm3", "pressure_bar"]
+    )

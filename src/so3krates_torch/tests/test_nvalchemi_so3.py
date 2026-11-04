@@ -303,7 +303,7 @@ def test_build_nvalchemi_pme_model_emits_charges():
     )
 
     model = _make_so3lr(electrostatics_bool=True)
-    pipe = build_nvalchemi_pme_model(model)
+    pipe = build_nvalchemi_pme_model(model, alpha=0.6)
     assert model.electrostatic_energy_bool is False
     assert model.output_partial_charges is True
     assert pipe.model_config.active_outputs == {"energy", "forces", "stress"}
@@ -317,15 +317,15 @@ def test_build_nvalchemi_pme_model_emits_charges():
 def test_native_pme_md_runs_on_cpu():
     """A short NVT run with NVAlchemi-native PME completes and stays finite
     (single + batched)."""
-    from nvalchemi.dynamics.base import DynamicsStage
     from nvalchemi.dynamics.integrators.nvt_langevin import NVTLangevin
-    from nvalchemi.hooks.neighbor_list import NeighborListHook
 
     from so3krates_torch.calculator.nvalchemi_so3 import (
         build_nvalchemi_pme_model,
     )
 
-    pipe = build_nvalchemi_pme_model(_make_so3lr(electrostatics_bool=True))
+    pipe = build_nvalchemi_pme_model(
+        _make_so3lr(electrostatics_bool=True), alpha=0.6
+    )
 
     def _data(atoms):
         n = len(atoms)
@@ -343,20 +343,13 @@ def test_native_pme_md_runs_on_cpu():
     a2 = bulk("NaCl", crystalstructure="rocksalt", a=5.8000)
     batch = Batch.from_data_list([_data(a1), _data(a2)])
 
-    hooks = [
-        NeighborListHook(
-            config=pipe.model_config.neighbor_config,
-            skin=0.5,
-            stage=DynamicsStage.BEFORE_COMPUTE,
-        )
-    ]
     integ = NVTLangevin(
         model=pipe,
         dt=0.5,
         temperature=300.0,
         friction=1e-2,
         n_steps=1,
-        hooks=hooks,
+        hooks=pipe.make_neighbor_hooks(),
     )
     out = integ.run(batch)
     assert out.energy.reshape(-1).shape[0] == 2
@@ -608,39 +601,34 @@ def test_set_active_outputs_bare_wrapper():
     assert w.model_config.active_outputs == {"energy", "forces", "stress"}
 
 
-def test_set_active_outputs_pme_pipeline_keeps_charges():
-    """NVT narrowing on the native-PME pipeline drops stress everywhere
-    but keeps the SR step's charges output (wired into PME)."""
+def test_set_active_outputs_pme_pipeline_nvt():
+    """NVT narrowing on the native-PME pipeline: the pipeline reports only
+    energy and forces, and (autograd group) the short-range step computes
+    neither forces nor stress itself; forces come from the pipeline's
+    autograd on the summed energy."""
     from so3krates_torch.calculator.nvalchemi_so3 import (
         build_nvalchemi_pme_model,
         set_active_outputs,
     )
 
-    pipe = build_nvalchemi_pme_model(_make_so3lr(electrostatics_bool=True))
+    pipe = build_nvalchemi_pme_model(
+        _make_so3lr(electrostatics_bool=True), alpha=0.6
+    )
     set_active_outputs(pipe, {"energy", "forces"})
     assert pipe.model_config.active_outputs == {"energy", "forces"}
     (group,) = pipe.groups
-    sr, pme = (step.model for step in group.steps)
-    assert sr.model_config.active_outputs == {"energy", "forces", "charges"}
-    assert "stress" not in pme.model_config.active_outputs
+    sr, _pme = (step.model for step in group.steps)
 
     calls = []
     orig = sr.model.forward
     sr.model.forward = lambda *a, **k: calls.append(k) or orig(*a, **k)
     # One NVT step through the pipeline (PME needs the hook-built list).
-    from nvalchemi.dynamics.base import DynamicsStage
     from nvalchemi.dynamics.integrators.nvt_langevin import NVTLangevin
-    from nvalchemi.hooks.neighbor_list import NeighborListHook
 
     from so3krates_torch.cli.run_md_nvalchemi import atoms_to_data
 
     batch = Batch.from_data_list(
         [atoms_to_data(_small_nacl(), str(DEVICE), DTYPE)]
-    )
-    hook = NeighborListHook(
-        config=pipe.model_config.neighbor_config,
-        skin=0.0,
-        stage=DynamicsStage.BEFORE_COMPUTE,
     )
     out = NVTLangevin(
         model=pipe,
@@ -648,10 +636,10 @@ def test_set_active_outputs_pme_pipeline_keeps_charges():
         temperature=300.0,
         friction=1e-2,
         n_steps=1,
-        hooks=[hook],
+        hooks=pipe.make_neighbor_hooks(),
     ).run(batch)
     assert calls and calls[-1]["compute_stress"] is False
-    assert calls[-1]["compute_force"] is True
+    assert calls[-1]["compute_force"] is False
     assert torch.isfinite(out.forces).all()
     assert torch.isfinite(out.energy).all()
 
@@ -747,3 +735,296 @@ def _make_batch_with_nl_multi(
             for atoms in atoms_list
         ]
     )
+
+
+# ---------------------------------------------------------------------------
+# Native PME as an autograd pipeline (phase 2)
+# ---------------------------------------------------------------------------
+
+_MADELUNG_NACL = 1.747564594633
+_ALL_COMPONENTS = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
+
+
+def _rocksalt(a: float = 5.64):
+    """16-atom NaCl cell, primitive (rhombohedral, non-orthogonal) lattice,
+    rattled by a small amount: finite differences are only trustworthy for
+    distortions of this size."""
+    atoms = bulk("NaCl", crystalstructure="rocksalt", a=a).repeat(2)
+    atoms.rattle(0.05, seed=1)
+    return atoms
+
+
+def _pme_pipeline(
+    alpha: float = 0.6, outputs=None, geometry_charges: bool = False
+):
+    """Native-PME pipeline on the tiny test model.  ``alpha`` is explicit
+    because the auto-estimated Ewald alpha is under-converged at the test
+    model's 6 A cutoff, and (when auto) is re-estimated whenever the cell
+    changes, which makes strain finite differences noisy.  ``outputs`` (if
+    given) is applied through ``set_active_outputs``.
+
+    ``geometry_charges=True`` adds ``0.3 * sin(x + 1.3 y + 0.7 z)`` to the emitted partial
+    charges.  The random test model's charges depend only weakly on the
+    geometry, which hides the charge-response terms (dq/dr, dq/d strain);
+    this makes them large so tests can tell a conservative pipeline from
+    one that ignores them."""
+    from so3krates_torch.calculator.nvalchemi_so3 import (
+        build_nvalchemi_pme_model,
+        set_active_outputs,
+    )
+
+    pipe = build_nvalchemi_pme_model(
+        _make_so3lr(electrostatics_bool=True), alpha=alpha
+    )
+    if geometry_charges:
+        (group,) = pipe.groups
+        inner = group.steps[0].model.model
+        orig_forward = inner.forward
+
+        def forward(inputs, *args, **kwargs):
+            out = orig_forward(inputs, *args, **kwargs)
+            pos = inputs["positions"]
+            phase = pos @ pos.new_tensor([1.0, 1.3, 0.7])
+            out["partial_charges"] = out["partial_charges"] + 0.3 * torch.sin(
+                phase
+            ).reshape_as(out["partial_charges"])
+            return out
+
+        inner.forward = forward
+    if outputs is not None:
+        set_active_outputs(pipe, outputs)
+    return pipe
+
+
+def _build_neighbor_lists(pipe, batch):
+    from nvalchemi.dynamics.base import DynamicsStage
+    from nvalchemi.hooks import HookContext
+
+    for hook in pipe.make_neighbor_hooks():
+        hook(HookContext(batch=batch), DynamicsStage.BEFORE_COMPUTE)
+
+
+def _pipeline_eval(pipe, atoms):
+    """Evaluate a pipeline outside an integrator: build the batch, let the
+    pipeline's own neighbor hooks fill the lists, run the forward pass."""
+    from so3krates_torch.cli.run_md_nvalchemi import atoms_to_data
+
+    batch = Batch.from_data_list([atoms_to_data(atoms, str(DEVICE), DTYPE)])
+    _build_neighbor_lists(pipe, batch)
+    return pipe(batch), batch
+
+
+def _pipeline_energy(pipe, atoms) -> float:
+    return _pipeline_eval(pipe, atoms)[0]["energy"].sum().item()
+
+
+def _stress_vs_strain_fd(pipe, atoms, i: int, j: int, h: float = 1e-4):
+    """(analytic stress[i, j], strain-derivative dE/d(eps_ij) / V).
+
+    Diagonal strain: eps[i, i] = h.  Shear: eps[i, j] = eps[j, i] = h / 2,
+    so that dE = V * sigma_ij * h.  Positions scale with the cell."""
+    stress = _pipeline_eval(pipe, atoms)[0]["stress"][0].detach()
+    eps = np.zeros((3, 3))
+    if i == j:
+        eps[i, i] = h
+    else:
+        eps[i, j] = eps[j, i] = h / 2
+
+    def _strained(e):
+        out = atoms.copy()
+        out.set_cell(atoms.cell.array @ (np.eye(3) + e).T, scale_atoms=True)
+        return out
+
+    de = _pipeline_energy(pipe, _strained(eps)) - _pipeline_energy(
+        pipe, _strained(-eps)
+    )
+    return stress[i, j].item(), de / (2 * h) / atoms.get_volume()
+
+
+def test_pme_pipeline_forces_match_finite_difference():
+    """Forces equal -dE/dr (central FD), including the charge response
+    dq/dr (large here because the charges are made geometry-dependent)."""
+    pipe = _pme_pipeline(
+        outputs={"energy", "forces", "stress"}, geometry_charges=True
+    )
+    atoms = _rocksalt()
+    forces = _pipeline_eval(pipe, atoms)[0]["forces"].detach()
+    h = 1e-4
+    for i in (0, 3):
+        for k in range(3):
+            plus, minus = atoms.copy(), atoms.copy()
+            plus.positions[i, k] += h
+            minus.positions[i, k] -= h
+            fd = -(
+                _pipeline_energy(pipe, plus) - _pipeline_energy(pipe, minus)
+            ) / (2 * h)
+            assert forces[i, k].item() == pytest.approx(fd, abs=1e-5), (i, k)
+
+
+@pytest.mark.parametrize("ij", _ALL_COMPONENTS)
+def test_pme_pipeline_stress_matches_strain_derivative(ij):
+    """All six stress components equal the strain derivative of the total
+    energy (this pins the sign convention and the Coulomb virial, including
+    the charge response to strain)."""
+    pipe = _pme_pipeline(
+        outputs={"energy", "forces", "stress"}, geometry_charges=True
+    )
+    analytic, fd = _stress_vs_strain_fd(pipe, _rocksalt(), *ij)
+    assert analytic == pytest.approx(fd, rel=1e-3, abs=1e-7), ij
+
+
+def _bare_pme_energy(atoms, charges, **pme_kwargs) -> float:
+    """Total energy of a bare PMEModelWrapper for fixed ``charges``."""
+    from nvalchemi.models.pme import PMEModelWrapper
+
+    n = len(atoms)
+    data = AtomicData.from_atoms(
+        atoms, device=str(DEVICE), dtype=DTYPE
+    ).model_copy(
+        update={
+            "charges": charges.to(DTYPE),
+            "forces": torch.zeros(n, 3, dtype=DTYPE),
+            "energy": torch.zeros(1, 1, dtype=DTYPE),
+            "stress": torch.zeros(1, 3, 3, dtype=DTYPE),
+        }
+    )
+    from so3krates_torch.calculator.nvalchemi_so3 import _KE_EV_ANG
+
+    # Upstream's default constant is 14.3996; the builder passes the
+    # model's ke, so compare like with like.
+    pme_kwargs.setdefault("coulomb_constant", _KE_EV_ANG)
+    pme = PMEModelWrapper(hybrid_forces=False, **pme_kwargs)
+    pme.set_config("active_outputs", {"energy", "forces", "stress"})
+    batch = Batch.from_data_list([data])
+    _build_neighbor_lists(pme, batch)
+    return pme(batch)["energy"].sum().item()
+
+
+def _madelung_error(**pme_kwargs) -> float:
+    """Relative error of the PME energy per NaCl ion pair against the
+    analytical Madelung value -M * ke / r0 (r0 = a / 2, +/-1 charges)."""
+    from so3krates_torch.calculator.nvalchemi_so3 import _KE_EV_ANG
+
+    a = 5.64
+    atoms = bulk("NaCl", crystalstructure="rocksalt", a=a, cubic=True)
+    atoms = atoms.repeat(2)
+    q = torch.tensor(
+        [1.0 if s == "Na" else -1.0 for s in atoms.get_chemical_symbols()]
+    )
+    per_pair = _bare_pme_energy(atoms, q, **pme_kwargs) / (len(atoms) / 2)
+    ref = -_MADELUNG_NACL * _KE_EV_ANG / (a / 2)
+    return abs(per_pair / ref - 1.0)
+
+
+def test_pme_wrapper_energy_matches_madelung():
+    """Guard on the upstream PME and our Coulomb constant: with an explicit,
+    converged alpha even a 6 A cutoff reproduces the Madelung energy."""
+    err = _madelung_error(cutoff=6.0, mesh_spacing=0.5, alpha=0.6)
+    assert err < 1e-4
+
+
+def test_pme_wrapper_default_alpha_accurate_at_production_cutoff():
+    """Guard: SO3LR's production cutoff (12 A) is converged with every
+    default (alpha=None).  The auto alpha does not depend on the cutoff
+    (0.314 here), so at 6 A the same defaults are off by about 1.9 %: that
+    is what the build-time warning is for."""
+    assert _madelung_error(cutoff=12.0) < 1e-4
+
+
+def test_pme_pipeline_energy_is_sr_plus_pme():
+    """The pipeline energy is the short-range energy plus the bare PME
+    energy of the charges the short-range step emits (wiring + summation)."""
+    from so3krates_torch.calculator.nvalchemi_so3 import (
+        build_nvalchemi_pme_model,
+    )
+
+    model = _make_so3lr(electrostatics_bool=True)
+    pipe = build_nvalchemi_pme_model(model, alpha=0.6)
+    sr = NVAlchemiSO3LR(model, electrostatics="nvalchemi")
+    atoms = _rocksalt()
+    sr_out = sr(_make_batch_with_nl(sr, atoms))
+    pme_energy = _bare_pme_energy(
+        atoms,
+        sr_out["charges"].detach(),
+        cutoff=float(model.r_max_lr),
+        alpha=0.6,
+    )
+    expected = sr_out["energy"].sum().item() + pme_energy
+    assert _pipeline_energy(pipe, atoms) == pytest.approx(expected, rel=1e-6)
+
+
+def test_pme_pipeline_sr_step_is_energy_only():
+    """In the autograd group the short-range step returns energies only;
+    forces and stress come from the pipeline's autograd."""
+    pipe = _pme_pipeline(outputs={"energy", "forces", "stress"})
+    (group,) = pipe.groups
+    sr, _pme = (step.model for step in group.steps)
+    calls = []
+    orig = sr.model.forward
+    sr.model.forward = lambda *a, **k: calls.append(k) or orig(*a, **k)
+    out, _ = _pipeline_eval(pipe, _rocksalt())
+    assert calls
+    assert calls[-1]["compute_force"] is False
+    assert calls[-1]["compute_stress"] is False
+    assert torch.isfinite(out["forces"]).all()
+    assert torch.isfinite(out["stress"]).all()
+
+
+def test_pme_pipeline_two_graph_batch_finite():
+    """Two crystals with different cells in one batch: finite outputs for
+    both (upstream shares one mean alpha per batch only when alpha is
+    auto; alpha is explicit here)."""
+    from so3krates_torch.cli.run_md_nvalchemi import atoms_to_data
+
+    pipe = _pme_pipeline(outputs={"energy", "forces", "stress"})
+    frames = [_rocksalt(5.64), _rocksalt(5.9)]
+    batch = Batch.from_data_list(
+        [atoms_to_data(a, str(DEVICE), DTYPE) for a in frames]
+    )
+    _build_neighbor_lists(pipe, batch)
+    out = pipe(batch)
+    assert out["energy"].shape == (2, 1)
+    assert out["forces"].shape == (32, 3)
+    assert out["stress"].shape == (2, 3, 3)
+    for key in ("energy", "forces", "stress"):
+        assert torch.isfinite(out[key]).all(), key
+
+
+def _alpha_warnings(*args):
+    import warnings
+
+    from so3krates_torch.calculator.nvalchemi_so3 import (
+        _warn_if_alpha_unconverged,
+    )
+
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        _warn_if_alpha_unconverged(*args)
+    return [w for w in rec if issubclass(w.category, UserWarning)]
+
+
+def test_warn_if_alpha_unconverged_rule():
+    (w,) = _alpha_warnings(6.0, None, 1e-6)
+    assert "--pme-alpha" in str(w.message)
+    assert "0.62" in str(w.message)  # sqrt(-ln 1e-6) / 6
+    assert _alpha_warnings(10.0, None, 1e-6)
+    assert not _alpha_warnings(12.0, None, 1e-6)
+    assert not _alpha_warnings(6.0, 0.6, 1e-6)
+    assert _alpha_warnings(12.0, None, 1e-9)  # the rule scales with accuracy
+
+
+def test_build_nvalchemi_pme_model_warns_for_short_cutoff_auto_alpha():
+    import warnings
+
+    from so3krates_torch.calculator.nvalchemi_so3 import (
+        build_nvalchemi_pme_model,
+    )
+
+    with pytest.warns(UserWarning, match="pme-alpha"):
+        build_nvalchemi_pme_model(_make_so3lr(electrostatics_bool=True))
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        build_nvalchemi_pme_model(
+            _make_so3lr(electrostatics_bool=True), alpha=0.6
+        )
+    assert not [w for w in rec if "pme-alpha" in str(w.message)]
