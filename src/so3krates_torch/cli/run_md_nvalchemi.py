@@ -263,9 +263,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--pme-alpha",
         type=float,
         default=None,
-        help="NVAlchemi PME Ewald splitting / smearing [1/Å] "
-        "(--electrostatics nvalchemi only; default: auto-estimated from "
-        "--pme-accuracy)",
+        help="NVAlchemi PME Ewald splitting [1/Å] "
+        "(--electrostatics nvalchemi only; default: derived from the "
+        "model's long-range cutoff and --pme-accuracy as "
+        "sqrt(-ln(accuracy)) / cutoff; warns if an explicit value "
+        "under-converges the real-space sum)",
     )
     p.add_argument(
         "--pme-spline-order",
@@ -278,7 +280,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--pme-accuracy",
         type=float,
         default=1e-6,
-        help="NVAlchemi PME target accuracy for auto parameter estimation "
+        help="NVAlchemi PME target accuracy; sets the derived alpha "
         "(--electrostatics nvalchemi only; default: 1e-6)",
     )
     p.add_argument(

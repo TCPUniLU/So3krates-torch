@@ -252,8 +252,18 @@ torchkrates-md-nvalchemi \
 
 - `model` (default, **recommended**): the model computes its own electrostatics exactly as trained — damped real-space erf-Coulomb (`use_pme: false`) or the model's own torch-pme (`use_pme: true`). This is the validated path.
 - `nvalchemi`: the short-range model instead emits partial charges only, and NVAlchemi's GPU-native PME (full Ewald) supplies the Coulomb energy from those charges. Only meaningful for a model trained with `use_pme: true`, and even then it does **not** reproduce the model's own torch-pme energy numerically — it is a separate backend. Requires a periodic cell (molecules exit with an error). The short-range model and PME run as one autograd pipeline, so forces include the response of the charges to the geometry (`dq/dr`) and the NPT stress includes the Coulomb virial. Checked on CPU against finite differences (forces), the strain derivative of the energy (all six stress components, with geometry-dependent charges) and the analytical Madelung energy of NaCl. **Not yet validated:** GPU runs, and long NPT or NVE runs (see the cluster checklist in the pull request).
-  - **Ewald `alpha` and the cutoff.** With the default `--pme-alpha` (auto), NVAlchemi estimates the splitting parameter from the cell and `--pme-accuracy`, *not* from the cutoff (about 0.3 Å⁻¹ for condensed systems). The real-space sum is then under-converged at short cutoffs: measured energy error 1.9 % at 6 Å, 2e-5 at 10 Å and 3e-6 at 12 Å (SO3LR's default). A warning is printed when the estimate will under-converge; pass `--pme-alpha` explicitly, e.g. `sqrt(-ln(accuracy)) / r_max_lr` (0.62 at 6 Å), which converged to about 1e-5 in the NaCl check.
-  - Batches of crystals with different cells share one mean `alpha` upstream when `alpha` is auto; use an explicit `--pme-alpha` for such batches.
+  - **Ewald `alpha`.** By default (`--pme-alpha` not given) `alpha = sqrt(-ln(accuracy)) / r_max_lr` (0.31 Å⁻¹ at SO3LR's 12 Å cutoff, 0.62 at 6 Å), so the real-space sum is converged for any cell size. This deliberately replaces NVAlchemi's own estimate, which ignores the cutoff and `--pme-accuracy` and shrinks like N^(-1/6). Relative error of the NaCl Madelung energy (±1 charges, CPU):
+
+    | cutoff | atoms | NVAlchemi auto `alpha` | derived `alpha` |
+    |---|---|---|---|
+    | 12 Å | 64 | 1e-7 | 2e-7 |
+    | 12 Å | 512 | 3e-4 | 2e-7 |
+    | 12 Å | 4096 | 1.5e-2 | 4e-7 |
+    | 6 Å | 64 | 1.9e-2 | 1.5e-5 |
+    | 6 Å | 4096 | 0.34 | 2.6e-4 |
+
+    An explicit `--pme-alpha` is used as given, with a warning if `erfc(alpha · cutoff)` exceeds ten times `--pme-accuracy` (the real-space truncation error). The reciprocal mesh is sized by NVAlchemi from its own estimate (`--pme-mesh-spacing` has no effect in nvalchemi-toolkit 0.2.0), so very large alphas lose a little reciprocal accuracy on big cells (the 6 Å row).
+  - `alpha` is the same for every graph in a batch, so the per-batch averaging NVAlchemi applies to its auto estimate does not occur.
 
   Use `model` unless you specifically need NVAlchemi-native PME.
 - `none`: long-range electrostatics disabled entirely.

@@ -773,8 +773,14 @@ def _pme_pipeline(
         set_active_outputs,
     )
 
+    # Dispersion and ZBL make the short-range model's own forces and stress
+    # non-negligible; the random network alone contributes ~1e-8 and could
+    # not tell a pipeline that mishandles the strained cell from a correct one.
     pipe = build_nvalchemi_pme_model(
-        _make_so3lr(electrostatics_bool=True), alpha=alpha
+        _make_so3lr(
+            electrostatics_bool=True, dispersion_bool=True, zbl_bool=True
+        ),
+        alpha=alpha,
     )
     if geometry_charges:
         (group,) = pipe.groups
@@ -858,7 +864,10 @@ def test_pme_pipeline_forces_match_finite_difference():
             fd = -(
                 _pipeline_energy(pipe, plus) - _pipeline_energy(pipe, minus)
             ) / (2 * h)
-            assert forces[i, k].item() == pytest.approx(fd, abs=1e-5), (i, k)
+            # |F| reaches ~2 eV/A here, where the FD noise is ~3e-5.
+            assert forces[i, k].item() == pytest.approx(
+                fd, rel=1e-4, abs=1e-4
+            ), (i, k)
 
 
 @pytest.mark.parametrize("ij", _ALL_COMPONENTS)
@@ -900,14 +909,20 @@ def _bare_pme_energy(atoms, charges, **pme_kwargs) -> float:
     return pme(batch)["energy"].sum().item()
 
 
-def _madelung_error(**pme_kwargs) -> float:
+def _derived_alpha(cutoff: float, accuracy: float = 1e-6) -> float:
+    import math
+
+    return math.sqrt(-math.log(accuracy)) / cutoff
+
+
+def _madelung_error(repeat: int = 2, **pme_kwargs) -> float:
     """Relative error of the PME energy per NaCl ion pair against the
     analytical Madelung value -M * ke / r0 (r0 = a / 2, +/-1 charges)."""
     from so3krates_torch.calculator.nvalchemi_so3 import _KE_EV_ANG
 
     a = 5.64
     atoms = bulk("NaCl", crystalstructure="rocksalt", a=a, cubic=True)
-    atoms = atoms.repeat(2)
+    atoms = atoms.repeat(repeat)
     q = torch.tensor(
         [1.0 if s == "Na" else -1.0 for s in atoms.get_chemical_symbols()]
     )
@@ -917,18 +932,23 @@ def _madelung_error(**pme_kwargs) -> float:
 
 
 def test_pme_wrapper_energy_matches_madelung():
-    """Guard on the upstream PME and our Coulomb constant: with an explicit,
-    converged alpha even a 6 A cutoff reproduces the Madelung energy."""
-    err = _madelung_error(cutoff=6.0, mesh_spacing=0.5, alpha=0.6)
+    """Guard on the upstream PME and our Coulomb constant: with a converged
+    alpha even a 6 A cutoff reproduces the Madelung energy."""
+    err = _madelung_error(cutoff=6.0, alpha=_derived_alpha(6.0))
     assert err < 1e-4
 
 
-def test_pme_wrapper_default_alpha_accurate_at_production_cutoff():
-    """Guard: SO3LR's production cutoff (12 A) is converged with every
-    default (alpha=None).  The auto alpha does not depend on the cutoff
-    (0.314 here), so at 6 A the same defaults are off by about 1.9 %: that
-    is what the build-time warning is for."""
-    assert _madelung_error(cutoff=12.0) < 1e-4
+@pytest.mark.parametrize("repeat", [2, 4])
+def test_pme_wrapper_derived_alpha_converged_for_larger_cells(repeat):
+    """The alpha the builder derives from the cutoff, sqrt(-ln acc) / rc,
+    keeps the real-space sum converged as the cell grows (measured at 12 A:
+    2e-7 for 64 and 2e-7 for 512 atoms, 4e-7 for 4096).  Upstream's own
+    auto alpha shrinks like N**(-1/6) and is off by 3e-4 at 512 and 1.5e-2
+    at 4096 atoms, which is why the builder does not use it."""
+    assert (
+        _madelung_error(cutoff=12.0, alpha=_derived_alpha(12.0), repeat=repeat)
+        < 1e-5
+    )
 
 
 def test_pme_pipeline_energy_is_sr_plus_pme():
@@ -1004,27 +1024,48 @@ def _alpha_warnings(*args):
 
 
 def test_warn_if_alpha_unconverged_rule():
-    (w,) = _alpha_warnings(6.0, None, 1e-6)
+    """Only an explicit alpha is judged: the real-space truncation error
+    is erfc(alpha * cutoff), which must stay below 10x the accuracy."""
+    (w,) = _alpha_warnings(6.0, 0.3, 1e-6)
     assert "--pme-alpha" in str(w.message)
     assert "0.62" in str(w.message)  # sqrt(-ln 1e-6) / 6
-    assert _alpha_warnings(10.0, None, 1e-6)
-    assert not _alpha_warnings(12.0, None, 1e-6)
+    assert _alpha_warnings(12.0, 0.15, 1e-6)
     assert not _alpha_warnings(6.0, 0.6, 1e-6)
-    assert _alpha_warnings(12.0, None, 1e-9)  # the rule scales with accuracy
+    assert not _alpha_warnings(12.0, 0.31, 1e-6)
+    assert not _alpha_warnings(6.0, None, 1e-6)  # derived, not judged
+    assert _alpha_warnings(12.0, 0.31, 1e-9)  # the rule scales with accuracy
 
 
-def test_build_nvalchemi_pme_model_warns_for_short_cutoff_auto_alpha():
-    import warnings
+def test_build_nvalchemi_pme_model_alpha():
+    """alpha=None is derived from the cutoff and accuracy (not left to
+    upstream's size-dependent estimate); an explicit but too small alpha
+    warns; a sufficient one does not."""
+    import math
 
     from so3krates_torch.calculator.nvalchemi_so3 import (
         build_nvalchemi_pme_model,
     )
 
-    with pytest.warns(UserWarning, match="pme-alpha"):
-        build_nvalchemi_pme_model(_make_so3lr(electrostatics_bool=True))
-    with warnings.catch_warnings(record=True) as rec:
-        warnings.simplefilter("always")
-        build_nvalchemi_pme_model(
-            _make_so3lr(electrostatics_bool=True), alpha=0.6
+    def _pme_alpha(pipe):
+        (group,) = pipe.groups
+        return group.steps[1].model.alpha
+
+    def _build(**kw):
+        return build_nvalchemi_pme_model(
+            _make_so3lr(electrostatics_bool=True), **kw
         )
-    assert not [w for w in rec if "pme-alpha" in str(w.message)]
+
+    with pytest.warns(UserWarning, match="pme-alpha"):
+        _build(alpha=0.3)
+    for kw, expected in (
+        ({}, math.sqrt(-math.log(1e-6)) / 6.0),
+        ({"accuracy": 1e-8}, math.sqrt(-math.log(1e-8)) / 6.0),
+        ({"alpha": 0.6}, 0.6),
+    ):
+        import warnings
+
+        with warnings.catch_warnings(record=True) as rec:
+            warnings.simplefilter("always")
+            pipe = _build(**kw)
+        assert not [w for w in rec if "pme-alpha" in str(w.message)], kw
+        assert _pme_alpha(pipe) == pytest.approx(expected), kw

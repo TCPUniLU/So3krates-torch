@@ -403,6 +403,13 @@ def set_active_outputs(model: nn.Module, outputs) -> None:
 _KE_EV_ANG = 14.399645351950548
 
 
+def _derive_alpha(cutoff: float, accuracy: float) -> float:
+    """Ewald alpha for which the real-space sum truncated at ``cutoff`` has
+    relative error ``erfc(alpha * cutoff) ~ accuracy`` (the Kolafa-Perram
+    real-space criterion): ``sqrt(-ln(accuracy)) / cutoff``."""
+    return math.sqrt(-math.log(accuracy)) / cutoff
+
+
 def _warn_if_alpha_unconverged(
     cutoff: float,
     alpha: float | None,
@@ -410,26 +417,26 @@ def _warn_if_alpha_unconverged(
     *,
     stacklevel: int = 2,
 ) -> None:
-    """Warn when the auto-estimated Ewald alpha will under-converge.
+    """Warn when an *explicit* Ewald alpha under-converges the real-space sum.
 
-    NVAlchemi's auto alpha does not depend on the cutoff (about 0.3 per
-    Angstrom for condensed systems), so the real-space sum truncated at
-    ``cutoff`` carries a relative error of about ``erfc(0.3 * cutoff)``:
-    1e-2 at 6 A, 2e-5 at 10 A, 4e-7 at 12 A.  Warn when that exceeds ten
-    times the requested ``accuracy``.  An explicit ``alpha`` is trusted.
+    Truncating the real-space sum at ``cutoff`` leaves a relative error of
+    about ``erfc(alpha * cutoff)``.  Warn when that exceeds ten times the
+    requested ``accuracy``.  ``alpha=None`` is not judged: the builder
+    derives it from the cutoff (see :func:`_derive_alpha`).
     """
-    if alpha is not None:
+    if alpha is None:
         return
-    if math.erfc(0.3 * cutoff) <= 10.0 * accuracy:
+    error = math.erfc(alpha * cutoff)
+    if error <= 10.0 * accuracy:
         return
-    suggested = math.sqrt(-math.log(accuracy)) / cutoff
+    suggested = _derive_alpha(cutoff, accuracy)
     warnings.warn(
-        f"NVAlchemi PME: the auto-estimated Ewald alpha does not depend on "
-        f"the cutoff, so the real-space sum at cutoff={cutoff:g} A is "
-        f"under-converged (relative error of order "
-        f"{math.erfc(0.3 * cutoff):.0e}; SO3LR's 12 A is fine). Pass an "
-        f"explicit alpha, e.g. --pme-alpha {suggested:.2f} (alpha= in "
-        f"Python), which converges to about 1e-5.",
+        f"NVAlchemi PME: alpha={alpha:g} 1/A with cutoff={cutoff:g} A "
+        f"under-converges the real-space Ewald sum (truncation error of "
+        f"order erfc(alpha*cutoff) = {error:.0e}, requested accuracy "
+        f"{accuracy:g}). Use alpha >= {suggested:.2f} (--pme-alpha "
+        f"{suggested:.2f}; alpha= in Python), or omit it to derive it from "
+        f"the cutoff and accuracy.",
         UserWarning,
         stacklevel=stacklevel,
     )
@@ -473,12 +480,19 @@ def build_nvalchemi_pme_model(
         An SO3LR model exposing ``r_max_lr`` (the PME real-space cutoff).
     alpha:
         Ewald splitting parameter (inverse Å) — NVAlchemi's analogue of the
-        Gaussian smearing.  ``None`` (default) lets NVAlchemi estimate it
-        from the cell and ``accuracy`` each time the cell changes.  That
-        estimate does **not** depend on the cutoff, so at short cutoffs the
-        real-space sum is under-converged (about 1.9 % in the energy at
-        6 A, 3e-6 at SO3LR's 12 A); a ``UserWarning`` is emitted then, and
-        ``sqrt(-ln(accuracy)) / r_max_lr`` is a converged choice.
+        Gaussian smearing.  ``None`` (default) derives it from the cutoff
+        and ``accuracy`` as ``sqrt(-ln(accuracy)) / r_max_lr`` (0.62 at
+        6 Å, 0.31 at SO3LR's 12 Å), so the real-space sum is converged
+        whatever the system size.  This deliberately does not use
+        NVAlchemi's own estimate, which ignores the cutoff and ``accuracy``
+        and shrinks like N**(-1/6): the NaCl Madelung energy at 12 Å is off
+        by 1e-7 for 64 atoms but by 3e-4 for 512 and 1.5e-2 for 4096.  An
+        explicit ``alpha`` with ``erfc(alpha * r_max_lr)`` above ten times
+        ``accuracy`` emits a ``UserWarning``.  The reciprocal mesh is still
+        sized by NVAlchemi from its own estimate (``mesh_spacing`` has no
+        effect in nvalchemi-toolkit 0.2.0), so a large ``alpha`` loses a
+        little reciprocal accuracy on big cells (NaCl, derived alpha: 1.5e-5
+        at 64 atoms and 2.6e-4 at 4096 for a 6 Å cutoff).
     mesh_spacing, spline_order, accuracy, coulomb_constant:
         Forwarded to :class:`nvalchemi.models.pme.PMEModelWrapper`.  The
         default ``coulomb_constant`` matches the model's ``ke``.
@@ -499,16 +513,22 @@ def build_nvalchemi_pme_model(
             "build_nvalchemi_pme_model requires a long-range cutoff "
             "(model.r_max_lr); short-range-only models have no electrostatics."
         )
-    _warn_if_alpha_unconverged(
-        float(model.r_max_lr), alpha, accuracy, stacklevel=3
-    )
+    cutoff = float(model.r_max_lr)
+    if alpha is None:
+        # Not upstream's auto estimate: that one ignores both the cutoff and
+        # `accuracy` and shrinks like N**(-1/6) with the system size, so the
+        # real-space sum is badly under-converged for large cells (NaCl
+        # Madelung energy at 12 A: 1e-7 at 64 atoms, 1.5e-2 at 4096).
+        alpha = _derive_alpha(cutoff, accuracy)
+    else:
+        _warn_if_alpha_unconverged(cutoff, alpha, accuracy, stacklevel=3)
 
     model.electrostatic_energy_bool = False
     model.output_partial_charges = True
 
     sr = NVAlchemiSO3LR(model, electrostatics="nvalchemi", skin=skin)
     pme = PMEModelWrapper(
-        cutoff=float(model.r_max_lr),
+        cutoff=cutoff,
         mesh_spacing=mesh_spacing,
         alpha=alpha,
         spline_order=spline_order,

@@ -84,9 +84,9 @@ def main() -> None:
         model = build_nvalchemi_pme_model(
             raw,
             mesh_spacing=0.8,  # FFT mesh spacing [Å]
-            # Ewald split [1/Å]. None = NVAlchemi's auto estimate, which does
-            # not depend on the cutoff: below ~10 Å it under-converges and a
-            # warning suggests a value (sqrt(-ln(accuracy)) / r_max_lr).
+            # Ewald split [1/Å]. None = derived from the cutoff and
+            # `accuracy` as sqrt(-ln(accuracy)) / r_max_lr (converged for any
+            # cell size); an explicit value that under-converges warns.
             alpha=None,
             spline_order=4,
             accuracy=1e-6,
