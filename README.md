@@ -196,6 +196,89 @@ torchkrates-eval --model_path my_model.model --data_path test_set.xyz
 
 ---
 
+### `torchkrates-md-nvalchemi` — GPU-native MD with NVAlchemi
+
+Run NVT/NPT molecular dynamics directly on GPU using [NVAlchemi](https://github.com/NVIDIA/nvalchemi)'s integrators and native cell-list neighbor search, without going through LAMMPS. Requires **Python ≥ 3.11** and the `nvalchemi` extra:
+
+```bash
+pip install ".[nvalchemi]"
+```
+
+This pins `nvalchemi-toolkit[ase]>=0.2,<0.3`; the wrapper (`so3krates_torch.calculator.nvalchemi_so3`) targets the 0.2.x API and is not expected to work with 0.1.x or 0.3.x.
+
+NVT example:
+
+```bash
+torchkrates-md-nvalchemi \
+    --model model.pt \
+    --atoms NaCl.xyz \
+    --ensemble nvt \
+    --temperature 300 \
+    --steps 10000
+```
+
+NPT example (requires a periodic structure file, e.g. extended-XYZ with a `Lattice=` header, POSCAR, or CIF):
+
+```bash
+torchkrates-md-nvalchemi \
+    --model model.pt \
+    --atoms NaCl.xyz \
+    --ensemble npt \
+    --temperature 300 \
+    --pressure 1.0 \
+    --steps 10000
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--model` | *required* | Path to a trained model (`.pt`) |
+| `--atoms` | *required* | ASE-readable input structure |
+| `--index` | `-1` | ASE frame selection; `-1` runs the last frame, `:` runs every frame as an independent system in one batch |
+| `--ensemble` | `nvt` | `nvt` (Langevin) or `npt` (MTK barostat) |
+| `--temperature` | `300.0` | Temperature [K] |
+| `--pressure` | `1.0` | Pressure [bar], NPT only |
+| `--dt` | `0.5` | Time step [fs] |
+| `--steps` | `10000` | Number of MD steps |
+| `--skin` | `0.5` | Verlet skin [Å] for the GPU-native neighbor list |
+| `--electrostatics` | `model` | `model`, `nvalchemi`, or `none` (see below) |
+| `--pressure-coupling` | `isotropic` | `isotropic`, `anisotropic`, or `triclinic` (NPT only) |
+| `--skip-vel-init` | `False` | Keep the velocities already stored in the structure file instead of (re-)sampling Maxwell-Boltzmann at `--temperature` |
+| `--compile` | `False` | `torch.compile` the inner model; raises on CPU for long-range models (unsupported Inductor lowering) |
+| `--seed` | `42` | Langevin RNG seed (NVT only) |
+| `--log-file` | `md_log.csv` | Output CSV log path |
+| `--log-freq` | `100` | Log every N steps |
+
+**Electrostatics semantics.** `--electrostatics` selects which long-range Coulomb term is active, and the two non-`none` options are *different, non-interchangeable* electrostatics models:
+
+- `model` (default, **recommended**): the model computes its own electrostatics exactly as trained — damped real-space erf-Coulomb (`use_pme: false`) or the model's own torch-pme (`use_pme: true`). This is the validated path.
+- `nvalchemi`: the short-range model instead emits partial charges only, and NVAlchemi's GPU-native PME (full Ewald) supplies the Coulomb energy from those charges. Only meaningful for a model trained with `use_pme: true`, and even then it does **not** reproduce the model's own torch-pme energy numerically — it is a separate backend. Requires a periodic cell (molecules exit with an error). The short-range model and PME run as one autograd pipeline, so forces include the response of the charges to the geometry (`dq/dr`) and the NPT stress includes the Coulomb virial. Checked on CPU against finite differences (forces), the strain derivative of the energy (all six stress components, with geometry-dependent charges) and the analytical Madelung energy of NaCl. **Not yet validated:** GPU runs, and long NPT or NVE runs (see the cluster checklist in the pull request).
+  - **Ewald `alpha`.** By default (`--pme-alpha` not given) `alpha = sqrt(-ln(accuracy)) / r_max_lr` (0.31 Å⁻¹ at SO3LR's 12 Å cutoff, 0.62 at 6 Å), so the real-space sum is converged for any cell size. This deliberately replaces NVAlchemi's own estimate, which ignores the cutoff and `--pme-accuracy` and shrinks like N^(-1/6). Relative error of the NaCl Madelung energy (±1 charges, CPU):
+
+    | cutoff | atoms | NVAlchemi auto `alpha` | derived `alpha` |
+    |---|---|---|---|
+    | 12 Å | 64 | 1e-7 | 2e-7 |
+    | 12 Å | 512 | 3e-4 | 2e-7 |
+    | 12 Å | 4096 | 1.5e-2 | 4e-7 |
+    | 6 Å | 64 | 1.9e-2 | 1.5e-5 |
+    | 6 Å | 4096 | 0.34 | 2.6e-4 |
+
+    An explicit `--pme-alpha` is used as given, with a warning if `erfc(alpha · cutoff)` exceeds ten times `--pme-accuracy` (the real-space truncation error). By default NVAlchemi sizes the reciprocal FFT mesh itself, from an accuracy-based estimate that does not see a large `alpha`, so very large alphas lose a little reciprocal accuracy on big cells (the 6 Å row).
+  - **`--pme-mesh-dimensions NX NY NZ`** sets the FFT grid points per cell axis (charges are spread onto this grid with B-splines of order `--pme-spline-order`, transformed, and the Coulomb kernel applied on it). A finer grid makes the reciprocal sum more accurate at roughly `NX·NY·NZ·log(NX·NY·NZ)` cost; in a 64-atom NaCl cell a 16³ grid and a 48³ grid differed by 0.17 eV. The grid is fixed, so under NPT the spacing `L/N` follows the cell, and a batch of different cells shares one grid. nvalchemi-toolkit 0.2.0 has no working mesh-*spacing* option (it is stored and never used), so this is the only mesh control.
+  - `alpha` is the same for every graph in a batch, so the per-batch averaging NVAlchemi applies to its auto estimate does not occur.
+
+  Use `model` unless you specifically need NVAlchemi-native PME.
+- `none`: long-range electrostatics disabled entirely.
+
+**Stress and pressure convention.** The model emits stress in the ASE convention (tensile-positive Cauchy stress); nvalchemi-toolkit 0.2 uses the same convention, so it is passed through unchanged. The reported pressure is `P = N kB T / V − tr(σ)/3`, matching ASE and LAMMPS's `thermo press` so the two engines can be compared directly at the same configuration.
+
+**Charge and spin.** Total charge is read from `atoms.info["charge"]` (an integer, the same key `TorchkratesCalculator` uses); total spin from `atoms.info["total_spin"]` (the total spin *S*, not the multiplicity — again the calculator's key), stored as the `AtomicData` `spin` field. Both default to 0 when absent. (Programmatic users building `AtomicData.from_atoms` themselves must set `spin` explicitly, since nvalchemi does not read it from ASE; `atoms_to_data` in the CLI module does.)
+
+**Logged quantities.** The CSV log always has energy, fmax, temperature and timing; `volume_A3`/`density_g_cm3` are added for periodic structures and `pressure_bar` for NPT. NVT runs request only energy and forces from the model (no stress). All frames selected with `--index` must be either periodic or non-periodic.
+
+See `examples/md/nvalchemi_md.py` for the equivalent programmatic API, including how to configure NVAlchemi-native PME via `build_nvalchemi_pme_model(...)`.
+
+---
+
 ### `torchkrates-metric` — Error Metrics
 
 Compute error metrics over an ASE-readable dataset. Prints a table with MAE and RMSE per atom for each property.

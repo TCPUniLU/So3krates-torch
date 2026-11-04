@@ -37,10 +37,15 @@ ARCHITECTURE:
   use_spin_embed: true
   zbl_repulsion_bool: true
   neighborlist_format_lr: sparse
-  use_pme: false  # true = PME electrostatics for periodic systems (requires torch-pme)
+  use_pme: false  # true = torch-pme electrostatics for periodic systems (requires torch-pme)
   # pme_smearing: 1.2       # Ewald splitting (Å); default = r_max / 5
   # pme_mesh_spacing: 0.6   # FFT grid spacing (Å); default = smearing / 2
   # Run: torchkrates-tune-pme --data train.xyz --r_max 6.0 to tune smearing/mesh_spacing.
+  # NOTE: this is torch-pme (training + inference). It is a DIFFERENT PME than
+  # NVAlchemi's MD-time PME (torchkrates-md-nvalchemi --electrostatics nvalchemi),
+  # which uses an Ewald split `--pme-alpha` [1/Å] instead of `pme_smearing` [Å].
+  # Train with use_pme: true if you intend to run MD with --electrostatics nvalchemi;
+  # otherwise the default damped electrostatics pairs with --electrostatics model.
   # Combined mode: use_pme: true + dispersion_energy_bool: true gives PME electrostatics
   # + real-space vdW-QDO dispersion (C6+C8+C10). r_max_lr and
   # dispersion_energy_cutoff_lr_damping are still required for dispersion.

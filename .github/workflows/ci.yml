@@ -51,3 +51,17 @@ jobs:
 
       - name: Run tests
         run: pytest --tb=short -q
+
+  test-nvalchemi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PyTorch (CPU-only)
+        run: pip install "torch>=2.8.0" --index-url https://download.pytorch.org/whl/cpu
+      - name: Install package with nvalchemi extra
+        run: pip install -e ".[dev,nvalchemi]"
+      - name: Run nvalchemi tests
+        run: pytest --tb=short -q src/so3krates_torch/tests/test_nvalchemi_so3.py src/so3krates_torch/tests/test_run_md_nvalchemi.py
