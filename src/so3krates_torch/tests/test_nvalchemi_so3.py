@@ -763,7 +763,7 @@ def _pme_pipeline(
     changes, which makes strain finite differences noisy.  ``outputs`` (if
     given) is applied through ``set_active_outputs``.
 
-    ``geometry_charges=True`` adds ``0.3 * sin(x + 1.3 y + 0.7 z)`` to the emitted partial
+    ``geometry_charges=True`` adds ``0.3 * sin(x + 1.3 y + 0.7 z)`` (minus its per-graph mean, so the total charge is conserved) to the emitted partial
     charges.  The random test model's charges depend only weakly on the
     geometry, which hides the charge-response terms (dq/dr, dq/d strain);
     this makes them large so tests can tell a conservative pipeline from
@@ -791,9 +791,17 @@ def _pme_pipeline(
             out = orig_forward(inputs, *args, **kwargs)
             pos = inputs["positions"]
             phase = pos @ pos.new_tensor([1.0, 1.3, 0.7])
-            out["partial_charges"] = out["partial_charges"] + 0.3 * torch.sin(
-                phase
-            ).reshape_as(out["partial_charges"])
+            delta = 0.3 * torch.sin(phase)
+            # Remove the per-graph mean so the perturbation conserves the
+            # total charge (a charged cell would add PME's neutralising
+            # background, which real models never produce).
+            graph = inputs["batch"].long()
+            count = torch.bincount(graph).to(delta.dtype)
+            total = torch.zeros_like(count).index_add(0, graph, delta)
+            delta = delta - (total / count)[graph]
+            out["partial_charges"] = out["partial_charges"] + delta.reshape_as(
+                out["partial_charges"]
+            )
             return out
 
         inner.forward = forward
@@ -1142,3 +1150,23 @@ def test_mesh_dimensions_changes_pme_energy():
     atoms = _rocksalt()
     gap = abs(_pipeline_energy(coarse, atoms) - _pipeline_energy(fine, atoms))
     assert gap > 1e-3
+
+
+def test_geometry_charges_keep_the_system_neutral():
+    """The test-only charge perturbation must not add net charge: a charged
+    periodic cell makes PME add a volume-dependent neutralising background
+    that charge-conserving models never produce."""
+    pipe = _pme_pipeline(geometry_charges=True)
+    inner = pipe.groups[0].steps[0].model.model
+    perturbed_forward = inner.forward
+    totals = []
+
+    def spy(inputs, *args, **kwargs):
+        out = perturbed_forward(inputs, *args, **kwargs)
+        totals.append(out["partial_charges"].detach().sum().item())
+        return out
+
+    inner.forward = spy
+    _pipeline_eval(pipe, _rocksalt())
+    assert totals
+    assert abs(totals[-1]) < 1e-9
