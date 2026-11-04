@@ -83,7 +83,6 @@ def main() -> None:
         # Tune PME here (NVAlchemi convention):
         model = build_nvalchemi_pme_model(
             raw,
-            mesh_spacing=0.8,  # FFT mesh spacing [Å]
             # Ewald split [1/Å]. None = derived from the cutoff and
             # `accuracy` as sqrt(-ln(accuracy)) / r_max_lr (converged for any
             # cell size); an explicit value that under-converges warns.

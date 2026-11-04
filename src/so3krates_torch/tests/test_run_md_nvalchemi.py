@@ -601,3 +601,20 @@ def test_cli_native_pme_npt_runs(monkeypatch, tmp_path):
     _assert_finite_rows(
         rows, ["energy", "volume_A3", "density_g_cm3", "pressure_bar"]
     )
+
+
+def test_cli_has_no_pme_mesh_spacing_option():
+    """``--pme-mesh-spacing`` did nothing (the wrapper ignores it), so it is
+    gone from both the parser and ``load_model``."""
+    import inspect
+
+    from so3krates_torch.cli.run_md_nvalchemi import (
+        _build_parser,
+        load_model,
+    )
+
+    assert "pme_mesh_spacing" not in inspect.signature(load_model).parameters
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(
+            ["--model", "m", "--atoms", "a", "--pme-mesh-spacing", "0.5"]
+        )

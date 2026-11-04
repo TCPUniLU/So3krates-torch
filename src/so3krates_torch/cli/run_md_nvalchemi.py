@@ -253,13 +253,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Long-range electrostatics backend (default: the model's own)",
     )
     p.add_argument(
-        "--pme-mesh-spacing",
-        type=float,
-        default=1.0,
-        help="NVAlchemi PME target mesh spacing [Å] "
-        "(--electrostatics nvalchemi only; default: 1.0)",
-    )
-    p.add_argument(
         "--pme-alpha",
         type=float,
         default=None,
@@ -387,7 +380,6 @@ def load_model(
     device: str,
     dtype: torch.dtype,
     electrostatics: str = "model",
-    pme_mesh_spacing: float = 1.0,
     pme_alpha: float = None,
     pme_spline_order: int = 4,
     pme_accuracy: float = 1e-6,
@@ -463,7 +455,6 @@ def load_model(
     if electrostatics == "nvalchemi":
         model = build_nvalchemi_pme_model(
             raw,
-            mesh_spacing=pme_mesh_spacing,
             alpha=pme_alpha,
             spline_order=pme_spline_order,
             accuracy=pme_accuracy,
@@ -730,7 +721,6 @@ def main() -> None:
         args.device,
         dtype,
         electrostatics=args.electrostatics,
-        pme_mesh_spacing=args.pme_mesh_spacing,
         pme_alpha=args.pme_alpha,
         pme_spline_order=args.pme_spline_order,
         pme_accuracy=args.pme_accuracy,

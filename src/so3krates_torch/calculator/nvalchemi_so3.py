@@ -445,7 +445,6 @@ def _warn_if_alpha_unconverged(
 def build_nvalchemi_pme_model(
     model: nn.Module,
     *,
-    mesh_spacing: float = 1.0,
     alpha: float = None,
     spline_order: int = 4,
     accuracy: float = 1e-6,
@@ -488,12 +487,13 @@ def build_nvalchemi_pme_model(
         and shrinks like N**(-1/6): the NaCl Madelung energy at 12 Å is off
         by 1e-7 for 64 atoms but by 3e-4 for 512 and 1.5e-2 for 4096.  An
         explicit ``alpha`` with ``erfc(alpha * r_max_lr)`` above ten times
-        ``accuracy`` emits a ``UserWarning``.  The reciprocal mesh is still
-        sized by NVAlchemi from its own estimate (``mesh_spacing`` has no
-        effect in nvalchemi-toolkit 0.2.0), so a large ``alpha`` loses a
-        little reciprocal accuracy on big cells (NaCl, derived alpha: 1.5e-5
-        at 64 atoms and 2.6e-4 at 4096 for a 6 Å cutoff).
-    mesh_spacing, spline_order, accuracy, coulomb_constant:
+        ``accuracy`` emits a ``UserWarning``.  The reciprocal mesh is sized
+        by NVAlchemi from its own accuracy-based estimate (there is no
+        ``mesh_spacing`` option: ``PMEModelWrapper`` stores it but never uses
+        it in nvalchemi-toolkit 0.2.0), so a large ``alpha`` loses a little
+        reciprocal accuracy on big cells (NaCl, derived alpha: 1.5e-5 at 64
+        atoms and 2.6e-4 at 4096 for a 6 Å cutoff).
+    spline_order, accuracy, coulomb_constant:
         Forwarded to :class:`nvalchemi.models.pme.PMEModelWrapper`.  The
         default ``coulomb_constant`` matches the model's ``ke``.
     skin:
@@ -529,7 +529,6 @@ def build_nvalchemi_pme_model(
     sr = NVAlchemiSO3LR(model, electrostatics="nvalchemi", skin=skin)
     pme = PMEModelWrapper(
         cutoff=cutoff,
-        mesh_spacing=mesh_spacing,
         alpha=alpha,
         spline_order=spline_order,
         accuracy=accuracy,

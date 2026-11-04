@@ -262,7 +262,7 @@ torchkrates-md-nvalchemi \
     | 6 Å | 64 | 1.9e-2 | 1.5e-5 |
     | 6 Å | 4096 | 0.34 | 2.6e-4 |
 
-    An explicit `--pme-alpha` is used as given, with a warning if `erfc(alpha · cutoff)` exceeds ten times `--pme-accuracy` (the real-space truncation error). The reciprocal mesh is sized by NVAlchemi from its own estimate (`--pme-mesh-spacing` has no effect in nvalchemi-toolkit 0.2.0), so very large alphas lose a little reciprocal accuracy on big cells (the 6 Å row).
+    An explicit `--pme-alpha` is used as given, with a warning if `erfc(alpha · cutoff)` exceeds ten times `--pme-accuracy` (the real-space truncation error). The reciprocal mesh is sized by NVAlchemi from its own accuracy-based estimate (nvalchemi-toolkit 0.2.0 has no working mesh-spacing option, so this CLI offers none), so very large alphas lose a little reciprocal accuracy on big cells (the 6 Å row).
   - `alpha` is the same for every graph in a batch, so the per-batch averaging NVAlchemi applies to its auto estimate does not occur.
 
   Use `model` unless you specifically need NVAlchemi-native PME.

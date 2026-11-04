@@ -1069,3 +1069,20 @@ def test_build_nvalchemi_pme_model_alpha():
             pipe = _build(**kw)
         assert not [w for w in rec if "pme-alpha" in str(w.message)], kw
         assert _pme_alpha(pipe) == pytest.approx(expected), kw
+
+
+def test_build_nvalchemi_pme_model_has_no_mesh_spacing():
+    """nvalchemi-toolkit 0.2.0's PMEModelWrapper stores ``mesh_spacing`` but
+    derives the mesh from its own accuracy-based estimate (the energy is
+    identical to 12 digits for 0.3, 1.0 and 3.0 A), so the builder must not
+    offer a knob that does nothing."""
+    import inspect
+
+    from so3krates_torch.calculator.nvalchemi_so3 import (
+        build_nvalchemi_pme_model,
+    )
+
+    assert (
+        "mesh_spacing"
+        not in inspect.signature(build_nvalchemi_pme_model).parameters
+    )
