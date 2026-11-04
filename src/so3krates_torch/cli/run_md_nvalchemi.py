@@ -669,6 +669,12 @@ def _make_hooks(
 # ---------------------------------------------------------------------------
 
 
+def _configure_active_outputs(model, ensemble: str) -> None:
+    """Narrow the model's ``active_outputs`` for the chosen ensemble."""
+    if ensemble == "nvt":
+        set_active_outputs(model, _NVT_OUTPUTS)
+
+
 def main() -> None:
     if _NVALCHEMI_IMPORT_ERROR is not None:
         sys.exit(_NVALCHEMI_MISSING_MSG.format(err=_NVALCHEMI_IMPORT_ERROR))
@@ -721,8 +727,7 @@ def main() -> None:
             args.dispersion_energy_cutoff_lr_damping
         ),
     )
-    if args.ensemble == "nvt":
-        set_active_outputs(model, _NVT_OUTPUTS)
+    _configure_active_outputs(model, args.ensemble)
     cutoff = model.model_config.neighbor_config.cutoff
     compile_note = "  compiled=yes (first step slow)" if args.compile else ""
     print(
