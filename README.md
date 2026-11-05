@@ -242,11 +242,34 @@ torchkrates-md-nvalchemi \
 | `--skin` | `0.5` | Verlet skin [Å] for the GPU-native neighbor list |
 | `--electrostatics` | `model` | `model`, `nvalchemi`, or `none` (see below) |
 | `--pressure-coupling` | `isotropic` | `isotropic`, `anisotropic`, or `triclinic` (NPT only) |
+| `--r-max-lr` (alias `--r_max_lr`) | model's own | Long-range cutoff [Å]; supplies it for models that store none (such as the packaged `so3lr.model`) and overrides the stored value otherwise |
+| `--dispersion-energy-cutoff-lr-damping` | model's own | Dispersion damping width [Å]; required whenever dispersion is on, so it must be given if the model stores none |
+| `--pme-alpha` | derived | Ewald splitting [Å⁻¹] for `--electrostatics nvalchemi` (see below) |
+| `--pme-mesh-dimensions NX NY NZ` | NVAlchemi's estimate | FFT grid for `--electrostatics nvalchemi` (see below) |
+| `--pme-spline-order` | `4` | B-spline order for `--electrostatics nvalchemi` |
+| `--pme-accuracy` | `1e-6` | Target accuracy; sets the derived `--pme-alpha` |
 | `--skip-vel-init` | `False` | Keep the velocities already stored in the structure file instead of (re-)sampling Maxwell-Boltzmann at `--temperature` |
 | `--compile` | `False` | `torch.compile` the inner model; raises on CPU for long-range models (unsupported Inductor lowering) |
 | `--seed` | `42` | Langevin RNG seed (NVT only) |
 | `--log-file` | `md_log.csv` | Output CSV log path |
 | `--log-freq` | `100` | Log every N steps |
+
+**Running the packaged pre-trained model.** `so3krates_torch/pretrained/so3lr/so3lr.model` stores neither a long-range cutoff nor a dispersion damping width, so give both (a model that has long-range terms but no cutoff stops with an error that names `--r-max-lr`). NPT on a periodic cell, with SO3LR's inference defaults of 12.0 Å and 2.0 Å (the values `SO3LRCalculator` uses):
+
+```bash
+MODEL=$(python -c "import os, so3krates_torch as s; print(os.path.join(os.path.dirname(s.__file__), 'pretrained/so3lr/so3lr.model'))")
+
+torchkrates-md-nvalchemi \
+    --model "$MODEL" \
+    --atoms my_cell.xyz \
+    --ensemble npt --temperature 300 --pressure 1.0 \
+    --r-max-lr 12.0 \
+    --dispersion-energy-cutoff-lr-damping 2.0 \
+    --steps 10000 --log-freq 100 \
+    --device cuda
+```
+
+The cutoff is your choice: a larger one adds neighbor pairs (cost) and more of the long-range tail. Other models trained with `r_max_lr` and a damping width store them and need neither flag.
 
 **Electrostatics semantics.** `--electrostatics` selects which long-range Coulomb term is active, and the two non-`none` options are *different, non-interchangeable* electrostatics models:
 

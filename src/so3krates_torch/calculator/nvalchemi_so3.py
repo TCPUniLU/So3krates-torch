@@ -45,6 +45,54 @@ from nvalchemi.models.base import BaseModelMixin, ModelConfig, NeighborConfig
 from nvalchemi.models.base import NeighborListFormat
 
 
+def _validate_long_range_settings(model: nn.Module) -> None:
+    """Fail early, with the fix, when the model's long-range terms cannot run.
+
+    Real-space electrostatics (without the model's own PME) and dispersion
+    need a long-range cutoff (``model.r_max_lr``), and dispersion also needs
+    ``dispersion_energy_cutoff_lr_damping`` whenever a cutoff is set.  Older
+    pickles, such as the packaged ``so3lr.model``, store neither, and the
+    failure would otherwise come late and cryptically from inside the
+    forward pass.  The terms are read from the live attributes (not the
+    model's ``use_lr``, which is fixed at construction), so switching
+    electrostatics off before wrapping is honoured.
+    """
+    electrostatics = bool(
+        getattr(model, "electrostatic_energy_bool", False)
+    ) and not getattr(model, "use_pme", False)
+    dispersion = bool(getattr(model, "dispersion_energy_bool", False))
+    if not (electrostatics or dispersion):
+        return
+    if getattr(model, "r_max_lr", None) is None:
+        terms = " and ".join(
+            name
+            for name, on in (
+                ("electrostatics", electrostatics),
+                ("dispersion", dispersion),
+            )
+            if on
+        )
+        raise ValueError(
+            f"The model has real-space long-range terms enabled ({terms}) "
+            "but stores no long-range cutoff (model.r_max_lr is None), so "
+            "no long-range neighbor pairs can be built. Pass --r-max-lr "
+            "(SO3LR's inference default is 12.0 Å), or set model.r_max_lr "
+            "in Python."
+        )
+    if (
+        dispersion
+        and getattr(model, "dispersion_energy_cutoff_lr_damping", None) is None
+    ):
+        raise ValueError(
+            "The model has dispersion enabled but "
+            "dispersion_energy_cutoff_lr_damping is None, which the "
+            "dispersion term requires whenever a long-range cutoff is set. "
+            "Pass --dispersion-energy-cutoff-lr-damping (SO3LR's default is "
+            "2.0 Å), or set model.dispersion_energy_cutoff_lr_damping in "
+            "Python."
+        )
+
+
 class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
     """Wraps a So3krates / SO3LR model for NVAlchemi MD.
 
@@ -136,6 +184,7 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
                     "charges (output_partial_charges=True); use "
                     "build_nvalchemi_pme_model()."
                 )
+        _validate_long_range_settings(model)
         self.model = model
 
         self.r_sr: float = float(model.r_max)
