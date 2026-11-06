@@ -314,7 +314,7 @@ Run NVT/NPT molecular dynamics directly on GPU using [NVAlchemi](https://github.
 pip install ".[nvalchemi]"
 ```
 
-This pins `nvalchemi-toolkit[ase]>=0.2,<0.3`; the wrapper (`so3krates_torch.calculator.nvalchemi_so3`) targets the 0.2.x API and is not expected to work with 0.1.x or 0.3.x.
+This pins `nvalchemi-toolkit[ase]>=0.2,<0.4`; the wrapper (`so3krates_torch.calculator.nvalchemi_so3`) targets the 0.2/0.3 API (the test suite passes on both, on CPU) and is not expected to work with 0.1.x.
 
 NVT example:
 
