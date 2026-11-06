@@ -1310,3 +1310,64 @@ def test_wrapper_model_pme_stress_matches_finite_difference(component):
     if i != j:
         fd /= 2  # symmetric strain moves both off-diagonal entries
     assert fd == pytest.approx(stress[i, j], abs=2e-6, rel=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# Multi-theory-level models
+# ---------------------------------------------------------------------------
+
+
+def _multi_head_model(num_theory_levels=3):
+    torch.manual_seed(0)
+    return _make_so3lr(
+        electrostatics_bool=True, num_theory_levels=num_theory_levels
+    )
+
+
+def test_wrapper_multi_head_model_requires_theory_level():
+    with pytest.raises(ValueError, match="theory_level"):
+        NVAlchemiSO3LR(_multi_head_model())
+
+
+@pytest.mark.parametrize("level", [-1, 3])
+def test_wrapper_theory_level_out_of_range(level):
+    with pytest.raises(ValueError, match="out of range"):
+        NVAlchemiSO3LR(_multi_head_model(3), theory_level=level)
+
+
+def test_wrapper_theory_level_selects_the_head():
+    atoms = _rocksalt()
+    model = _multi_head_model(3)
+    energies = []
+    for level in range(3):
+        wrapper = NVAlchemiSO3LR(model, theory_level=level)
+        out = wrapper(_make_batch_with_nl(wrapper, atoms))
+        energies.append(float(out["energy"].sum()))
+    assert len({round(e, 9) for e in energies}) == 3
+
+
+@pytest.mark.parametrize("level", [0, 2])
+def test_wrapper_theory_level_matches_ase_calculator(level):
+    pytest.importorskip("matscipy", reason="matscipy needed for neighbor list")
+    atoms = _small_nacl()
+    model = _multi_head_model(3)
+    atoms.calc = TorchkratesCalculator(
+        models=[model],
+        device=str(DEVICE),
+        dtype=DTYPE,
+        r_max=model.r_max,
+        r_max_lr=model.r_max_lr,
+        theory_level=level,
+    )
+    e_ref = atoms.get_potential_energy()
+    wrapper = NVAlchemiSO3LR(model, theory_level=level)
+    out = wrapper(_make_batch_with_nl(wrapper, atoms))
+    assert float(out["energy"].sum()) == pytest.approx(e_ref, abs=1e-6)
+
+
+def test_wrapper_single_head_model_needs_no_theory_level():
+    wrapper = NVAlchemiSO3LR(_make_so3lr(electrostatics_bool=True))
+    assert wrapper.theory_level is None
+    assert "theory_level" not in wrapper.adapt_input(
+        _make_batch_with_nl(wrapper, _small_nacl())
+    )

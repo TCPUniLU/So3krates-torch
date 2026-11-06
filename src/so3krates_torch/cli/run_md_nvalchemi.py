@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+import warnings
 
 import torch
 from ase.io import read as ase_read
@@ -330,17 +331,73 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="r_max_lr",
         type=float,
         default=None,
-        help="Long-range cutoff (Å). Supplies the cutoff for models that "
-        "store none (e.g. the bundled v1 model, where SO3LR's inference "
-        "default is 12.0) and overrides the stored value otherwise. "
-        "Default: use the value saved with the model.",
+        help="Long-range cutoff (Å). Default: 12.0 (SO3LR's inference "
+        "default, as in SO3LRCalculator) for models with long-range terms. "
+        "It replaces whatever the model stores (none for v1, 1000 for the "
+        "tauri models); a warning is printed when it replaces a finite "
+        "trained cutoff, so pass the trained value here to keep it.",
     )
     p.add_argument(
         "--dispersion-energy-cutoff-lr-damping",
         type=float,
         default=None,
         help="Override the dispersion LR cutoff damping (Å) stored in the "
-        "model (e.g. 2.0). Default: use the value saved with the model.",
+        "model (e.g. 2.0). Default: the value saved with the model, or 2.0 "
+        "(SO3LR's inference default) when the model stores none.",
+    )
+    p.add_argument(
+        "--theory-level",
+        type=int,
+        default=None,
+        help="Theory-level head for multi-head models (the tauri models "
+        "have 16). Default: 5, like so3lr_dev (announced at start-up). "
+        "Ignored by single-head models.",
+    )
+    pme = p.add_argument_group(
+        "the model's own PME (bundled keywords and .pt checkpoints only)",
+        "Switch on the PME terms built into SO3LR (torch-pme): "
+        "electrostatics as a real-space residual plus a k-space term, and "
+        "the C6 dispersion k-space term. Periodic cells only. Not the same "
+        "as --electrostatics nvalchemi (NVAlchemi's full Ewald PME) and its "
+        "--pme-* options.",
+    )
+    pme.add_argument(
+        "--model-pme",
+        action="store_true",
+        help="Use the model's own PME electrostatics (use_pme=True).",
+    )
+    pme.add_argument(
+        "--model-pme-smearing",
+        type=float,
+        default=None,
+        help="Ewald splitting width (Å); default r_max / 5. Needs "
+        "--model-pme.",
+    )
+    pme.add_argument(
+        "--model-pme-mesh-spacing",
+        type=float,
+        default=None,
+        help="FFT grid spacing (Å); default smearing / 2. Needs --model-pme.",
+    )
+    pme.add_argument(
+        "--model-pme-dispersion",
+        action="store_true",
+        help="Add the model's PME dispersion k-space term "
+        "(use_pme_dispersion=True).",
+    )
+    pme.add_argument(
+        "--model-pme-dispersion-smearing",
+        type=float,
+        default=None,
+        help="PME dispersion smearing (Å); default r_max_lr / 5. Needs "
+        "--model-pme-dispersion.",
+    )
+    pme.add_argument(
+        "--model-pme-dispersion-mesh-spacing",
+        type=float,
+        default=None,
+        help="PME dispersion mesh spacing (Å); default smearing / 2. Needs "
+        "--model-pme-dispersion.",
     )
     return p
 
@@ -401,7 +458,9 @@ def atoms_to_data(atoms, device: str, dtype: torch.dtype) -> AtomicData:
 # ---------------------------------------------------------------------------
 
 
-def _load_raw_model(path: str, device: str):
+def _load_raw_model(
+    path: str, device: str, architecture_overrides: dict | None = None
+):
     """Load the SO3LR model behind ``--model``.
 
     ``path`` is one of the bundled keywords (``v1``, ``v2-s``, ``v2-m``,
@@ -416,11 +475,22 @@ def _load_raw_model(path: str, device: str):
         settings_path_for_checkpoint,
     )
 
+    overrides = architecture_overrides or {}
     if path in _PRETRAINED_SO3LR_MODELS:
-        return load_pretrained_so3lr(path, device=device)
+        return load_pretrained_so3lr(path, device=device, **overrides)
     if str(path).endswith(".pt"):
         return _build_so3lr_from_settings_and_state_dict(
-            settings_path_for_checkpoint(path), path, device=device
+            settings_path_for_checkpoint(path),
+            path,
+            device=device,
+            **overrides,
+        )
+    if overrides:
+        raise ValueError(
+            f"{sorted(overrides)} change the model architecture, which is "
+            "only possible for bundled keywords and .pt checkpoints with a "
+            "settings file; the pickled model "
+            f"{path!r} is used as saved."
         )
     raw = torch.load(path, map_location=device, weights_only=False)
     if isinstance(raw, dict) and "model" in raw:
@@ -444,6 +514,10 @@ def load_model(
     electrostatic_energy_scale: float = None,
     dispersion_energy_scale: float = None,
     dispersion_energy_cutoff_lr_damping: float = None,
+    theory_level: int | None = None,
+    architecture_overrides: dict | None = None,
+    default_r_max_lr: float | None = None,
+    default_dispersion_damping: float | None = None,
 ):
     """Load a trained model and wrap it for NVAlchemi MD.
 
@@ -454,20 +528,41 @@ def load_model(
     forwarded to the wrapper's ``model_config.neighbor_config.skin`` so
     ``model.make_neighbor_hooks()`` builds the neighbor list with the
     requested skin.
+
+    ``architecture_overrides`` (bundled keywords / ``.pt`` only) are merged
+    into the checkpoint's settings, e.g. ``{"use_pme": True}``.
+    ``theory_level`` picks the head of a multi-head model (default 5, like
+    so3lr_dev).  ``default_r_max_lr`` / ``default_dispersion_damping`` are
+    what the CLI supplies when the user gives neither value: the cutoff
+    replaces the model's own (with a warning if that was a finite trained
+    value) for models with long-range terms, and the damping only fills a
+    missing one.  The explicit ``r_max_lr`` and
+    ``dispersion_energy_cutoff_lr_damping`` always win.
     """
-    raw = _load_raw_model(path, device)
-    n_levels = getattr(
-        getattr(raw, "atomic_energy_output_block", None),
-        "num_theory_levels",
-        1,
-    )
+    raw = _load_raw_model(path, device, architecture_overrides)
+
+    block = getattr(raw, "atomic_energy_output_block", None)
+    n_levels = getattr(block, "num_theory_levels", 1)
     if n_levels > 1:
-        raise ValueError(
-            f"model {path!r} has {n_levels} theory-level heads, which need "
-            "a per-graph theory_level that torchkrates-md-nvalchemi cannot "
-            "set yet (it would silently use a default head). Use "
-            "SO3LRCalculator(theory_level=...) for these models."
-        )
+        if theory_level is None:
+            theory_level = 5
+            print(
+                "  Using theory level 5 (so3lr_dev default) of "
+                f"{n_levels}; change it with --theory-level."
+            )
+        else:
+            print(f"  Theory level: {theory_level} of {n_levels}.")
+        from so3krates_torch.calculator.so3 import _shared_theory_levels
+
+        if theory_level in _shared_theory_levels(block):
+            warnings.warn(
+                f"theory_level={theory_level} has parameters identical to "
+                "those of other theory levels, so it was most likely never "
+                "trained and returns the same value as them. For the tauri "
+                "models only levels 0, 4 and 5 are trained.",
+                UserWarning,
+                stacklevel=2,
+            )
 
     # Convert to the requested device/dtype BEFORE wrapping or compiling
     # (as TorchkratesCalculator does), and freeze the weights: MD only
@@ -478,6 +573,30 @@ def load_model(
 
     # Apply scale overrides BEFORE torch.compile so Inductor sees the
     # final float values (it bakes Python-float attributes as constants).
+    needs_lr = bool(
+        (
+            getattr(raw, "electrostatic_energy_bool", False)
+            and electrostatics != "none"
+        )
+        or electrostatics == "nvalchemi"
+        or getattr(raw, "dispersion_energy_bool", False)
+    )
+    if r_max_lr is None and default_r_max_lr is not None and needs_lr:
+        stored = getattr(raw, "r_max_lr", None)
+        # 1000 A is the tauri models' "unbounded" value, not a trained cutoff
+        if (
+            stored is not None
+            and stored < 100.0
+            and abs(float(stored) - default_r_max_lr) > 1e-9
+        ):
+            warnings.warn(
+                f"the model stores r_max_lr={stored} but the default "
+                f"{default_r_max_lr} A is used; pass --r-max-lr {stored} to "
+                "keep the trained long-range cutoff.",
+                UserWarning,
+                stacklevel=2,
+            )
+        r_max_lr = default_r_max_lr
     if r_max_lr is not None:
         # The model reads self.r_max_lr on every forward pass, and
         # NVAlchemiSO3LR builds its long-range edges from it.
@@ -490,6 +609,12 @@ def load_model(
         raw.dispersion_energy_cutoff_lr_damping = (
             dispersion_energy_cutoff_lr_damping
         )
+    elif (
+        default_dispersion_damping is not None
+        and getattr(raw, "dispersion_energy_bool", False)
+        and getattr(raw, "dispersion_energy_cutoff_lr_damping", None) is None
+    ):
+        raw.dispersion_energy_cutoff_lr_damping = default_dispersion_damping
 
     # Apply the electrostatics backend switch on the raw module BEFORE
     # compiling (attribute writes on a compiled OptimizedModule would not
@@ -529,13 +654,85 @@ def load_model(
             spline_order=pme_spline_order,
             accuracy=pme_accuracy,
             skin=skin,
+            theory_level=theory_level,
         )
     else:
-        model = NVAlchemiSO3LR(raw, electrostatics="model", skin=skin)
+        model = NVAlchemiSO3LR(
+            raw,
+            electrostatics="model",
+            skin=skin,
+            theory_level=theory_level,
+        )
 
     model = model.to(device=device, dtype=dtype)
     model.eval()
     return model
+
+
+# SO3LR's inference defaults (the values SO3LRCalculator uses).
+_DEFAULT_R_MAX_LR = 12.0
+_DEFAULT_DISPERSION_DAMPING = 2.0
+
+
+def _model_pme_overrides(args, periodic: bool) -> dict:
+    """Validate the ``--model-pme*`` flags; return the architecture
+    overrides they stand for (empty when none is given)."""
+    if args.model_pme and args.electrostatics != "model":
+        sys.exit(
+            "Error: --model-pme is the model's own electrostatics backend "
+            f"and cannot be combined with --electrostatics "
+            f"{args.electrostatics}. Use --electrostatics model, or "
+            "--electrostatics nvalchemi without --model-pme."
+        )
+    for flag, value, needs in (
+        ("--model-pme-smearing", args.model_pme_smearing, "--model-pme"),
+        (
+            "--model-pme-mesh-spacing",
+            args.model_pme_mesh_spacing,
+            "--model-pme",
+        ),
+        (
+            "--model-pme-dispersion-smearing",
+            args.model_pme_dispersion_smearing,
+            "--model-pme-dispersion",
+        ),
+        (
+            "--model-pme-dispersion-mesh-spacing",
+            args.model_pme_dispersion_mesh_spacing,
+            "--model-pme-dispersion",
+        ),
+    ):
+        enabled = (
+            args.model_pme
+            if needs == "--model-pme"
+            else args.model_pme_dispersion
+        )
+        if value is not None and not enabled:
+            sys.exit(f"Error: {flag} needs {needs}.")
+    if (args.model_pme or args.model_pme_dispersion) and not periodic:
+        sys.exit(
+            "Error: the model's own PME (--model-pme, "
+            "--model-pme-dispersion) needs a periodic cell, but the "
+            "structure(s) have pbc=False."
+        )
+    overrides = {}
+    if args.model_pme:
+        overrides["use_pme"] = True
+        if args.model_pme_smearing is not None:
+            overrides["pme_smearing"] = args.model_pme_smearing
+        if args.model_pme_mesh_spacing is not None:
+            overrides["pme_mesh_spacing"] = args.model_pme_mesh_spacing
+    if args.model_pme_dispersion:
+        overrides["use_pme_dispersion"] = True
+        if args.model_pme_dispersion_smearing is not None:
+            overrides[
+                "pme_dispersion_smearing"
+            ] = args.model_pme_dispersion_smearing
+        if args.model_pme_dispersion_mesh_spacing is not None:
+            overrides[
+                "pme_dispersion_mesh_spacing"
+            ] = args.model_pme_dispersion_mesh_spacing
+    return overrides
 
 
 def _print_model_diagnostics(raw, electrostatics: str = "model") -> None:
@@ -558,6 +755,12 @@ def _print_model_diagnostics(raw, electrostatics: str = "model") -> None:
 
     if electrostatics == "nvalchemi":
         elec = "NVAlchemi PME (from model partial charges)"
+    elif elec_bool and getattr(raw, "use_pme", False):
+        elec = (
+            f"model PME  scale={elec_scale}  "
+            f"smearing={getattr(raw, 'pme_smearing', None)} A  "
+            f"mesh spacing={getattr(raw, 'pme_mesh_spacing', None)} A"
+        )
     else:
         elec = _yn(elec_bool) + (f"  scale={elec_scale}" if elec_bool else "")
     print(
@@ -785,6 +988,8 @@ def main() -> None:
             "molecules."
         )
 
+    architecture_overrides = _model_pme_overrides(args, all(periodic))
+
     print(f"Loading model from {args.model} …")
     model = load_model(
         args.model,
@@ -803,6 +1008,10 @@ def main() -> None:
         dispersion_energy_cutoff_lr_damping=(
             args.dispersion_energy_cutoff_lr_damping
         ),
+        theory_level=args.theory_level,
+        architecture_overrides=architecture_overrides,
+        default_r_max_lr=_DEFAULT_R_MAX_LR,
+        default_dispersion_damping=_DEFAULT_DISPERSION_DAMPING,
     )
     _configure_active_outputs(model, args.ensemble)
     cutoff = model.model_config.neighbor_config.cutoff

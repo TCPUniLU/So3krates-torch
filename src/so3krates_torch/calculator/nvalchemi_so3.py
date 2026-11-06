@@ -47,6 +47,38 @@ from nvalchemi.models.base import NeighborListFormat
 from so3krates_torch.data.utils import compute_shifts
 
 
+def _resolve_theory_level(
+    model: nn.Module, theory_level: int | None
+) -> int | None:
+    """Validate ``theory_level`` against the model's number of heads.
+
+    Multi-head models need an explicit level (there is no sensible silent
+    default); single-head models take ``None`` (nothing is passed to the
+    model) or 0.
+    """
+    n_levels = getattr(
+        getattr(model, "atomic_energy_output_block", None),
+        "num_theory_levels",
+        1,
+    )
+    if theory_level is None:
+        if n_levels > 1:
+            raise ValueError(
+                f"the model has {n_levels} theory-level heads; pass "
+                "theory_level=<int> (CLI: --theory-level) to choose one. "
+                "so3lr_dev uses level 5."
+            )
+        return None
+    theory_level = int(theory_level)
+    if not 0 <= theory_level < n_levels:
+        raise ValueError(
+            f"theory_level={theory_level} is out of range for a model with "
+            f"{n_levels} theory-level head(s) (valid: 0..{n_levels - 1}); "
+            "CLI: --theory-level."
+        )
+    return theory_level
+
+
 def _validate_long_range_settings(model: nn.Module) -> None:
     """Fail early, with the fix, when the model's long-range terms cannot run.
 
@@ -121,6 +153,10 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
           ``electrostatic_energy_bool=False`` and ``output_partial_charges=True``
           (use :func:`build_nvalchemi_pme_model`, which sets this up and
           composes the PME step).
+    theory_level:
+        Theory-level head to evaluate for multi-theory-level models (e.g.
+        the tauri models, which have 16; so3lr_dev uses 5).  Required for
+        them, optional (``None`` or 0) for single-head models.
     skin:
         Verlet skin (Å) forwarded to ``model_config.neighbor_config.skin``,
         so :meth:`make_neighbor_hooks` builds the neighbor list out to
@@ -164,6 +200,7 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
         model: nn.Module,
         electrostatics: str = "model",
         skin: float = 0.0,
+        theory_level: int | None = None,
     ) -> None:
         super().__init__()
         if electrostatics not in ("model", "nvalchemi"):
@@ -187,6 +224,7 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
                     "build_nvalchemi_pme_model()."
                 )
         _validate_long_range_settings(model)
+        self.theory_level = _resolve_theory_level(model, theory_level)
         self.model = model
 
         self.r_sr: float = float(model.r_max)
@@ -371,6 +409,11 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
                 else torch.zeros(B, dtype=dtype, device=device)
             ),
         }
+        if self.theory_level is not None:
+            # Multi-theory-level models read one level per graph.
+            d["theory_level"] = torch.full(
+                (B,), self.theory_level, dtype=torch.long, device=device
+            )
         if self.has_lr:
             d["edge_index_lr"] = edge_index_all[:, lr_mask]  # [2, E_lr]
             d["shifts_lr"] = shifts[lr_mask]  # [E_lr, 3]
@@ -502,6 +545,7 @@ def build_nvalchemi_pme_model(
     accuracy: float = 1e-6,
     coulomb_constant: float = _KE_EV_ANG,
     skin: float = 0.0,
+    theory_level: int | None = None,
 ):
     """Compose an SO3LR model with NVAlchemi-native PME electrostatics.
 
@@ -598,7 +642,9 @@ def build_nvalchemi_pme_model(
     model.electrostatic_energy_bool = False
     model.output_partial_charges = True
 
-    sr = NVAlchemiSO3LR(model, electrostatics="nvalchemi", skin=skin)
+    sr = NVAlchemiSO3LR(
+        model, electrostatics="nvalchemi", skin=skin, theory_level=theory_level
+    )
     pme = PMEModelWrapper(
         cutoff=cutoff,
         alpha=alpha,

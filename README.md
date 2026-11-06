@@ -352,8 +352,13 @@ torchkrates-md-nvalchemi \
 | `--skin` | `0.5` | Verlet skin [Å] for the GPU-native neighbor list |
 | `--electrostatics` | `model` | `model`, `nvalchemi`, or `none` (see below) |
 | `--pressure-coupling` | `isotropic` | `isotropic`, `anisotropic`, or `triclinic` (NPT only) |
-| `--r-max-lr` (alias `--r_max_lr`) | model's own | Long-range cutoff [Å]; supplies it for models that store none (such as the bundled `v1`) and overrides the stored value otherwise |
-| `--dispersion-energy-cutoff-lr-damping` | model's own | Dispersion damping width [Å]; required whenever dispersion is on, so it must be given if the model stores none |
+| `--r-max-lr` (alias `--r_max_lr`) | `12.0` | Long-range cutoff [Å] for models with long-range terms (SO3LR's inference default, as in `SO3LRCalculator`). It replaces the stored value (none for `v1`, 1000 for the tauri models); a warning is printed when it replaces a finite trained cutoff, so pass the trained value to keep it |
+| `--dispersion-energy-cutoff-lr-damping` | model's own, else `2.0` | Dispersion damping width [Å]; the model's stored value wins, `2.0` only fills in a missing one (`v1`) |
+| `--theory-level` | `5` | Theory-level head of multi-head models (the tauri models have 16; `5` is so3lr_dev's default and is announced at start-up). Ignored by single-head models |
+| `--model-pme` | off | Use the model's own PME electrostatics (`use_pme`, torch-pme; bundled keywords and `.pt` checkpoints only, periodic cells only; see below) |
+| `--model-pme-smearing`, `--model-pme-mesh-spacing` | `r_max / 5`, `smearing / 2` | Ewald width and FFT spacing [Å] for `--model-pme` |
+| `--model-pme-dispersion` | off | Add the model's PME dispersion k-space term (`use_pme_dispersion`) |
+| `--model-pme-dispersion-smearing`, `--model-pme-dispersion-mesh-spacing` | `r_max_lr / 5`, `smearing / 2` | Width and spacing [Å] for `--model-pme-dispersion` |
 | `--pme-alpha` | derived | Ewald splitting [Å⁻¹] for `--electrostatics nvalchemi` (see below) |
 | `--pme-mesh-dimensions NX NY NZ` | NVAlchemi's estimate | FFT grid for `--electrostatics nvalchemi` (see below) |
 | `--pme-spline-order` | `4` | B-spline order for `--electrostatics nvalchemi` |
@@ -364,22 +369,28 @@ torchkrates-md-nvalchemi \
 | `--log-file` | `md_log.csv` | Output CSV log path |
 | `--log-freq` | `100` | Log every N steps |
 
-**Running the bundled pre-trained model.** `--model` takes a bundled keyword (`v1`), a `<stem>.pt` state_dict with a sibling `<stem>_settings.yaml`, or a pickled `.model`. The bundled `v1` stores neither a long-range cutoff nor a dispersion damping width, so give both (a model that has long-range terms but no cutoff stops with an error that names `--r-max-lr`). NPT on a periodic cell, with SO3LR's inference defaults of 12.0 Å and 2.0 Å (the values `SO3LRCalculator` uses):
+**Running a bundled pre-trained model.** `--model` takes a bundled keyword (`v1`, `tauri-{s,m,l}-{2602,2606}`, see [Pretrained SO3LR Models](#pretrained-so3lr-models-ase-calculator)), a `<stem>.pt` state_dict with a sibling `<stem>_settings.yaml`, or a pickled `.model`. The long-range cutoff defaults to 12.0 Å and the dispersion damping to 2.0 Å when the model stores none, the same values `SO3LRCalculator` uses, so NPT on a periodic cell needs no extra flags:
 
 ```bash
 torchkrates-md-nvalchemi \
-    --model v1 \
+    --model tauri-s-2606 \
     --atoms my_cell.xyz \
     --ensemble npt --temperature 300 --pressure 1.0 \
-    --r-max-lr 12.0 \
-    --dispersion-energy-cutoff-lr-damping 2.0 \
     --steps 10000 --log-freq 100 \
     --device cuda
 ```
 
-The multi-head tauri / `v2-*` models are not supported by this CLI yet (they need a per-graph `theory_level`); it stops with an error. Use `SO3LRCalculator(theory_level=...)` for them.
+The multi-head tauri models run at theory level 5 unless you pass `--theory-level N`. Models trained with their own `r_max_lr` keep working: the default replaces the stored cutoff, with a warning, so give `--r-max-lr <trained value>` for them.
 
-The cutoff is your choice: a larger one adds neighbor pairs (cost) and more of the long-range tail. Other models trained with `r_max_lr` and a damping width store them and need neither flag.
+**The model's own PME.** `--model-pme` (electrostatics) and `--model-pme-dispersion` switch on the PME terms built into SO3LR: a real-space residual plus a torch-pme k-space term, which extends the trained `erf(r/σ)/r` electrostatics to all periodic images instead of cutting it off at the long-range cutoff. They work on bundled keywords and `.pt` checkpoints, need a periodic cell and `pip install ".[pme]"`, and cannot be combined with `--electrostatics nvalchemi` or `none`. They are not NVAlchemi's own PME (`--electrostatics nvalchemi`, the `--pme-*` options), which computes the full `1/r` Coulomb energy and is a different model.
+
+```bash
+torchkrates-md-nvalchemi --model tauri-s-2606 --atoms my_cell.xyz --ensemble npt \
+    --model-pme --model-pme-smearing 1.18 --model-pme-mesh-spacing 0.59 \
+    --model-pme-dispersion
+```
+
+A larger cutoff adds neighbor pairs (cost) and more of the long-range tail.
 
 **Electrostatics semantics.** `--electrostatics` selects which long-range Coulomb term is active, and the two non-`none` options are *different, non-interchangeable* electrostatics models:
 
