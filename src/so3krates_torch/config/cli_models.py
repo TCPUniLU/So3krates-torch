@@ -114,8 +114,10 @@ class MergeArgs(BaseModel):
 
 class Jax2TorchArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    path_to_params: str
-    path_to_hyperparams: str
+    path_to_params: Optional[str] = None
+    path_to_hyperparams: Optional[str] = None
+    so3lr_dev_checkpoint: Optional[Literal["s", "m", "l"]] = None
+    so3lr_dev_generation: Literal["2602", "2606"] = "2606"
     save_settings_path: Optional[str] = None
     save_state_dict_path: Optional[str] = None
     save_model_path: Optional[str] = None
@@ -124,6 +126,10 @@ class Jax2TorchArgs(BaseModel):
     trainable_rbf: bool = False
     dtype: str = "float32"
     device: str = "cpu"
+    check_parity: bool = True
+    parity_structure: Optional[str] = None
+    parity_atol: float = 1e-5
+    parity_rtol: float = 1e-4
 
     @model_validator(mode="after")
     def validate_at_least_one_save_path(self):
@@ -139,6 +145,24 @@ class Jax2TorchArgs(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def validate_checkpoint_source(self):
+        if self.so3lr_dev_checkpoint is not None:
+            if (
+                self.path_to_params is not None
+                or self.path_to_hyperparams is not None
+            ):
+                raise ValueError(
+                    "--so3lr_dev_checkpoint cannot be combined with "
+                    "--path_to_params/--path_to_hyperparams"
+                )
+        elif self.path_to_params is None or self.path_to_hyperparams is None:
+            raise ValueError(
+                "either both --path_to_params and --path_to_hyperparams, "
+                "or --so3lr_dev_checkpoint, must be given"
+            )
+        return self
+
 
 class Torch2JaxArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -150,6 +174,10 @@ class Torch2JaxArgs(BaseModel):
     use_defined_shifts: bool = False
     trainable_rbf: bool = False
     dtype: str = "float32"
+    check_parity: bool = True
+    parity_structure: Optional[str] = None
+    parity_atol: float = 1e-5
+    parity_rtol: float = 1e-4
 
     @model_validator(mode="after")
     def validate_at_least_one_save_path(self):

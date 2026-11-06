@@ -7,14 +7,148 @@
 from typing import Optional, Union, List
 from pathlib import Path
 from glob import glob
+import warnings
+
 import torch
+import yaml
 from ase.calculators.calculator import Calculator, all_changes
 from ase.stress import full_3x3_to_voigt_6_stress
 import numpy as np
 from so3krates_torch.data.atomic_data import AtomicData as So3Data
 from so3krates_torch.tools import torch_geometric, torch_tools, utils
 from so3krates_torch.data.utils import KeySpecification, config_from_atoms
+from so3krates_torch.modules.models import SO3LR
 import importlib.resources as resources
+
+
+# Maps a pretrained-model keyword to its (subdirectory, file stem)
+# under ``pretrained/so3lr/`` -- e.g. "v2-s" -> so3lr/v2/so3lr-s.pt +
+# so3lr/v2/so3lr-s_settings.yaml. "v1" is the original architecture
+# (single checkpoint, no size variants); "v2-{s,m,l}" are the three
+# sizes of the newer architecture.
+_PRETRAINED_SO3LR_MODELS = {
+    "v1": ("v1", "so3lr"),
+    "v2-s": ("v2", "so3lr-s"),
+    "v2-m": ("v2", "so3lr-m"),
+    "v2-l": ("v2", "so3lr-l"),
+}
+
+
+def _build_so3lr_from_settings_and_state_dict(
+    settings_path: Union[str, Path],
+    state_dict_path: Union[str, Path],
+    device: str = "cpu",
+    error_label: Optional[str] = None,
+    **architecture_overrides,
+) -> torch.nn.Module:
+    """Construct a ``SO3LR`` model from a ``*_settings.yaml``
+    ``ARCHITECTURE`` block and a matching ``state_dict`` ``.pt`` file,
+    then load the weights into it.
+
+    This is the shared read-YAML/``SO3LR(**settings)``/
+    ``load_state_dict`` path used both by ``load_pretrained_so3lr``
+    (for the bundled pretrained checkpoints) and by CLI tools that
+    accept a user-supplied ``<stem>.pt`` + sibling
+    ``<stem>_settings.yaml`` pair following the same naming
+    convention.
+
+    ``architecture_overrides`` are merged into the checkpoint's saved
+    ``ARCHITECTURE`` settings before construction -- e.g. pass
+    ``use_pme=True, pme_smearing=..., pme_mesh_spacing=...`` to enable
+    PME electrostatics/dispersion (every saved checkpoint has PME off
+    by default). PME introduces zero new *learned* parameters (only
+    ``torch-pme``'s own internal, non-learned buffers --
+    ``smearing``/``prefactor``/``exponent``), so the state_dict is
+    loaded with ``strict=False`` and only those specific buffer keys
+    are allowed to be missing; anything else missing or any unexpected
+    key raises.
+    """
+    with open(settings_path) as f:
+        settings = yaml.safe_load(f)["ARCHITECTURE"]
+    settings = dict(settings)
+    settings.pop("device", None)
+    settings.update(architecture_overrides)
+
+    torch_model = SO3LR(**settings)
+
+    state_dict = torch.load(
+        state_dict_path, map_location=device, weights_only=False
+    )
+
+    label = error_label if error_label is not None else str(state_dict_path)
+    missing, unexpected = torch_model.load_state_dict(state_dict, strict=False)
+    if unexpected:
+        raise RuntimeError(
+            f"Unexpected keys loading checkpoint {label!r}: {unexpected}"
+        )
+    bad_missing = [k for k in missing if "pme_" not in k]
+    if bad_missing:
+        raise RuntimeError(
+            f"Missing non-PME keys loading checkpoint {label!r}: "
+            f"{bad_missing}"
+        )
+    torch_model.to(device)
+    return torch_model
+
+
+def settings_path_for_checkpoint(state_dict_path: Union[str, Path]) -> Path:
+    """Resolve the sibling ``<stem>_settings.yaml`` for a ``.pt``
+    state_dict checkpoint, following the same naming convention used
+    by the bundled pretrained checkpoints (e.g. ``so3lr-s.pt`` ->
+    ``so3lr-s_settings.yaml``, in the same directory).
+    """
+    state_dict_path = Path(state_dict_path)
+    settings_path = state_dict_path.with_name(
+        state_dict_path.stem + "_settings.yaml"
+    )
+    if not settings_path.exists():
+        raise FileNotFoundError(
+            f"No settings YAML found for checkpoint {state_dict_path}: "
+            f"expected {settings_path} (matching the "
+            "'<stem>.pt' + '<stem>_settings.yaml' naming convention "
+            "used by the bundled pretrained checkpoints)."
+        )
+    return settings_path
+
+
+def load_pretrained_so3lr(
+    model: str,
+    device: str = "cpu",
+    **architecture_overrides,
+) -> torch.nn.Module:
+    """Build a bundled pretrained SO3LR model from its converted
+    ``state_dict`` + ``settings.yaml`` (``pretrained/so3lr/{v1,v2}/``).
+
+    ``model`` selects which checkpoint to load: ``"v1"`` (the original,
+    single checkpoint) or ``"v2-s"``/``"v2-m"``/``"v2-l"`` (the three
+    sizes of the newer v2 architecture).
+
+    ``architecture_overrides`` are merged into the checkpoint's saved
+    ``ARCHITECTURE`` settings before construction -- e.g. pass
+    ``use_pme=True, pme_smearing=..., pme_mesh_spacing=...`` to enable
+    PME electrostatics/dispersion (every saved checkpoint has PME off
+    by default). See ``_build_so3lr_from_settings_and_state_dict`` for
+    details on how missing/unexpected keys are handled.
+    """
+    if model not in _PRETRAINED_SO3LR_MODELS:
+        raise ValueError(
+            f"Unknown pretrained SO3LR model {model!r}. Must be one "
+            f"of {sorted(_PRETRAINED_SO3LR_MODELS)}."
+        )
+    subdir, stem = _PRETRAINED_SO3LR_MODELS[model]
+    base = resources.files("so3krates_torch.pretrained.so3lr") / subdir
+
+    with (
+        resources.as_file(base / f"{stem}_settings.yaml") as yaml_path,
+        resources.as_file(base / f"{stem}.pt") as pt_path,
+    ):
+        return _build_so3lr_from_settings_and_state_dict(
+            yaml_path,
+            pt_path,
+            device=device,
+            error_label=f"pretrained {model!r}",
+            **architecture_overrides,
+        )
 
 
 def get_model_dtype(model: torch.nn.Module) -> torch.dtype:
@@ -46,9 +180,11 @@ class TorchkratesCalculator(Calculator):
         model_type="so3lr",
         fullgraph: Optional[bool] = None,
         compile: bool = False,
+        theory_level: Optional[int] = None,
         **kwargs,
     ):
         Calculator.__init__(self, **kwargs)
+        self.theory_level = theory_level
         if (model_paths is None) == (models is None):
             raise ValueError(
                 "Exactly one of 'model_paths' or 'models' must be provided"
@@ -302,8 +438,17 @@ class TorchkratesCalculator(Calculator):
         for i, model in enumerate(self.models):
             batch = self._clone_batch(batch_base)
             batch.positions.requires_grad_(True)
+            batch_dict = batch.to_dict()
+            if self.theory_level is not None:
+                n_graphs = int(batch_dict["batch"].max().item()) + 1
+                batch_dict["theory_level"] = torch.full(
+                    (n_graphs,),
+                    self.theory_level,
+                    dtype=torch.long,
+                    device=self.device,
+                )
             out = model(
-                batch.to_dict(),
+                batch_dict,
                 compute_stress=self.compute_stress,
             )
             if self.model_type in ["so3lr", "so3krates"]:
@@ -457,13 +602,47 @@ class TorchkratesCalculator(Calculator):
                 )
 
 
+def _shared_theory_levels(block) -> set:
+    """Theory levels whose per-level parameters (energy shifts, final
+    layer row, energy scales) are bitwise identical to another level's:
+    heads that were never trained and share their initial value."""
+    levels = range(block.num_theory_levels)
+    signatures = [
+        (
+            block.energy_shifts[:, level],
+            block.final_layer.weight[level],
+            block.energy_scales.weight[level],
+        )
+        for level in levels
+    ]
+    return {
+        a
+        for a in levels
+        for b in levels
+        if a != b
+        and all(
+            torch.equal(x, y) for x, y in zip(signatures[a], signatures[b])
+        )
+    }
+
+
 class SO3LRCalculator(TorchkratesCalculator):
-    """Calculator for SO3LR models"""
+    """Calculator for the bundled pretrained SO3LR models.
+
+    ``model`` selects which of the bundled, converted checkpoints to
+    load: ``"v1"`` (the original architecture, single checkpoint) or
+    ``"v2-s"``/``"v2-m"``/``"v2-l"`` (the three sizes of the newer v2
+    architecture). See ``load_pretrained_so3lr`` for how the
+    checkpoint is resolved and constructed.
+
+    The v2 models have 16 theory-level heads, so ``theory_level`` is
+    required for them (``ValueError`` otherwise); ``so3lr_dev`` uses
+    level 5. The single-head ``"v1"`` model needs no ``theory_level``.
+    """
 
     def __init__(
         self,
-        model_paths: Union[list, str, None] = None,
-        models: Union[List[torch.nn.Module], torch.nn.Module, None] = None,
+        model: str,
         r_max_lr: Optional[float] = 12.0,
         dispersion_energy_cutoff_lr_damping: Optional[float] = 2.0,
         compute_stress: bool = False,
@@ -473,12 +652,75 @@ class SO3LRCalculator(TorchkratesCalculator):
         default_dtype="",
         charges_key="Qs",
         key_specification=None,
+        theory_level: Optional[int] = None,
+        use_pme: Optional[bool] = None,
+        pme_smearing: Optional[float] = None,
+        pme_mesh_spacing: Optional[float] = None,
+        use_pme_dispersion: Optional[bool] = None,
+        pme_dispersion_smearing: Optional[float] = None,
+        pme_dispersion_mesh_spacing: Optional[float] = None,
+        pme_mesh_rule: Optional[str] = None,
         **kwargs,
     ):
-        models = [self._load_model(device)]
-        model_paths = None  # No need for model paths in this case
+        architecture_overrides = {
+            k: v
+            for k, v in {
+                "use_pme": use_pme,
+                "pme_smearing": pme_smearing,
+                "pme_mesh_spacing": pme_mesh_spacing,
+                "use_pme_dispersion": use_pme_dispersion,
+                "pme_dispersion_smearing": pme_dispersion_smearing,
+                "pme_dispersion_mesh_spacing": pme_dispersion_mesh_spacing,
+                "pme_mesh_rule": pme_mesh_rule,
+            }.items()
+            if v is not None
+        }
+        models = [
+            load_pretrained_so3lr(
+                model, device=device, **architecture_overrides
+            )
+        ]
+        num_theory_levels = max(
+            getattr(
+                getattr(m, "atomic_energy_output_block", None),
+                "num_theory_levels",
+                1,
+            )
+            for m in models
+        )
+        if theory_level is not None and not (
+            0 <= theory_level < num_theory_levels
+        ):
+            raise ValueError(
+                f"theory_level={theory_level} is out of range for model "
+                f"{model!r}, which has {num_theory_levels} theory-level "
+                f"head(s) (valid: 0..{num_theory_levels - 1})."
+            )
+        if theory_level is not None and num_theory_levels > 1:
+            for m in models:
+                if theory_level in _shared_theory_levels(
+                    m.atomic_energy_output_block
+                ):
+                    warnings.warn(
+                        f"theory_level={theory_level} has parameters "
+                        "identical to those of other theory levels, so it "
+                        "was most likely never trained and returns the "
+                        "same value as them. For the bundled v2 models "
+                        "only levels 0, 4 and 5 are trained.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                    break
+        if theory_level is None:
+            if num_theory_levels > 1:
+                raise ValueError(
+                    f"model {model!r} has {num_theory_levels} theory-level "
+                    "heads; pass theory_level=<int> to choose one. "
+                    "so3lr_dev uses theory level 5 by default."
+                )
+            theory_level = 0
         super().__init__(
-            model_paths=model_paths,
+            model_paths=None,
             models=models,
             r_max_lr=r_max_lr,
             dispersion_energy_cutoff_lr_damping=dispersion_energy_cutoff_lr_damping,
@@ -490,17 +732,9 @@ class SO3LRCalculator(TorchkratesCalculator):
             charges_key=charges_key,
             key_specification=key_specification,
             model_type="so3lr",
+            theory_level=theory_level,
             **kwargs,
         )
-
-    def _load_model(self, device: str = "cpu") -> torch.nn.Module:
-        with resources.path(
-            "so3krates_torch.pretrained.so3lr", "so3lr.model"
-        ) as model_path:
-            model = torch.load(
-                model_path, map_location=device, weights_only=False
-            )
-        return model
 
 
 class MultiHeadSO3LRCalculator(TorchkratesCalculator):

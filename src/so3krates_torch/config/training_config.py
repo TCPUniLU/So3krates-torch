@@ -37,16 +37,23 @@ class ArchitectureConfig(BaseModel):
     energy_learn_atomic_type_scales: bool = False
     layer_normalization_1: bool = False
     layer_normalization_2: bool = False
+    use_rms_norm: bool = False
     residual_mlp_1: bool = False
     residual_mlp_2: bool = False
     use_charge_embed: bool = False
     use_spin_embed: bool = False
     qk_non_linearity: str = "identity"
+    qk_norm: bool = False
+    use_residual_scalars: bool = False
     input_convention: str = "positions"
     layers_behave_like_identity_fn_at_init: bool = False
     output_is_zero_at_init: bool = False
     # SO3LR-specific
     zbl_repulsion_bool: bool = True
+    nhl_repulsion_bool: bool = False
+    c6_ratios_bool: bool = False
+    use_simple_hirshfeld: bool = False
+    num_theory_levels: int = 1
     electrostatic_energy_bool: bool = True
     electrostatic_energy_scale: float = 4.0
     dispersion_energy_bool: bool = True
@@ -57,6 +64,16 @@ class ArchitectureConfig(BaseModel):
     use_pme: bool = False
     pme_smearing: Optional[float] = None
     pme_mesh_spacing: Optional[float] = None
+    # PME dispersion (k-space correction added on top of the real-space
+    # C6 residual + C8/C10 terms — does not replace them, unlike use_pme
+    # above for electrostatics)
+    use_pme_dispersion: bool = False
+    pme_dispersion_smearing: Optional[float] = None
+    pme_dispersion_mesh_spacing: Optional[float] = None
+    # Mesh-size rounding rule for both PME terms: "jax" matches so3lr_dev
+    # (jax-pme), "torchpme" is the stock torch-pme rule.
+    pme_mesh_rule: Literal["jax", "torchpme"] = "jax"
+    legacy_dispersion_bool: bool = True
     compute_avg_num_neighbors: bool = True
     # Multi-head
     convert_to_multihead: bool = False
@@ -99,6 +116,25 @@ class ArchitectureConfig(BaseModel):
                 "num_output_heads must be specified when using "
                 "convert_to_multihead"
             )
+        if self.nhl_repulsion_bool and self.zbl_repulsion_bool:
+            import logging
+
+            logging.warning(
+                "nhl_repulsion_bool and zbl_repulsion_bool are both "
+                "True. NHL takes precedence; ZBL module is instantiated "
+                "but never called."
+            )
+        if self.c6_ratios_bool and not self.dispersion_energy_bool:
+            raise ValueError(
+                "c6_ratios_bool=True requires dispersion_energy_bool=True."
+            )
+        if self.use_simple_hirshfeld and not self.dispersion_energy_bool:
+            raise ValueError(
+                "use_simple_hirshfeld=True requires "
+                "dispersion_energy_bool=True."
+            )
+        if self.num_theory_levels < 1:
+            raise ValueError("num_theory_levels must be >= 1.")
         return self
 
 
