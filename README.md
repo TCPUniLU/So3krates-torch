@@ -344,7 +344,7 @@ torchkrates-md-nvalchemi \
 | `--skin` | `0.5` | Verlet skin [Å] for the GPU-native neighbor list |
 | `--electrostatics` | `model` | `model`, `nvalchemi`, or `none` (see below) |
 | `--pressure-coupling` | `isotropic` | `isotropic`, `anisotropic`, or `triclinic` (NPT only) |
-| `--r-max-lr` (alias `--r_max_lr`) | model's own | Long-range cutoff [Å]; supplies it for models that store none (such as the packaged `so3lr.model`) and overrides the stored value otherwise |
+| `--r-max-lr` (alias `--r_max_lr`) | model's own | Long-range cutoff [Å]; supplies it for models that store none (such as the bundled `v1`) and overrides the stored value otherwise |
 | `--dispersion-energy-cutoff-lr-damping` | model's own | Dispersion damping width [Å]; required whenever dispersion is on, so it must be given if the model stores none |
 | `--pme-alpha` | derived | Ewald splitting [Å⁻¹] for `--electrostatics nvalchemi` (see below) |
 | `--pme-mesh-dimensions NX NY NZ` | NVAlchemi's estimate | FFT grid for `--electrostatics nvalchemi` (see below) |
@@ -356,13 +356,11 @@ torchkrates-md-nvalchemi \
 | `--log-file` | `md_log.csv` | Output CSV log path |
 | `--log-freq` | `100` | Log every N steps |
 
-**Running the packaged pre-trained model.** `so3krates_torch/pretrained/so3lr/so3lr.model` stores neither a long-range cutoff nor a dispersion damping width, so give both (a model that has long-range terms but no cutoff stops with an error that names `--r-max-lr`). NPT on a periodic cell, with SO3LR's inference defaults of 12.0 Å and 2.0 Å (the values `SO3LRCalculator` uses):
+**Running the bundled pre-trained model.** `--model` takes a bundled keyword (`v1`), a `<stem>.pt` state_dict with a sibling `<stem>_settings.yaml`, or a pickled `.model`. The bundled `v1` stores neither a long-range cutoff nor a dispersion damping width, so give both (a model that has long-range terms but no cutoff stops with an error that names `--r-max-lr`). NPT on a periodic cell, with SO3LR's inference defaults of 12.0 Å and 2.0 Å (the values `SO3LRCalculator` uses):
 
 ```bash
-MODEL=$(python -c "import os, so3krates_torch as s; print(os.path.join(os.path.dirname(s.__file__), 'pretrained/so3lr/so3lr.model'))")
-
 torchkrates-md-nvalchemi \
-    --model "$MODEL" \
+    --model v1 \
     --atoms my_cell.xyz \
     --ensemble npt --temperature 300 --pressure 1.0 \
     --r-max-lr 12.0 \
@@ -370,6 +368,8 @@ torchkrates-md-nvalchemi \
     --steps 10000 --log-freq 100 \
     --device cuda
 ```
+
+The multi-head `v2-*` models are not supported by this CLI yet (they need a per-graph `theory_level`); it stops with an error. Use `SO3LRCalculator(theory_level=...)` for them.
 
 The cutoff is your choice: a larger one adds neighbor pairs (cost) and more of the long-range tail. Other models trained with `r_max_lr` and a damping width store them and need neither flag.
 

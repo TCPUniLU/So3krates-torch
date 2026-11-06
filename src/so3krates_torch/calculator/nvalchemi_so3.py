@@ -53,7 +53,7 @@ def _validate_long_range_settings(model: nn.Module) -> None:
     Real-space electrostatics (without the model's own PME) and dispersion
     need a long-range cutoff (``model.r_max_lr``), and dispersion also needs
     ``dispersion_energy_cutoff_lr_damping`` whenever a cutoff is set.  Older
-    pickles, such as the packaged ``so3lr.model``, store neither, and the
+    models, such as the bundled ``v1`` checkpoint, store neither, and the
     failure would otherwise come late and cryptically from inside the
     forward pass.  The terms are read from the live attributes (not the
     model's ``use_lr``, which is fixed at construction), so switching

@@ -138,7 +138,11 @@ def _build_parser() -> argparse.ArgumentParser:
         description="NVT / NPT MD with So3krates-torch + NVAlchemi"
     )
     p.add_argument(
-        "--model", required=True, help="Path to trained model (.pt)"
+        "--model",
+        required=True,
+        help="Model to run: a bundled keyword (v1, v2-s, v2-m, v2-l), a "
+        "<stem>.pt state_dict with a sibling <stem>_settings.yaml, or a "
+        "pickled model (.model)",
     )
     p.add_argument(
         "--atoms", required=True, help="Input structure (ASE-readable)"
@@ -327,7 +331,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Long-range cutoff (Å). Supplies the cutoff for models that "
-        "store none (e.g. the packaged so3lr.model, where SO3LR's inference "
+        "store none (e.g. the bundled v1 model, where SO3LR's inference "
         "default is 12.0) and overrides the stored value otherwise. "
         "Default: use the value saved with the model.",
     )
@@ -397,6 +401,33 @@ def atoms_to_data(atoms, device: str, dtype: torch.dtype) -> AtomicData:
 # ---------------------------------------------------------------------------
 
 
+def _load_raw_model(path: str, device: str):
+    """Load the SO3LR model behind ``--model``.
+
+    ``path`` is one of the bundled keywords (``v1``, ``v2-s``, ``v2-m``,
+    ``v2-l``), a ``<stem>.pt`` state_dict with a sibling
+    ``<stem>_settings.yaml`` (same convention as ``torchkrates-eval``), or a
+    pickled whole model (``.model``, as written by training).
+    """
+    from so3krates_torch.calculator.so3 import (
+        _PRETRAINED_SO3LR_MODELS,
+        _build_so3lr_from_settings_and_state_dict,
+        load_pretrained_so3lr,
+        settings_path_for_checkpoint,
+    )
+
+    if path in _PRETRAINED_SO3LR_MODELS:
+        return load_pretrained_so3lr(path, device=device)
+    if str(path).endswith(".pt"):
+        return _build_so3lr_from_settings_and_state_dict(
+            settings_path_for_checkpoint(path), path, device=device
+        )
+    raw = torch.load(path, map_location=device, weights_only=False)
+    if isinstance(raw, dict) and "model" in raw:
+        raw = raw["model"]
+    return raw
+
+
 def load_model(
     path: str,
     device: str,
@@ -424,9 +455,19 @@ def load_model(
     ``model.make_neighbor_hooks()`` builds the neighbor list with the
     requested skin.
     """
-    raw = torch.load(path, map_location=device, weights_only=False)
-    if isinstance(raw, dict) and "model" in raw:
-        raw = raw["model"]
+    raw = _load_raw_model(path, device)
+    n_levels = getattr(
+        getattr(raw, "atomic_energy_output_block", None),
+        "num_theory_levels",
+        1,
+    )
+    if n_levels > 1:
+        raise ValueError(
+            f"model {path!r} has {n_levels} theory-level heads, which need "
+            "a per-graph theory_level that torchkrates-md-nvalchemi cannot "
+            "set yet (it would silently use a default head). Use "
+            "SO3LRCalculator(theory_level=...) for these models."
+        )
 
     # Convert to the requested device/dtype BEFORE wrapping or compiling
     # (as TorchkratesCalculator does), and freeze the weights: MD only

@@ -453,6 +453,58 @@ def test_compile_help_text_has_no_graph_break_claim():
     assert "fullgraph" in parser_help
 
 
+def _v1_checkpoint_path():
+    import importlib.resources as resources
+
+    return str(
+        resources.files("so3krates_torch.pretrained.so3lr") / "v1" / "so3lr.pt"
+    )
+
+
+@pytest.mark.parametrize("source", ["keyword", "pt_path"])
+def test_load_model_accepts_bundled_checkpoints(source):
+    """The packaged model is now a state_dict + settings (v1), not a pickled
+    model: ``--model v1`` and ``--model <path>/so3lr.pt`` must both load."""
+    from so3krates_torch.calculator.nvalchemi_so3 import NVAlchemiSO3LR
+    from so3krates_torch.cli.run_md_nvalchemi import load_model
+
+    path = "v1" if source == "keyword" else _v1_checkpoint_path()
+    model = load_model(
+        path,
+        "cpu",
+        torch.float64,
+        r_max_lr=12.0,
+        dispersion_energy_cutoff_lr_damping=2.0,
+    )
+    assert isinstance(model, NVAlchemiSO3LR)
+    assert model.model.r_max_lr == pytest.approx(12.0)
+    assert next(model.model.parameters()).dtype == torch.float64
+    assert not any(p.requires_grad for p in model.model.parameters())
+
+
+def test_load_model_rejects_multi_head_models(tmp_path):
+    """Multi-theory-level (v2) models need a per-graph ``theory_level`` that
+    the MD wrapper does not supply: refuse instead of using a silent default
+    head."""
+    from so3krates_torch.cli.run_md_nvalchemi import load_model
+    from so3krates_torch.tests.test_nvalchemi_so3 import _make_so3lr
+
+    path = tmp_path / "two_heads.model"
+    torch.save(
+        _make_so3lr(electrostatics_bool=True, num_theory_levels=2), path
+    )
+    with pytest.raises(ValueError, match="theory-level"):
+        load_model(str(path), "cpu", torch.float64)
+
+
+def test_load_model_bundled_checkpoint_still_needs_long_range_flags():
+    """v1 stores no long-range cutoff: the early error names the flag."""
+    from so3krates_torch.cli.run_md_nvalchemi import load_model
+
+    with pytest.raises(ValueError, match="--r-max-lr"):
+        load_model("v1", "cpu", torch.float64)
+
+
 # ---------------------------------------------------------------------------
 # Friendly error when nvalchemi is not importable (e.g. Python 3.10)
 # ---------------------------------------------------------------------------
