@@ -13,7 +13,6 @@ import torch
 
 torchpme = pytest.importorskip("torchpme")
 
-from so3krates_torch.tests.v2_checkpoints import requires_v2_s  # noqa: E402
 
 from so3krates_torch.blocks.physical_potentials import (  # noqa: E402
     BOHR,
@@ -238,7 +237,6 @@ def test_so3lr_model_threads_pme_mesh_rule():
     )
 
 
-@requires_v2_s
 def test_so3lr_calculator_forwards_pme_mesh_rule():
     from so3krates_torch.calculator.so3 import SO3LRCalculator
 

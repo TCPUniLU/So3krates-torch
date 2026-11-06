@@ -75,8 +75,8 @@ where = ["src"]
 so3krates_torch = [
     "pretrained/so3lr/v1/*.pt",
     "pretrained/so3lr/v1/*.yaml",
-    "pretrained/so3lr/v2/*.pt",
-    "pretrained/so3lr/v2/*.yaml",
+    "pretrained/so3lr/tauri/*.pt",
+    "pretrained/so3lr/tauri/*.yaml",
 ]
 "so3krates_torch.blocks" = ["cgmatrix.npz"]
 

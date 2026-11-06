@@ -22,15 +22,21 @@ import importlib.resources as resources
 
 
 # Maps a pretrained-model keyword to its (subdirectory, file stem)
-# under ``pretrained/so3lr/`` -- e.g. "v2-s" -> so3lr/v2/so3lr-s.pt +
-# so3lr/v2/so3lr-s_settings.yaml. "v1" is the original architecture
-# (single checkpoint, no size variants); "v2-{s,m,l}" are the three
-# sizes of the newer architecture.
+# under ``pretrained/so3lr/``. "v1" is the original architecture (single
+# checkpoint). "tauri-{s,m,l}-{2602,2606}" are the released SO3LR tauri
+# models (three sizes, two generations), converted from so3lr_dev. The
+# older names "v2-{s,m,l}" are kept as aliases of the 2602 generation.
 _PRETRAINED_SO3LR_MODELS = {
     "v1": ("v1", "so3lr"),
-    "v2-s": ("v2", "so3lr-s"),
-    "v2-m": ("v2", "so3lr-m"),
-    "v2-l": ("v2", "so3lr-l"),
+    **{
+        f"tauri-{size}-{gen}": ("tauri", f"so3lr-tauri-{size}-{gen}")
+        for gen in ("2602", "2606")
+        for size in ("s", "m", "l")
+    },
+    **{
+        f"v2-{size}": ("tauri", f"so3lr-tauri-{size}-2602")
+        for size in ("s", "m", "l")
+    },
 }
 
 

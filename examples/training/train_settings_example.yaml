@@ -134,15 +134,15 @@ TRAINING:
   clip_grad: 10.0
   patience: 50
   # --- Warm-starting from a converted pretrained v1/v2 checkpoint ---
-  # pretrained_weights: pretrained/so3lr/v2/so3lr-s.pt
+  # pretrained_weights: pretrained/so3lr/tauri/so3lr-tauri-s-2606.pt
   #   Path to a converted checkpoint's raw state_dict .pt file (produced
   #   by `torchkrates-jax2torch`; the bundled v1/v2 checkpoints under
-  #   `pretrained/so3lr/{v1,v2}/` follow the same convention). Loaded via
+  #   `pretrained/so3lr/{v1,tauri}/` follow the same convention). Loaded via
   #   `load_pretrained_weights()` with strict=False into a model built
   #   fresh from this file's own ARCHITECTURE section below -- so
   #   ARCHITECTURE must match the checkpoint's architecture (see its
-  #   sibling `*_settings.yaml`, e.g. `pretrained/so3lr/v2/
-  #   so3lr-s_settings.yaml`, for the exact values to copy in). Enabling
+  #   sibling `*_settings.yaml`, e.g. `pretrained/so3lr/tauri/
+  #   so3lr-tauri-s-2606_settings.yaml`, for the exact values to copy in). Enabling
   #   PME here on top of a checkpoint trained without it (`use_pme: true`
   #   + `pme_smearing`/`pme_mesh_spacing` above) is fine even so: PME
   #   introduces no new *learned* parameters, only its own non-learned

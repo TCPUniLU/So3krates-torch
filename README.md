@@ -40,13 +40,21 @@ pretrained/so3lr/
 ├── v1/
 │   ├── so3lr.pt              # state_dict
 │   └── so3lr_settings.yaml   # ARCHITECTURE block used to rebuild the model
-└── v2/
-    ├── so3lr-s.pt / so3lr-s_settings.yaml
-    ├── so3lr-m.pt / so3lr-m_settings.yaml
-    └── so3lr-l.pt / so3lr-l_settings.yaml
+└── tauri/                    # released SO3LR tauri models (converted from so3lr_dev)
+    ├── so3lr-tauri-{s,m,l}-2602.pt / ..._settings.yaml
+    └── so3lr-tauri-{s,m,l}-2606.pt / ..._settings.yaml
 ```
 
-Each `<stem>.pt` is a plain `torch.save`d `state_dict` (**not** a pickled whole-model object) with a sibling `<stem>_settings.yaml` holding the `ARCHITECTURE` block needed to reconstruct the model before its weights are loaded. The older pickled `pretrained/so3lr/so3lr.model` has been removed entirely — use one of the four keywords below (`"v1"`, `"v2-s"`, `"v2-m"`, `"v2-l"`) instead.
+Each `<stem>.pt` is a plain `torch.save`d `state_dict` (**not** a pickled whole-model object) with a sibling `<stem>_settings.yaml` holding the `ARCHITECTURE` block needed to reconstruct the model before its weights are loaded. The older pickled `pretrained/so3lr/so3lr.model` has been removed entirely — use one of the keywords below instead.
+
+| Keyword | Checkpoint | Notes |
+|---------|------------|-------|
+| `v1` | `v1/so3lr.pt` | original SO3LR, single theory level |
+| `tauri-s-2602`, `tauri-m-2602`, `tauri-l-2602` | `tauri/so3lr-tauri-{s,m,l}-2602.pt` | tauri generation 2602, 16 theory-level heads |
+| `tauri-s-2606`, `tauri-m-2606`, `tauri-l-2606` | `tauri/so3lr-tauri-{s,m,l}-2606.pt` | tauri generation 2606 (newer; trained with `dispersion_energy_scale` 1.0), 16 theory-level heads |
+| `v2-s`, `v2-m`, `v2-l` | same files as `tauri-{s,m,l}-2602` | older names, kept as aliases of the 2602 generation |
+
+The tauri checkpoints were converted with `torchkrates-jax2torch --so3lr_dev_checkpoint {s,m,l} --so3lr_dev_generation {2602,2606}`; the converter's JAX↔Torch parity check passes for all six (energy within 6e-6 eV, force differences below 1e-5 eV/Å on its bundled example structure).
 
 ### `SO3LRCalculator` — ASE calculator
 
@@ -56,8 +64,8 @@ from so3krates_torch.calculator.so3 import SO3LRCalculator
 
 atoms = molecule("H2O")
 atoms.calc = SO3LRCalculator(
-    model="v2-s",       # "v1", "v2-s", "v2-m", or "v2-l"
-    theory_level=5,     # required for v2 (16 heads); so3lr_dev uses 5
+    model="tauri-s-2606",  # any keyword from the table above
+    theory_level=5,        # required for the tauri models (16 heads); so3lr_dev uses 5
     device="cpu",
     r_max_lr=12.0,
     dispersion_energy_cutoff_lr_damping=2.0,
@@ -254,8 +262,8 @@ torchkrates-eval --model_path my_model.model --data_path test_set.xyz
 ```
 
 `--model_path` also accepts, in addition to the `.model`-file/directory form above:
-- one of the 4 bundled pretrained keywords directly: `v1`, `v2-s`, `v2-m`, `v2-l`.
-- a path ending in `.pt` with a sibling `<stem>_settings.yaml` (the same naming convention used by the bundled checkpoints under `pretrained/so3lr/{v1,v2}/`) — this is how a checkpoint produced by `torchkrates-jax2torch --save_state_dict_path my_checkpoint.pt --save_settings_path my_checkpoint_settings.yaml` gets loaded here.
+- one of the bundled pretrained keywords directly (`v1`, `tauri-{s,m,l}-{2602,2606}`, or the aliases `v2-{s,m,l}`).
+- a path ending in `.pt` with a sibling `<stem>_settings.yaml` (the same naming convention used by the bundled checkpoints under `pretrained/so3lr/{v1,tauri}/`) — this is how a checkpoint produced by `torchkrates-jax2torch --save_state_dict_path my_checkpoint.pt --save_settings_path my_checkpoint_settings.yaml` gets loaded here.
 
 ```bash
 torchkrates-eval --model_path v1 --data_path my_data.xyz \
@@ -275,7 +283,7 @@ torchkrates-eval --model_path my_checkpoint.pt \
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model_path` | *required* | Path to a single `.model` file, a directory of `.model` files (use with `--ensemble_size N` for ensemble inference), one of the 4 pretrained keywords (`v1`/`v2-s`/`v2-m`/`v2-l`), or a `.pt` state_dict checkpoint with a sibling `<stem>_settings.yaml` |
+| `--model_path` | *required* | Path to a single `.model` file, a directory of `.model` files (use with `--ensemble_size N` for ensemble inference), a bundled pretrained keyword (`v1`, `tauri-*`, `v2-*`), or a `.pt` state_dict checkpoint with a sibling `<stem>_settings.yaml` |
 | `--data_path` | *required* | ASE-readable dataset (xyz, extxyz, HDF5) |
 | `--output_file` | `results.h5` | Output HDF5 file |
 | `--ensemble_size` | `1` | Number of models to load from a directory |
@@ -369,7 +377,7 @@ torchkrates-md-nvalchemi \
     --device cuda
 ```
 
-The multi-head `v2-*` models are not supported by this CLI yet (they need a per-graph `theory_level`); it stops with an error. Use `SO3LRCalculator(theory_level=...)` for them.
+The multi-head tauri / `v2-*` models are not supported by this CLI yet (they need a per-graph `theory_level`); it stops with an error. Use `SO3LRCalculator(theory_level=...)` for them.
 
 The cutoff is your choice: a larger one adds neighbor pairs (cost) and more of the long-range tail. Other models trained with `r_max_lr` and a damping width store them and need neither flag.
 
@@ -430,7 +438,7 @@ Note there is no `--multispecies` flag here (unlike `torchkrates-eval`); use `--
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--models` | *required* | Path to a model file or a directory of model files, one of the 4 pretrained keywords (`v1`/`v2-s`/`v2-m`/`v2-l`), or a `.pt` state_dict checkpoint with a sibling `<stem>_settings.yaml` |
+| `--models` | *required* | Path to a model file or a directory of model files, a bundled pretrained keyword (`v1`, `tauri-*`, `v2-*`), or a `.pt` state_dict checkpoint with a sibling `<stem>_settings.yaml` |
 | `--data` | *required* | Dataset path (must contain reference values) |
 | `--output_args` | `energy forces` | Properties to evaluate. Can include `stress`, `dipole`, `hirshfeld_ratios`, etc. |
 | `--batch_size` | `16` | Structures per batch |
@@ -852,7 +860,7 @@ The loss function is automatically determined based on which weights are non-zer
 | `ft_update_avg_num_neighbors` | `bool` | `False` | Recompute the average number of neighbors from the new training data instead of keeping the value from the pre-trained model. |
 | `force_use_average_shifts` | `bool` | `False` | Use E0 shifts computed from the new training data instead of the pre-trained model's shifts. |
 
-`pretrained_weights` also accepts a converted checkpoint's `.pt` state_dict directly, e.g. `pretrained/so3lr/v2/so3lr-s.pt` (one of the bundled checkpoints described in [Pretrained SO3LR Models](#pretrained-so3lr-models-ase-calculator) above) or your own `torchkrates-jax2torch`-converted checkpoint following the same `<stem>.pt` + `<stem>_settings.yaml` naming convention. `ARCHITECTURE` in this config must match the checkpoint's architecture (copy from its sibling `*_settings.yaml`) — see the annotated example and caveats in [`examples/training/train_settings_example.yaml`](examples/training/train_settings_example.yaml) (near `TRAINING.patience`). This is plain warm-started training; for LoRA/DoRA/VeRA fine-tuning of a bundled checkpoint instead, see [`examples/finetuning/finetune_pretrained_so3lr.py`](examples/finetuning/finetune_pretrained_so3lr.py).
+`pretrained_weights` also accepts a converted checkpoint's `.pt` state_dict directly, e.g. `pretrained/so3lr/tauri/so3lr-tauri-s-2606.pt` (one of the bundled checkpoints described in [Pretrained SO3LR Models](#pretrained-so3lr-models-ase-calculator) above) or your own `torchkrates-jax2torch`-converted checkpoint following the same `<stem>.pt` + `<stem>_settings.yaml` naming convention. `ARCHITECTURE` in this config must match the checkpoint's architecture (copy from its sibling `*_settings.yaml`) — see the annotated example and caveats in [`examples/training/train_settings_example.yaml`](examples/training/train_settings_example.yaml) (near `TRAINING.patience`). This is plain warm-started training; for LoRA/DoRA/VeRA fine-tuning of a bundled checkpoint instead, see [`examples/finetuning/finetune_pretrained_so3lr.py`](examples/finetuning/finetune_pretrained_so3lr.py).
 
 #### Fine-Tuning Strategy
 

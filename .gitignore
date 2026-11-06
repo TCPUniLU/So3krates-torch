@@ -47,6 +47,3 @@ CLAUDE.md
 /.claude
 .worktrees/
 examples/pme_tuning/tune_pme_batch.py
-src/so3krates_torch/pretrained/so3lr/v2
-
-/src/so3krates_torch/pretrained/so3lr/v2/
