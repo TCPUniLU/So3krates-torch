@@ -290,3 +290,60 @@ def test_get_symmetric_displacement_backward_has_no_index_put():
     pos, _, _ = du.get_symmetric_displacement(positions, cell, 2, batch)
     ops = _backward_ops(lambda: pos.sum().backward())
     assert not (ops & INDEX_PUT_OPS)
+
+
+# ---------------------------------------------------------------------------
+# compute_shifts: the cell gather sends every edge into one 3x3 row (the worst
+# case for index_put_ accumulation).  Single graph, few graphs (dense matmul),
+# and many graphs (gather_rows fallback) all have to agree with the einsum.
+# ---------------------------------------------------------------------------
+
+SHIFT_GRAPHS = [1, 3, 16, 17, 20]
+
+
+def _shift_inputs(n_graphs, n_edges=600, n_atoms=50, seed=50):
+    g = _rng(seed)
+    cell = torch.randn(n_graphs, 3, 3, generator=g, dtype=torch.float64)
+    batch = torch.randint(0, n_graphs, (n_atoms,), generator=g)  # unsorted
+    sender = torch.randint(0, n_atoms, (n_edges,), generator=g)
+    unit_shifts = torch.randint(-2, 3, (n_edges, 3), generator=g).to(
+        torch.float64
+    )
+    return unit_shifts, cell.requires_grad_(), batch, sender
+
+
+def _reference_shifts(unit_shifts, cell, batch, sender):
+    return torch.einsum("be,bec->bc", unit_shifts, cell[batch[sender]])
+
+
+@pytest.mark.parametrize("n_graphs", SHIFT_GRAPHS)
+def test_compute_shifts_equivalent(n_graphs):
+    unit_shifts, cell, batch, sender = _shift_inputs(n_graphs)
+    w = torch.randn(600, 3, generator=_rng(51), dtype=torch.float64)
+
+    new = du.compute_shifts(unit_shifts, cell, batch, sender)
+    ref = _reference_shifts(unit_shifts, cell, batch, sender)
+    torch.testing.assert_close(new, ref, atol=1e-12, rtol=0)
+
+    (g_new,) = torch.autograd.grad((new * w).sum(), cell)
+    (g_ref,) = torch.autograd.grad((ref * w).sum(), cell)
+    torch.testing.assert_close(g_new, g_ref, atol=1e-12, rtol=0)
+
+
+@pytest.mark.parametrize("n_graphs", SHIFT_GRAPHS)
+def test_compute_shifts_zero_edges(n_graphs):
+    _, cell, batch, _ = _shift_inputs(n_graphs)
+    unit_shifts = torch.empty(0, 3, dtype=torch.float64)
+    sender = torch.empty(0, dtype=torch.long)
+    out = du.compute_shifts(unit_shifts, cell, batch, sender)
+    assert out.shape == (0, 3)
+    (grad,) = torch.autograd.grad(out.sum(), cell)
+    assert torch.equal(grad, torch.zeros_like(cell))
+
+
+@pytest.mark.parametrize("n_graphs", SHIFT_GRAPHS)
+def test_compute_shifts_backward_has_no_index_put(n_graphs):
+    unit_shifts, cell, batch, sender = _shift_inputs(n_graphs)
+    shifts = du.compute_shifts(unit_shifts, cell, batch, sender)
+    ops = _backward_ops(lambda: shifts.sum().backward())
+    assert not (ops & INDEX_PUT_OPS)

@@ -587,18 +587,37 @@ def get_symmetric_displacement(
     return positions, cell, displacement
 
 
+# Above this many graphs the dense path (E x n_graphs x 3 floats) is not used.
+_DENSE_SHIFT_MAX_GRAPHS = 16
+
+
 def compute_shifts(
     unit_shifts: torch.Tensor,
     cell: torch.Tensor,
     batch: torch.Tensor,
     sender: torch.Tensor,
 ) -> torch.Tensor:
-    shifts = torch.einsum(
-        "be,bec->bc",
-        unit_shifts,
-        cell[batch[sender]],
+    """Cartesian edge shifts ``unit_shifts @ cell[graph of the edge]``.
+
+    ``cell`` is ``[n_graphs, 3, 3]``.  Gathering the cell per edge
+    (``cell[batch[sender]]``) makes the backward pass accumulate every edge
+    into a handful of 3x3 rows with ``index_put_``, which is very slow on
+    CUDA.  For a few graphs the shifts are therefore computed for all graphs
+    with one dense matmul and each edge picks its own graph afterwards, so
+    the backward pass is a matmul too.
+    """
+    n_graphs = cell.shape[0]
+    if n_graphs == 1:
+        return unit_shifts @ cell[0]
+    if n_graphs <= _DENSE_SHIFT_MAX_GRAPHS:
+        all_graphs = (
+            unit_shifts @ cell.permute(1, 0, 2).reshape(3, n_graphs * 3)
+        ).view(-1, n_graphs, 3)
+        own = batch[sender].view(-1, 1, 1).expand(-1, 1, 3)
+        return torch.gather(all_graphs, 1, own).squeeze(1)
+    return torch.einsum(
+        "be,bec->bc", unit_shifts, gather_rows(cell, batch[sender])
     )
-    return shifts
 
 
 def get_edge_vectors_and_lengths(
