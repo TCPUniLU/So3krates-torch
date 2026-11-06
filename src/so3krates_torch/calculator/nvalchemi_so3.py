@@ -44,6 +44,8 @@ from nvalchemi.data.batch import Batch
 from nvalchemi.models.base import BaseModelMixin, ModelConfig, NeighborConfig
 from nvalchemi.models.base import NeighborListFormat
 
+from so3krates_torch.data.utils import compute_shifts
+
 
 def _validate_long_range_settings(model: nn.Module) -> None:
     """Fail early, with the fix, when the model's long-range terms cannot run.
@@ -310,11 +312,11 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
                 .contiguous()
             )
 
-        batch_per_edge = data.batch_idx[ni]
-        # shifts[e] = integer_shift[e] @ cell[graph_of_ni[e]]
-        shifts = torch.einsum(
-            "eb,ebc->ec", nl_shifts, cell[batch_per_edge]
-        )  # [E, 3]
+        # shifts[e] = integer_shift[e] @ cell[graph_of_ni[e]]  [E, 3]
+        # (compute_shifts avoids a per-edge ``cell[idx]`` gather: its
+        # backward is an index_put_ of every edge into one cell row, very
+        # slow on CUDA when the strained cell requires grad)
+        shifts = compute_shifts(nl_shifts, cell, data.batch_idx, ni)
 
         # ── SR / LR split by distance ─────────────────────────────────
         # NeighborListHook builds out to cutoff + skin; drop the skin

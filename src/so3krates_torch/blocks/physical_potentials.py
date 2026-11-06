@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Any
 import math
+from so3krates_torch.tools.gather import gather_rows
 from so3krates_torch.tools.scatter import scatter_sum
 
 
@@ -273,8 +274,8 @@ def mixing_rules(
 
     atomic_number_i = atomic_numbers[idx_i] - 1  # Convert to 0-based indexing
     atomic_number_j = atomic_numbers[idx_j] - 1
-    hirshfeld_ratio_i = hirshfeld_ratios[idx_i]
-    hirshfeld_ratio_j = hirshfeld_ratios[idx_j]
+    hirshfeld_ratio_i = gather_rows(hirshfeld_ratios, idx_i)
+    hirshfeld_ratio_j = gather_rows(hirshfeld_ratios, idx_j)
 
     alpha_i = alphas[atomic_number_i] * hirshfeld_ratio_i
     C6_i = c6_coef[atomic_number_i] * torch.square(hirshfeld_ratio_i)
@@ -365,8 +366,8 @@ def _coulomb_erf_energy(
         q = q.squeeze(-1)
     if rij.dim() == 2 and rij.size(-1) == 1:
         rij = rij.squeeze(-1)
-    qi = q[receivers]
-    qj = q[senders]
+    qi = gather_rows(q, receivers)
+    qj = gather_rows(q, senders)
 
     r = rij.clamp_min(1e-12)
     pairwise = torch.erf(r / sigma) / r
@@ -457,8 +458,8 @@ def _coulomb_erf_shifted_force_smooth_energy(
         float(cutoff), float(sigma)
     )
     shifted_potential = pairwise - shift - force_shift * (rij - cutoff)
-    qi = q[receivers]
-    qj = q[senders]
+    qi = gather_rows(q, receivers)
+    qj = gather_rows(q, senders)
 
     inside = rij < cutoff
     energy = (

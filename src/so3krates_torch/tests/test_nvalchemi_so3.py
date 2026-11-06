@@ -1203,3 +1203,32 @@ def test_wrapper_without_long_range_terms_needs_no_lr_cutoff():
     model.r_max_lr = None
     wrapper = NVAlchemiSO3LR(model)
     assert not wrapper.has_lr
+
+
+@pytest.mark.parametrize("n_graphs", [1, 2])
+def test_adapt_input_shift_backward_has_no_cell_index_put(n_graphs):
+    """The strained cell (native-PME NPT) reaches ``adapt_input`` with
+    ``requires_grad``; gathering it per edge with ``cell[idx]`` would
+    accumulate every edge into the cell rows via ``index_put_`` (very slow on
+    CUDA).  Boolean-mask selections (unique indices) are fine, so only an
+    ``index_put_`` onto a cell-shaped ``[G, 3, 3]`` tensor counts."""
+    atoms_list = [_small_nacl().repeat(2) for _ in range(n_graphs)]
+    wrapper = NVAlchemiSO3LR(_make_so3lr(electrostatics_bool=True))
+    batch = _make_batch_with_nl_multi(wrapper, atoms_list)
+    batch.cell.requires_grad_(True)
+    shifts = wrapper.adapt_input(batch)["shifts"]
+    assert shifts.requires_grad
+
+    with torch.profiler.profile(
+        activities=[torch.profiler.ProfilerActivity.CPU], record_shapes=True
+    ) as prof:
+        shifts.sum().backward()
+    cell_shape = [n_graphs, 3, 3]
+    onto_cell = [
+        e
+        for e in prof.key_averages(group_by_input_shape=True)
+        if e.key in ("aten::_index_put_impl_", "aten::index_put_")
+        and e.input_shapes
+        and e.input_shapes[0] == cell_shape
+    ]
+    assert not onto_cell, onto_cell
