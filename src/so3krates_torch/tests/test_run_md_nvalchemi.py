@@ -576,6 +576,33 @@ def test_load_model_bundled_checkpoint_still_needs_long_range_flags():
     with pytest.raises(ValueError, match="--r-max-lr"):
         load_model("v1", "cpu", torch.float64)
 
+class _StopAfterLoad(Exception):
+    pass
+
+
+@pytest.mark.parametrize(
+    "extra, expected",
+    [(("--compile",), None), (("--compile", "--no-compile-fullgraph"), False)],
+)
+def test_no_compile_fullgraph_flag_reaches_load_model(
+    monkeypatch, tmp_path, extra, expected
+):
+    """``--no-compile-fullgraph`` passes ``fullgraph=False`` to load_model;
+    without it ``fullgraph`` stays ``None`` (load_model picks True on CUDA)."""
+    from so3krates_torch.cli import run_md_nvalchemi
+
+    seen = {}
+
+    def _spy(*args, **kwargs):
+        seen.update(kwargs)
+        raise _StopAfterLoad
+
+    monkeypatch.setattr(run_md_nvalchemi, "load_model", _spy)
+    with pytest.raises(_StopAfterLoad):
+        _run_cli(monkeypatch, tmp_path, _nacl_crystal(), *extra)
+    assert seen["compile_model"] is True
+    assert seen["fullgraph"] is expected
+
 
 # ---------------------------------------------------------------------------
 # Friendly error when nvalchemi is not importable (e.g. Python 3.10)

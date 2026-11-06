@@ -312,6 +312,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "(--electrostatics nvalchemi) runs outside the compiled module.",
     )
     p.add_argument(
+        "--no-compile-fullgraph",
+        action="store_true",
+        help="With --compile, allow graph breaks (fullgraph=False) instead "
+        "of the CUDA default fullgraph=True. Slower to optimise but "
+        "tolerates constructs Dynamo cannot trace.",
+    )
+    p.add_argument(
         "--electrostatic-energy-scale",
         type=float,
         default=None,
@@ -1003,6 +1010,7 @@ def main() -> None:
         skin=args.skin,
         r_max_lr=args.r_max_lr,
         compile_model=args.compile,
+        fullgraph=False if args.no_compile_fullgraph else None,
         electrostatic_energy_scale=args.electrostatic_energy_scale,
         dispersion_energy_scale=args.dispersion_energy_scale,
         dispersion_energy_cutoff_lr_damping=(
