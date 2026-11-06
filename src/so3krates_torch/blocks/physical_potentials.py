@@ -329,8 +329,8 @@ def mixing_rules(
     alpha_j = alphas[atomic_number_j] * hirshfeld_ratio_j
 
     if c6_ratios is not None:
-        C6_i = c6_coef[atomic_number_i] * c6_ratios[idx_i]
-        C6_j = c6_coef[atomic_number_j] * c6_ratios[idx_j]
+        C6_i = c6_coef[atomic_number_i] * gather_rows(c6_ratios, idx_i)
+        C6_j = c6_coef[atomic_number_j] * gather_rows(c6_ratios, idx_j)
     else:
         C6_i = c6_coef[atomic_number_i] * torch.square(hirshfeld_ratio_i)
         C6_j = c6_coef[atomic_number_j] * torch.square(hirshfeld_ratio_j)
@@ -654,8 +654,8 @@ def _coulomb_erf_shifted_force_smooth_pme_energy(
         float(cutoff), float(sigma), float(smearing)
     )
     shifted_potential = pairwise - shift - force_shift * (rij - cutoff)
-    qi = q[receivers]
-    qj = q[senders]
+    qi = gather_rows(q, receivers)
+    qj = gather_rows(q, senders)
 
     inside = rij < cutoff
     energy = (
@@ -1401,8 +1401,8 @@ class DispersionInteraction(nn.Module):
                 c6_ratios=c6_ratios,
                 legacy_dispersion_bool=legacy_dispersion_bool,
             )
-            C6_i = C6_atomic[receivers_lr]
-            C6_j = C6_atomic[senders_lr]
+            C6_i = gather_rows(C6_atomic, receivers_lr)
+            C6_j = gather_rows(C6_atomic, senders_lr)
             C6_geom_ij = torch.sqrt(C6_i * C6_j)
 
             smearing_bohr = (
