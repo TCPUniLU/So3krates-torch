@@ -20,6 +20,7 @@ import numpy as np
 import torch
 
 from so3krates_torch.tools.default_keys import DefaultKeys
+from so3krates_torch.tools.gather import gather_rows
 from so3krates_torch.tools.utils import AtomicNumberTable
 
 Positions = np.ndarray  # [..., 3]
@@ -578,7 +579,7 @@ def get_symmetric_displacement(
         displacement + displacement.transpose(-1, -2)
     )  # From https://github.com/mir-group/nequip
     positions = positions + torch.einsum(
-        "be,bec->bc", positions, symmetric_displacement[batch]
+        "be,bec->bc", positions, gather_rows(symmetric_displacement, batch)
     )
     cell = cell.view(-1, 3, 3)
     cell = cell + torch.matmul(cell, symmetric_displacement)
@@ -609,7 +610,11 @@ def get_edge_vectors_and_lengths(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     sender = edge_index[0]
     receiver = edge_index[1]
-    vectors = positions[receiver] - positions[sender] + shifts  # [n_edges, 3]
+    vectors = (
+        gather_rows(positions, receiver)
+        - gather_rows(positions, sender)
+        + shifts
+    )  # [n_edges, 3]
     lengths = torch.linalg.norm(vectors, dim=-1, keepdim=True)  # [n_edges, 1]
     if normalize:
         vectors_normed = vectors / (lengths + eps)

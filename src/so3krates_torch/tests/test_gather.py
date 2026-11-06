@@ -106,3 +106,187 @@ def test_gather_rows_backward_has_no_index_put():
     ref_loss = x[idx].sum()
     ref_ops = _backward_ops(lambda: ref_loss.backward())
     assert ref_ops & INDEX_PUT_OPS
+
+
+# ---------------------------------------------------------------------------
+# Gather sites.  The equivalence tests compare each function with itself under
+# plain advanced indexing (``gather_rows`` swapped for ``x[idx]``), so the old
+# formulas are not duplicated here.  ``monkeypatch(..., raising=False)`` keeps
+# them meaningful (and passing) before a module imports ``gather_rows``.
+# ---------------------------------------------------------------------------
+
+import so3krates_torch.blocks.physical_potentials as pp
+import so3krates_torch.data.utils as du
+
+
+def _plain(x, idx):
+    return x[idx]
+
+
+def _new_and_reference(module, monkeypatch, fn):
+    """``fn()`` as implemented now, and with plain-indexing gathers."""
+    new = fn()
+    with monkeypatch.context() as m:
+        m.setattr(module, "gather_rows", _plain, raising=False)
+        ref = fn()
+    return new, ref
+
+
+def _assert_same(new, ref, atol=1e-12):
+    assert len(new) == len(ref)
+    for a, b in zip(new, ref):
+        torch.testing.assert_close(a, b, atol=atol, rtol=0)
+
+
+def _rng(seed):
+    return torch.Generator().manual_seed(seed)
+
+
+def _edge_inputs(n_nodes=30, n_edges=400, seed=10):
+    g = _rng(seed)
+    positions = torch.randn(n_nodes, 3, generator=g, dtype=torch.float64)
+    edge_index = torch.randint(0, n_nodes, (2, n_edges), generator=g)
+    shifts = torch.randn(n_edges, 3, generator=g, dtype=torch.float64)
+    return positions.requires_grad_(), edge_index, shifts
+
+
+@pytest.mark.parametrize("n_edges", [400, 0])
+def test_get_edge_vectors_and_lengths_equivalent(monkeypatch, n_edges):
+    positions, edge_index, shifts = _edge_inputs(n_edges=n_edges)
+    w = torch.randn(n_edges, 4, generator=_rng(11), dtype=torch.float64)
+
+    def run():
+        vec, length = du.get_edge_vectors_and_lengths(
+            positions, edge_index, shifts
+        )
+        loss = (torch.cat([vec, length], dim=-1) * w).sum()
+        (grad,) = torch.autograd.grad(loss, positions)
+        return vec.detach(), length.detach(), grad
+
+    _assert_same(*_new_and_reference(du, monkeypatch, run))
+
+
+def test_get_edge_vectors_and_lengths_backward_has_no_index_put():
+    positions, edge_index, shifts = _edge_inputs()
+    vec, length = du.get_edge_vectors_and_lengths(
+        positions, edge_index, shifts
+    )
+    ops = _backward_ops(lambda: (vec.sum() + length.sum()).backward())
+    assert not (ops & INDEX_PUT_OPS)
+
+
+def _mixing_inputs(n_nodes=30, n_edges=400, seed=20):
+    g = _rng(seed)
+    z = torch.randint(1, 11, (n_nodes,), generator=g)
+    idx_i = torch.randint(0, n_nodes, (n_edges,), generator=g)
+    idx_j = torch.randint(0, n_nodes, (n_edges,), generator=g)
+    h = 0.5 + torch.rand(n_nodes, generator=g, dtype=torch.float64)
+    return z, idx_i, idx_j, h.requires_grad_()
+
+
+@pytest.mark.parametrize("n_edges", [400, 0])
+def test_mixing_rules_equivalent(monkeypatch, n_edges):
+    z, idx_i, idx_j, h = _mixing_inputs(n_edges=n_edges)
+    w = torch.randn(n_edges, 2, generator=_rng(21), dtype=torch.float64)
+
+    def run():
+        alpha_ij, c6_ij = pp.mixing_rules(z, idx_i, idx_j, h)
+        loss = (torch.stack([alpha_ij, c6_ij], dim=-1) * w).sum()
+        (grad,) = torch.autograd.grad(loss, h)
+        return alpha_ij.detach(), c6_ij.detach(), grad
+
+    _assert_same(*_new_and_reference(pp, monkeypatch, run))
+
+
+def test_mixing_rules_backward_has_no_index_put():
+    z, idx_i, idx_j, h = _mixing_inputs()
+    alpha_ij, c6_ij = pp.mixing_rules(z, idx_i, idx_j, h)
+    ops = _backward_ops(lambda: (alpha_ij.sum() + c6_ij.sum()).backward())
+    assert not (ops & INDEX_PUT_OPS)
+
+
+def _coulomb_inputs(n_nodes=30, n_edges=400, seed=30, trailing_dim=False):
+    g = _rng(seed)
+    q = torch.randn(n_nodes, generator=g, dtype=torch.float64)
+    if trailing_dim:
+        q = q.unsqueeze(-1)
+    senders = torch.randint(0, n_nodes, (n_edges,), generator=g)
+    receivers = torch.randint(0, n_nodes, (n_edges,), generator=g)
+    rij = 1.0 + 5.5 * torch.rand(n_edges, generator=g, dtype=torch.float64)
+    return q.requires_grad_(), rij, senders, receivers
+
+
+@pytest.mark.parametrize("trailing_dim", [False, True])
+@pytest.mark.parametrize("n_edges", [400, 0])
+def test_coulomb_erf_energy_equivalent(monkeypatch, trailing_dim, n_edges):
+    q, rij, s, r = _coulomb_inputs(n_edges=n_edges, trailing_dim=trailing_dim)
+    w = torch.randn(n_edges, generator=_rng(31), dtype=torch.float64)
+
+    def run():
+        e = pp._coulomb_erf_energy(q, rij, s, r, 14.4, 1.5, 0.5)
+        (grad,) = torch.autograd.grad((e * w).sum(), q)
+        return e.detach(), grad
+
+    _assert_same(*_new_and_reference(pp, monkeypatch, run))
+
+
+def test_coulomb_erf_energy_backward_has_no_index_put():
+    q, rij, s, r = _coulomb_inputs()
+    e = pp._coulomb_erf_energy(q, rij, s, r, 14.4, 1.5, 0.5)
+    ops = _backward_ops(lambda: e.sum().backward())
+    assert not (ops & INDEX_PUT_OPS)
+
+
+@pytest.mark.parametrize("n_edges", [400, 0])
+def test_coulomb_erf_shifted_force_smooth_energy_equivalent(
+    monkeypatch, n_edges
+):
+    q, rij, s, r = _coulomb_inputs(n_edges=n_edges)
+    w = torch.randn(n_edges, generator=_rng(32), dtype=torch.float64)
+
+    def run():
+        e = pp._coulomb_erf_shifted_force_smooth_energy(
+            q, rij, s, r, 14.4, 1.5, 6.0, 4.0, 0.5
+        )
+        (grad,) = torch.autograd.grad((e * w).sum(), q)
+        return e.detach(), grad
+
+    _assert_same(*_new_and_reference(pp, monkeypatch, run))
+
+
+def test_coulomb_erf_shifted_force_smooth_energy_backward_has_no_index_put():
+    q, rij, s, r = _coulomb_inputs()
+    e = pp._coulomb_erf_shifted_force_smooth_energy(
+        q, rij, s, r, 14.4, 1.5, 6.0, 4.0, 0.5
+    )
+    ops = _backward_ops(lambda: e.sum().backward())
+    assert not (ops & INDEX_PUT_OPS)
+
+
+def _displacement_inputs(seed=40):
+    g = _rng(seed)
+    positions = torch.randn(30, 3, generator=g, dtype=torch.float64)
+    cell = torch.randn(2, 3, 3, generator=g, dtype=torch.float64)
+    batch = torch.randint(0, 2, (30,), generator=g)
+    return positions, cell, batch
+
+
+def test_get_symmetric_displacement_equivalent(monkeypatch):
+    positions, cell, batch = _displacement_inputs()
+    w = torch.randn(30, 3, generator=_rng(41), dtype=torch.float64)
+
+    def run():
+        pos, new_cell, disp = du.get_symmetric_displacement(
+            positions, cell, 2, batch
+        )
+        (grad,) = torch.autograd.grad((pos * w).sum(), disp)
+        return pos.detach(), new_cell.detach(), grad
+
+    _assert_same(*_new_and_reference(du, monkeypatch, run))
+
+
+def test_get_symmetric_displacement_backward_has_no_index_put():
+    positions, cell, batch = _displacement_inputs()
+    pos, _, _ = du.get_symmetric_displacement(positions, cell, 2, batch)
+    ops = _backward_ops(lambda: pos.sum().backward())
+    assert not (ops & INDEX_PUT_OPS)
