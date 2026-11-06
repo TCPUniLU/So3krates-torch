@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 from ase.build import molecule
 from so3krates_torch.calculator.so3 import SO3LRCalculator
+from so3krates_torch.tests.v2_checkpoints import requires_v2_s
 
 
 def test_so3lr_calculator_prediction():
@@ -32,6 +33,7 @@ def test_so3lr_calculator_prediction():
     assert np.isclose(results["energy"], ref_energy, rtol=1e-4)
 
 
+@requires_v2_s
 def test_so3lr_calculator_requires_theory_level_for_multihead_model():
     """v2 checkpoints have 16 theory-level heads; silently picking one
     would give energies that differ from so3lr_dev (which uses 5)."""
@@ -52,6 +54,7 @@ def test_so3lr_calculator_single_head_model_needs_no_theory_level():
     assert calc.theory_level == 0
 
 
+@requires_v2_s
 def test_so3lr_calculator_rejects_out_of_range_theory_level():
     import pytest
 
@@ -64,6 +67,7 @@ def test_so3lr_calculator_rejects_out_of_range_theory_level():
     assert SO3LRCalculator(model="v1", theory_level=0).theory_level == 0
 
 
+@requires_v2_s
 def test_so3lr_calculator_warns_for_shared_untrained_theory_levels():
     """Only levels 0, 4 and 5 of the bundled v2 models are trained; the
     other 13 heads share identical parameters and return one value."""
