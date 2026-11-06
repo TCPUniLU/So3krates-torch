@@ -347,3 +347,15 @@ def test_compute_shifts_backward_has_no_index_put(n_graphs):
     shifts = du.compute_shifts(unit_shifts, cell, batch, sender)
     ops = _backward_ops(lambda: shifts.sum().backward())
     assert not (ops & INDEX_PUT_OPS)
+
+
+@pytest.mark.parametrize("n_graphs", [3, 20])
+def test_compute_shifts_int32_graph_ids(n_graphs):
+    """nvalchemi batches carry int32 ``batch_idx``."""
+    unit_shifts, cell, batch, sender = _shift_inputs(n_graphs)
+    torch.testing.assert_close(
+        du.compute_shifts(unit_shifts, cell, batch.int(), sender),
+        _reference_shifts(unit_shifts, cell, batch, sender),
+        atol=1e-12,
+        rtol=0,
+    )

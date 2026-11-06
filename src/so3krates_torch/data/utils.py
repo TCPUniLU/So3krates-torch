@@ -613,7 +613,7 @@ def compute_shifts(
         all_graphs = (
             unit_shifts @ cell.permute(1, 0, 2).reshape(3, n_graphs * 3)
         ).view(-1, n_graphs, 3)
-        own = batch[sender].view(-1, 1, 1).expand(-1, 1, 3)
+        own = batch[sender].long().view(-1, 1, 1).expand(-1, 1, 3)
         return torch.gather(all_graphs, 1, own).squeeze(1)
     return torch.einsum(
         "be,bec->bc", unit_shifts, gather_rows(cell, batch[sender])
