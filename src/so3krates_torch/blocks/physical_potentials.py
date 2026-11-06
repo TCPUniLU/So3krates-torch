@@ -7,11 +7,9 @@ from so3krates_torch.tools.gather import gather_rows
 import numpy as np
 from so3krates_torch.tools.scatter import scatter_sum
 from so3krates_torch.blocks.dispersion_ref_data import NHL_AA, NHL_BB
-from so3krates_torch.blocks.pme_mesh import (
-    JaxMeshPMECalculator,
-    jax_ns_mesh,
-    make_pme_calculator,
-)
+
+# NOTE: so3krates_torch.blocks.pme_mesh imports torch-pme (an optional
+# extra) at module level, so it is imported lazily where PME is used.
 
 
 # Constants for dispersion energy calculations
@@ -1061,6 +1059,7 @@ class PMEElectrostaticInteraction(nn.Module):
     ) -> None:
         super().__init__()
         import torchpme  # lazy import — only required when use_pme=True
+        from so3krates_torch.blocks.pme_mesh import make_pme_calculator
 
         self.ke = ke
         potential = torchpme.CoulombPotential(smearing=smearing)
@@ -1168,6 +1167,7 @@ class PMEDispersionInteraction(nn.Module):
     ) -> None:
         super().__init__()
         import torchpme  # lazy import — only required when use_pme_dispersion=True
+        from so3krates_torch.blocks.pme_mesh import make_pme_calculator
 
         # torchpme itself operates in whatever length unit `positions`/
         # `cell` are given in at `forward` call time; since `forward`
@@ -1247,6 +1247,11 @@ class PMEDispersionInteraction(nn.Module):
             empty_dist = torch.zeros((0,), dtype=input_dtype, device=device)
 
             # charges: (N_g, 1); output: (N_g, 1)
+            from so3krates_torch.blocks.pme_mesh import (
+                JaxMeshPMECalculator,
+                jax_ns_mesh,
+            )
+
             if isinstance(self.calculator, JaxMeshPMECalculator):
                 # mesh from the Angstrom cell/spacing, like so3lr_dev
                 self.calculator.ns_mesh_override = jax_ns_mesh(

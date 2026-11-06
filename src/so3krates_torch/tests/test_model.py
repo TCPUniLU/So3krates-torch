@@ -77,3 +77,47 @@ def test_so3lr_calculator_warns_for_shared_untrained_theory_levels():
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             SO3LRCalculator(model="v2-s", theory_level=level)
+
+
+def test_package_works_without_the_optional_torch_pme():
+    """torch-pme is an optional extra: importing the models and building a
+    model without PME must not need it; only use_pme=True does."""
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    import so3krates_torch
+
+    src_dir = os.path.dirname(os.path.dirname(so3krates_torch.__file__))
+    code = textwrap.dedent(
+        """
+        import sys
+        sys.modules["torchpme"] = None  # makes `import torchpme` fail
+
+        from so3krates_torch.modules.models import SO3LR
+
+        kwargs = dict(
+            r_max=4.5, r_max_lr=6.0, num_radial_basis_fn=8, degrees=[1, 2],
+            num_features=16, num_heads=2, num_layers=1, num_elements=118,
+            avg_num_neighbors=10.0, energy_regression_dim=16,
+            dispersion_energy_bool=True,
+            dispersion_energy_cutoff_lr_damping=1.0,
+        )
+        SO3LR(**kwargs)
+        try:
+            SO3LR(use_pme=True, pme_smearing=1.0, pme_mesh_spacing=0.5,
+                  **kwargs)
+        except ImportError:
+            print("PME_NEEDS_TORCHPME")
+        """
+    )
+    env = dict(os.environ, PYTHONPATH=src_dir)
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr[-800:]
+    assert "PME_NEEDS_TORCHPME" in result.stdout

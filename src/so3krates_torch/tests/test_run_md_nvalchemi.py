@@ -1027,6 +1027,7 @@ def _run_cli_with_model(monkeypatch, tmp_path, frames, model_arg, *extra):
 
 
 def test_load_model_applies_model_pme_overrides():
+    pytest.importorskip("torchpme", reason="torch-pme not installed")
     from so3krates_torch.cli.run_md_nvalchemi import load_model
 
     model = load_model(
