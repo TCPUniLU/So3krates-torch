@@ -43,6 +43,7 @@ def evaluate_model(
     return_mean_eqv_descriptors: bool = False,
     dtype: str = "float64",
     key_spec: Optional[KeySpecification] = None,
+    theory_level_override: Optional[int] = None,
     compile: bool = False,
     fullgraph: Optional[bool] = None,
 ) -> dict[str, Union[np.ndarray, List[np.ndarray]]]:
@@ -190,8 +191,17 @@ def evaluate_model(
     for batch_idx, batch in enumerate(data_loader):
         batch = batch.to(device)
         batch.positions.requires_grad_(True)
+        batch_dict = batch.to_dict()
+        if theory_level_override is not None:
+            n_graphs = int(batch_dict["batch"].max().item()) + 1
+            batch_dict["theory_level"] = torch.full(
+                (n_graphs,),
+                theory_level_override,
+                dtype=torch.long,
+                device=batch.batch.device,
+            )
         output = model(
-            batch.to_dict(),
+            batch_dict,
             compute_stress=compute_stress,
             return_att=return_att,
             return_descriptors=(

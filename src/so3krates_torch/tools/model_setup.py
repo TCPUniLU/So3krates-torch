@@ -73,11 +73,15 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
         "layer_normalization_2": arch_config.get(
             "layer_normalization_2", False
         ),
+        "use_rms_norm": arch_config.get("use_rms_norm", False),
         "residual_mlp_1": arch_config.get("residual_mlp_1", False),
         "residual_mlp_2": arch_config.get("residual_mlp_2", False),
         "use_charge_embed": arch_config.get("use_charge_embed", False),
         "use_spin_embed": arch_config.get("use_spin_embed", False),
         "qk_non_linearity": arch_config.get("qk_non_linearity", "identity"),
+        "qk_norm": arch_config.get("qk_norm", False),
+        "use_residual_scalars": arch_config.get("use_residual_scalars", False),
+        "final_layer_bias": arch_config.get("final_layer_bias", True),
         "cutoff_fn": arch_config.get("cutoff_fn", "cosine"),
         "activation_fn": arch_config.get("activation_fn", "silu"),
         "energy_activation_fn": arch_config.get(
@@ -114,10 +118,34 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
         "use_pme": arch_config.get("use_pme", False),
         "pme_smearing": arch_config.get("pme_smearing", None),
         "pme_mesh_spacing": arch_config.get("pme_mesh_spacing", None),
+        "use_pme_dispersion": arch_config.get("use_pme_dispersion", False),
+        "pme_dispersion_smearing": arch_config.get(
+            "pme_dispersion_smearing", None
+        ),
+        "pme_dispersion_mesh_spacing": arch_config.get(
+            "pme_dispersion_mesh_spacing", None
+        ),
+        "pme_mesh_rule": arch_config.get("pme_mesh_rule", "jax"),
+        "legacy_dispersion_bool": arch_config.get(
+            "legacy_dispersion_bool", True
+        ),
         "neighborlist_format_lr": arch_config.get(
             "neighborlist_format_lr", "sparse"
         ),
+        "nhl_repulsion_bool": arch_config.get("nhl_repulsion_bool", False),
+        "c6_ratios_bool": arch_config.get("c6_ratios_bool", False),
+        "use_simple_hirshfeld": arch_config.get("use_simple_hirshfeld", False),
+        "num_theory_levels": arch_config.get("num_theory_levels", 1),
     }
+
+    if model_params.get("num_theory_levels", 1) > 1:
+        logging.warning(
+            "num_theory_levels=%d: every training structure must carry "
+            "atoms.info['theory_level'] = <int 0..%d>. Structures "
+            "without this key will raise a KeyError at forward time.",
+            model_params["num_theory_levels"],
+            model_params["num_theory_levels"] - 1,
+        )
 
     if arch_config.get("convert_to_multihead", False):
         model_params["num_output_heads"] = arch_config.get(

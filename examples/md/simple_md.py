@@ -44,6 +44,28 @@ argparser.add_argument("--save_path", type=str, default=None)
 argparser.add_argument("--save_path_traj", type=str, default=None)
 argparser.add_argument("--logger_off", action="store_false", default=True)
 argparser.add_argument("--so3lr", action="store_true", default=False)
+argparser.add_argument(
+    "--so3lr_model",
+    type=str,
+    default="v2-s",
+    choices=["v1", "v2-s", "v2-m", "v2-l"],
+    help="Which bundled pretrained SO3LR checkpoint to use with --so3lr.",
+)
+argparser.add_argument(
+    "--use_pme",
+    action="store_true",
+    default=False,
+    help="Use PME (k-space) electrostatics instead of the default "
+    "real-space Coulomb sum. Requires torch-pme and a periodic "
+    "--start_path structure (a cell). Only applies with --so3lr.",
+)
+argparser.add_argument(
+    "--theory_level",
+    type=int,
+    default=5,
+    help="Theory-level head of the v2 SO3LR models (16 heads; so3lr_dev "
+    "uses 5). Ignored for --so3lr_model v1.",
+)
 argparser.add_argument("--dtype", type=str, default="float32")
 args = argparser.parse_args()
 
@@ -55,16 +77,34 @@ if args.model_path is None and not args.so3lr:
     raise ValueError("Must provide either model_path or use SO3LR")
 
 
-mol = read(args.start_path)
+if os.path.exists(args.start_path):
+    mol = read(args.start_path)
+else:
+    # No --start_path given (or it doesn't exist): fall back to a small,
+    # bundled, self-contained periodic structure so this example can be
+    # run out of the box, e.g. to smoke-test --use_pme (PME requires a
+    # periodic cell) across all 4 --so3lr_model checkpoints.
+    from ase.build import bulk
+
+    print(
+        f"--start_path {args.start_path!r} not found; falling back to a "
+        "small bundled NaCl bulk structure (2x2x2 rocksalt supercell)."
+    )
+    mol = bulk("NaCl", "rocksalt", a=5.64) * (2, 2, 2)
 
 if args.so3lr:
-    print("Using MACE-OFF")
+    print(f"Using SO3LR ({args.so3lr_model}), use_pme={args.use_pme}")
     mol.calc = SO3LRCalculator(
+        model=args.so3lr_model,
         r_max_lr=args.r_max_lr,
         compute_stress=args.compute_stress,
         dispersion_energy_cutoff_lr_damping=args.dispersion_energy_cutoff_lr_damping,
         device=args.device,
         default_dtype=args.dtype,
+        use_pme=args.use_pme,
+        # v2 models have 16 theory-level heads and require a choice;
+        # 5 is the level so3lr_dev uses. Ignored by the v1 model.
+        theory_level=args.theory_level if args.so3lr_model != "v1" else None,
     )
 
 else:

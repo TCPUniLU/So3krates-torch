@@ -1232,3 +1232,142 @@ def test_adapt_input_shift_backward_has_no_cell_index_put(n_graphs):
         and e.input_shapes[0] == cell_shape
     ]
     assert not onto_cell, onto_cell
+
+
+# ---------------------------------------------------------------------------
+# The model's own PME (use_pme=True: real-space residual + k-space) driven
+# by the NVAlchemi wrapper.
+# ---------------------------------------------------------------------------
+
+
+def _pme_model():
+    pytest.importorskip("torchpme", reason="torch-pme not installed")
+    torch.manual_seed(0)
+    return _make_so3lr(
+        use_pme=True,
+        output_partial_charges=True,
+        dispersion_bool=True,
+        # the random test model's charges barely depend on geometry
+    )
+
+
+def test_wrapper_model_pme_matches_ase_calculator():
+    """Energy, forces and stress of a ``use_pme=True`` model through the
+    NVAlchemi wrapper equal the ASE calculator's."""
+    pytest.importorskip("matscipy", reason="matscipy needed for neighbor list")
+    from ase.stress import voigt_6_to_full_3x3_stress
+
+    atoms = _rocksalt()
+    model = _pme_model()
+    atoms.calc = TorchkratesCalculator(
+        models=[model],
+        device=str(DEVICE),
+        dtype=DTYPE,
+        r_max=model.r_max,
+        r_max_lr=model.r_max_lr,
+        compute_stress=True,
+    )
+    e_ref = atoms.get_potential_energy()
+    f_ref = atoms.get_forces()
+    s_ref = voigt_6_to_full_3x3_stress(atoms.get_stress())
+    assert abs(s_ref).max() > 1e-8, "stress is ~zero; test vacuous"
+
+    wrapper = NVAlchemiSO3LR(model)
+    out = wrapper(_make_batch_with_nl(wrapper, atoms))
+    assert abs(float(out["energy"].sum()) - e_ref) < 1e-6
+    np.testing.assert_allclose(
+        out["forces"].detach().numpy(), f_ref, atol=1e-6, rtol=1e-5
+    )
+    np.testing.assert_allclose(
+        out["stress"][0].detach().numpy(), s_ref, atol=1e-7, rtol=1e-5
+    )
+
+
+@pytest.mark.parametrize("component", [(0, 0), (1, 2)])
+def test_wrapper_model_pme_stress_matches_finite_difference(component):
+    """sigma = (1/V) dE/d(strain) for the PME model: guards the k-space term
+    seeing the strained positions and cell."""
+    atoms = _rocksalt()
+    wrapper = NVAlchemiSO3LR(_pme_model())
+    stress = (
+        wrapper(_make_batch_with_nl(wrapper, atoms))["stress"][0]
+        .detach()
+        .numpy()
+    )
+
+    def energy(eps):
+        strained = atoms.copy()
+        strain = np.eye(3) + eps
+        strained.set_cell(atoms.cell.array @ strain, scale_atoms=True)
+        out = wrapper(_make_batch_with_nl(wrapper, strained))
+        return float(out["energy"].sum())
+
+    i, j = component
+    h = 1e-5
+    d = np.zeros((3, 3))
+    d[i, j] = d[j, i] = h if i != j else h
+    fd = (energy(d) - energy(-d)) / (2 * h) / atoms.get_volume()
+    if i != j:
+        fd /= 2  # symmetric strain moves both off-diagonal entries
+    assert fd == pytest.approx(stress[i, j], abs=2e-6, rel=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# Multi-theory-level models
+# ---------------------------------------------------------------------------
+
+
+def _multi_head_model(num_theory_levels=3):
+    torch.manual_seed(0)
+    return _make_so3lr(
+        electrostatics_bool=True, num_theory_levels=num_theory_levels
+    )
+
+
+def test_wrapper_multi_head_model_requires_theory_level():
+    with pytest.raises(ValueError, match="theory_level"):
+        NVAlchemiSO3LR(_multi_head_model())
+
+
+@pytest.mark.parametrize("level", [-1, 3])
+def test_wrapper_theory_level_out_of_range(level):
+    with pytest.raises(ValueError, match="out of range"):
+        NVAlchemiSO3LR(_multi_head_model(3), theory_level=level)
+
+
+def test_wrapper_theory_level_selects_the_head():
+    atoms = _rocksalt()
+    model = _multi_head_model(3)
+    energies = []
+    for level in range(3):
+        wrapper = NVAlchemiSO3LR(model, theory_level=level)
+        out = wrapper(_make_batch_with_nl(wrapper, atoms))
+        energies.append(float(out["energy"].sum()))
+    assert len({round(e, 9) for e in energies}) == 3
+
+
+@pytest.mark.parametrize("level", [0, 2])
+def test_wrapper_theory_level_matches_ase_calculator(level):
+    pytest.importorskip("matscipy", reason="matscipy needed for neighbor list")
+    atoms = _small_nacl()
+    model = _multi_head_model(3)
+    atoms.calc = TorchkratesCalculator(
+        models=[model],
+        device=str(DEVICE),
+        dtype=DTYPE,
+        r_max=model.r_max,
+        r_max_lr=model.r_max_lr,
+        theory_level=level,
+    )
+    e_ref = atoms.get_potential_energy()
+    wrapper = NVAlchemiSO3LR(model, theory_level=level)
+    out = wrapper(_make_batch_with_nl(wrapper, atoms))
+    assert float(out["energy"].sum()) == pytest.approx(e_ref, abs=1e-6)
+
+
+def test_wrapper_single_head_model_needs_no_theory_level():
+    wrapper = NVAlchemiSO3LR(_make_so3lr(electrostatics_bool=True))
+    assert wrapper.theory_level is None
+    assert "theory_level" not in wrapper.adapt_input(
+        _make_batch_with_nl(wrapper, _small_nacl())
+    )

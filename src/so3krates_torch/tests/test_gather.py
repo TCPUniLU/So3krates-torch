@@ -359,3 +359,112 @@ def test_compute_shifts_int32_graph_ids(n_graphs):
         atol=1e-12,
         rtol=0,
     )
+
+
+# ---------------------------------------------------------------------------
+# Gather sites added with the PME / c6-ratio work (jax-parity).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("n_edges", [400, 0])
+def test_mixing_rules_c6_ratios_equivalent(monkeypatch, n_edges):
+    z, idx_i, idx_j, h = _mixing_inputs(n_edges=n_edges)
+    c6 = 0.5 + torch.rand(30, generator=_rng(22), dtype=torch.float64)
+    c6.requires_grad_()
+    w = torch.randn(n_edges, 2, generator=_rng(23), dtype=torch.float64)
+
+    def run():
+        alpha_ij, c6_ij = pp.mixing_rules(z, idx_i, idx_j, h, c6_ratios=c6)
+        loss = (torch.stack([alpha_ij, c6_ij], dim=-1) * w).sum()
+        g_h, g_c6 = torch.autograd.grad(loss, [h, c6])
+        return alpha_ij.detach(), c6_ij.detach(), g_h, g_c6
+
+    _assert_same(*_new_and_reference(pp, monkeypatch, run))
+
+
+def test_mixing_rules_c6_ratios_backward_has_no_index_put():
+    z, idx_i, idx_j, h = _mixing_inputs()
+    c6 = 0.5 + torch.rand(30, generator=_rng(22), dtype=torch.float64)
+    c6.requires_grad_()
+    alpha_ij, c6_ij = pp.mixing_rules(z, idx_i, idx_j, h, c6_ratios=c6)
+    ops = _backward_ops(lambda: (alpha_ij.sum() + c6_ij.sum()).backward())
+    assert not (ops & INDEX_PUT_OPS)
+
+
+@pytest.mark.parametrize("n_edges", [400, 0])
+def test_coulomb_pme_residual_energy_equivalent(monkeypatch, n_edges):
+    q, rij, s, r = _coulomb_inputs(n_edges=n_edges)
+    w = torch.randn(n_edges, generator=_rng(33), dtype=torch.float64)
+
+    def run():
+        e = pp._coulomb_erf_shifted_force_smooth_pme_energy(
+            q, rij, s, r, 14.4, 4.0, 6.0, 2.7, 1.0, 0.5
+        )
+        (grad,) = torch.autograd.grad((e * w).sum(), q)
+        return e.detach(), grad
+
+    _assert_same(*_new_and_reference(pp, monkeypatch, run))
+
+
+def test_coulomb_pme_residual_energy_backward_has_no_index_put():
+    q, rij, s, r = _coulomb_inputs()
+    e = pp._coulomb_erf_shifted_force_smooth_pme_energy(
+        q, rij, s, r, 14.4, 4.0, 6.0, 2.7, 1.0, 0.5
+    )
+    ops = _backward_ops(lambda: e.sum().backward())
+    assert not (ops & INDEX_PUT_OPS)
+
+
+def _pme_dispersion_inputs(n_edges=400, seed=60):
+    g = _rng(seed)
+    n = 30
+    z = torch.randint(1, 11, (n,), generator=g)
+    senders = torch.randint(0, n, (n_edges,), generator=g)
+    receivers = torch.randint(0, n, (n_edges,), generator=g)
+    lengths = (1.5 + 4.5 * torch.rand(n_edges, 1, generator=g)).to(
+        torch.float64
+    )
+    h = (
+        0.5 + torch.rand(n, generator=g, dtype=torch.float64)
+    ).requires_grad_()
+    c6 = (
+        0.5 + torch.rand(n, generator=g, dtype=torch.float64)
+    ).requires_grad_()
+    return z, senders, receivers, lengths, h, c6
+
+
+def _pme_dispersion(inputs, n=30):
+    z, senders, receivers, lengths, h, c6 = inputs
+    return pp.DispersionInteraction().forward(
+        hirshfeld_ratios=h,
+        atomic_numbers=z,
+        senders_lr=senders,
+        receivers_lr=receivers,
+        lengths_lr=lengths,
+        num_nodes=n,
+        cutoff_lr=6.0,
+        cutoff_lr_damping=1.0,
+        c6_ratios=c6,
+        use_pme_dispersion=True,
+        pme_dispersion_smearing=1.2,
+    )
+
+
+@pytest.mark.parametrize("n_edges", [400, 0])
+def test_dispersion_pme_residual_equivalent(monkeypatch, n_edges):
+    inputs = _pme_dispersion_inputs(n_edges=n_edges)
+    z, senders, receivers, lengths, h, c6 = inputs
+    w = torch.randn(30, 1, generator=_rng(61), dtype=torch.float64)
+
+    def run():
+        e = _pme_dispersion(inputs)
+        g_h, g_c6 = torch.autograd.grad((e * w).sum(), [h, c6])
+        return e.detach(), g_h, g_c6
+
+    _assert_same(*_new_and_reference(pp, monkeypatch, run))
+
+
+def test_dispersion_pme_residual_backward_has_no_index_put():
+    e = _pme_dispersion(_pme_dispersion_inputs())
+    ops = _backward_ops(lambda: e.sum().backward())
+    assert not (ops & INDEX_PUT_OPS)

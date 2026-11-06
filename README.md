@@ -12,13 +12,13 @@ Implementation of the So3krates + SO3LR model in pytorch.
 3. move to the clone repository
 4. `pip install -r requirements.txt`
 5. `pip install .`
-6. (Optional) PME electrostatics support: `pip install ".[pme]"` (installs `torch-pme>=0.4`)
+6. (Optional) PME electrostatics/dispersion support: `pip install ".[pme]"` (installs `torch-pme>=0.5`)
 
 #### Implemented features:
-1. ASE calculator for MD (including pre-trained SO3LR)
+1. ASE calculator for MD (including pre-trained SO3LR — see [Pretrained SO3LR Models](#pretrained-so3lr-models-ase-calculator) below)
 2. Inference over ase readable datasets: `torchkrates-eval`
 3. Error metrics over ase readable datasets: `torchkrates-metric`
-4. Transforming pyTorch and JAX parameter formates: `torchkrates-jax2torch` or `torchkrates-torch2jax` (for these you need to install jax, flax, and mlff (https://github.com/thorben-frank/mlff/tree/v1.0-lrs-gems))
+4. Transforming pyTorch and JAX parameter formates: `torchkrates-jax2torch` or `torchkrates-torch2jax` (for these you need to install jax, flax, and the `so3lr_dev` package (this repo's JAX v2 reference implementation))
 5. Training: `torchkrates-train --config config.yaml` (see example)
 6. Data preprocessing: `torchkrates-preprocess`
 7. HDF5 file merging: `torchkrates-merge`
@@ -28,6 +28,95 @@ Implementation of the So3krates + SO3LR model in pytorch.
 
 > [!IMPORTANT]
 > Number 4 means that you can transform the weights from this pytorch version into the JAX version and vice versa. Inference and training is much faster (*at least 1 order of magnitude at the moment*) in the JAX version. This implementation is mostly for prototyping and compatability with other packages.
+
+---
+
+## Pretrained SO3LR Models (ASE Calculator)
+
+Bundled, converted checkpoints live under `src/so3krates_torch/pretrained/so3lr/`:
+
+```
+pretrained/so3lr/
+├── v1/
+│   ├── so3lr.pt              # state_dict
+│   └── so3lr_settings.yaml   # ARCHITECTURE block used to rebuild the model
+└── tauri/                    # released SO3LR tauri models (converted from so3lr_dev)
+    ├── so3lr-tauri-{s,m,l}-2602.pt / ..._settings.yaml
+    └── so3lr-tauri-{s,m,l}-2606.pt / ..._settings.yaml
+```
+
+Each `<stem>.pt` is a plain `torch.save`d `state_dict` (**not** a pickled whole-model object) with a sibling `<stem>_settings.yaml` holding the `ARCHITECTURE` block needed to reconstruct the model before its weights are loaded. The older pickled `pretrained/so3lr/so3lr.model` has been removed entirely — use one of the keywords below instead.
+
+| Keyword | Checkpoint | Notes |
+|---------|------------|-------|
+| `v1` | `v1/so3lr.pt` | original SO3LR, single theory level |
+| `tauri-s-2602`, `tauri-m-2602`, `tauri-l-2602` | `tauri/so3lr-tauri-{s,m,l}-2602.pt` | tauri generation 2602, 16 theory-level heads |
+| `tauri-s-2606`, `tauri-m-2606`, `tauri-l-2606` | `tauri/so3lr-tauri-{s,m,l}-2606.pt` | tauri generation 2606 (newer; trained with `dispersion_energy_scale` 1.0), 16 theory-level heads |
+| `v2-s`, `v2-m`, `v2-l` | same files as `tauri-{s,m,l}-2602` | older names, kept as aliases of the 2602 generation |
+
+The tauri checkpoints were converted with `torchkrates-jax2torch --so3lr_dev_checkpoint {s,m,l} --so3lr_dev_generation {2602,2606}`; the converter's JAX↔Torch parity check passes for all six (energy within 6e-6 eV, force differences below 1e-5 eV/Å on its bundled example structure).
+
+### `SO3LRCalculator` — ASE calculator
+
+```python
+from ase.build import molecule
+from so3krates_torch.calculator.so3 import SO3LRCalculator
+
+atoms = molecule("H2O")
+atoms.calc = SO3LRCalculator(
+    model="tauri-s-2606",  # any keyword from the table above
+    theory_level=5,        # required for the tauri models (16 heads); so3lr_dev uses 5
+    device="cpu",
+    r_max_lr=12.0,
+    dispersion_energy_cutoff_lr_damping=2.0,
+)
+print(atoms.get_potential_energy())
+print(atoms.get_forces())
+```
+
+`model` is a required keyword selecting which bundled checkpoint to load. The remaining constructor keywords cover general calculator settings (`r_max_lr` (default `12.0`, long-range cutoff for electrostatics/dispersion), `dispersion_energy_cutoff_lr_damping` (default `2.0`, damping cutoff for the TS dispersion damping function), `compute_stress`, `device`, `energy_units_to_eV`, `length_units_to_A`, `default_dtype`, `charges_key`, `key_specification`, `theory_level` (required for the v2 models, which have 16 theory-level heads; `so3lr_dev` uses 5. The single-head `v1` model needs none)) plus PME electrostatics/dispersion (`use_pme`, `pme_smearing`, `pme_mesh_spacing`, `use_pme_dispersion`, `pme_dispersion_smearing`, `pme_dispersion_mesh_spacing` — all `None`/off by default; see [PME Electrostatics](#pme-electrostatics-particle-mesh-ewald) below for what each one does). For example, to enable PME on a periodic system:
+
+```python
+from ase.build import bulk
+from so3krates_torch.calculator.so3 import SO3LRCalculator
+
+atoms = bulk("NaCl", "rocksalt", a=5.64) * (2, 2, 2)
+atoms.calc = SO3LRCalculator(
+    model="v2-s",
+    theory_level=5,
+    device="cpu",
+    use_pme=True,
+    pme_smearing=1.18,
+    pme_mesh_spacing=0.59,
+)
+print(atoms.get_potential_energy())
+```
+
+See [`examples/md/simple_md.py`](examples/md/simple_md.py) for a full MD example driven by `SO3LRCalculator`; it exposes `--so3lr_model {v1,v2-s,v2-m,v2-l}` and `--use_pme` flags directly (e.g. `python examples/md/simple_md.py --so3lr --so3lr_model v2-s --use_pme --device cpu`).
+
+### `load_pretrained_so3lr` — for fine-tuning/scripting
+
+For use cases that need the raw `torch.nn.Module` rather than an ASE calculator (e.g. fine-tuning), use `load_pretrained_so3lr` directly:
+
+```python
+from so3krates_torch.calculator.so3 import load_pretrained_so3lr
+
+model = load_pretrained_so3lr(
+    "v2-s",
+    device="cpu",
+    r_max_lr=12.0,
+    dispersion_energy_cutoff_lr_damping=2.0,
+)
+```
+
+Any extra keyword arguments are merged into the checkpoint's saved `ARCHITECTURE` settings before construction, e.g. to enable PME the same way as above (`use_pme=True, pme_smearing=..., pme_mesh_spacing=...`). See [`examples/finetuning/finetune_pretrained_so3lr.py`](examples/finetuning/finetune_pretrained_so3lr.py) for a full LoRA fine-tuning example built on this function:
+
+```bash
+python examples/finetuning/finetune_pretrained_so3lr.py --model v1
+python examples/finetuning/finetune_pretrained_so3lr.py --model v2-s --use_pme
+```
+
+To warm-start plain (non-LoRA) training from one of these checkpoints instead of fine-tuning, see the `pretrained_weights` option under [Pre-trained Models](#pre-trained-models) below, and its documented example in [`examples/training/train_settings_example.yaml`](examples/training/train_settings_example.yaml).
 
 ---
 
@@ -172,9 +261,29 @@ Run inference over an ASE-readable dataset.
 torchkrates-eval --model_path my_model.model --data_path test_set.xyz
 ```
 
+`--model_path` also accepts, in addition to the `.model`-file/directory form above:
+- one of the bundled pretrained keywords directly (`v1`, `tauri-{s,m,l}-{2602,2606}`, or the aliases `v2-{s,m,l}`).
+- a path ending in `.pt` with a sibling `<stem>_settings.yaml` (the same naming convention used by the bundled checkpoints under `pretrained/so3lr/{v1,tauri}/`) — this is how a checkpoint produced by `torchkrates-jax2torch --save_state_dict_path my_checkpoint.pt --save_settings_path my_checkpoint_settings.yaml` gets loaded here.
+
+```bash
+torchkrates-eval --model_path v1 --data_path my_data.xyz \
+    --device cpu --dtype float32 --r_max_lr 12.0 \
+    --dispersion_energy_cutoff_lr_damping 2.0 \
+    --multispecies \
+    --output_file results_v1.h5
+
+torchkrates-eval --model_path my_checkpoint.pt \
+    --data_path my_data.xyz --device cpu --dtype float32 \
+    --r_max_lr 12.0 --dispersion_energy_cutoff_lr_damping 2.0 \
+    --multispecies \
+    --output_file results_my_checkpoint.h5
+```
+
+`--multispecies` is needed whenever the dataset's structures don't all share the same number of atoms (as above) — see the flag table below.
+
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model_path` | *required* | Path to a single `.model` file, or a directory of `.model` files (use with `--ensemble_size N` for ensemble inference) |
+| `--model_path` | *required* | Path to a single `.model` file, a directory of `.model` files (use with `--ensemble_size N` for ensemble inference), a bundled pretrained keyword (`v1`, `tauri-*`, `v2-*`), or a `.pt` state_dict checkpoint with a sibling `<stem>_settings.yaml` |
 | `--data_path` | *required* | ASE-readable dataset (xyz, extxyz, HDF5) |
 | `--output_file` | `results.h5` | Output HDF5 file |
 | `--ensemble_size` | `1` | Number of models to load from a directory |
@@ -182,6 +291,7 @@ torchkrates-eval --model_path my_model.model --data_path test_set.xyz
 | `--batch_size` | `5` | Structures per batch |
 | `--dtype` | `float32` | `float32` or `float64` |
 | `--multihead_model` | `False` | Enable multi-head model support |
+| `--multispecies` | `False` | Required when the dataset's structures don't all share the same atom count (allows batches/results to be ragged instead of stacked into one array) |
 | `--compute_dipole` | `False` | Compute dipole predictions |
 | `--compute_stress` | `False` | Compute stress predictions |
 | `--compute_hirshfeld` | `False` | Compute Hirshfeld ratio predictions |
@@ -242,8 +352,13 @@ torchkrates-md-nvalchemi \
 | `--skin` | `0.5` | Verlet skin [Å] for the GPU-native neighbor list |
 | `--electrostatics` | `model` | `model`, `nvalchemi`, or `none` (see below) |
 | `--pressure-coupling` | `isotropic` | `isotropic`, `anisotropic`, or `triclinic` (NPT only) |
-| `--r-max-lr` (alias `--r_max_lr`) | model's own | Long-range cutoff [Å]; supplies it for models that store none (such as the packaged `so3lr.model`) and overrides the stored value otherwise |
-| `--dispersion-energy-cutoff-lr-damping` | model's own | Dispersion damping width [Å]; required whenever dispersion is on, so it must be given if the model stores none |
+| `--r-max-lr` (alias `--r_max_lr`) | `12.0` | Long-range cutoff [Å] for models with long-range terms (SO3LR's inference default, as in `SO3LRCalculator`). It replaces the stored value (none for `v1`, 1000 for the tauri models); a warning is printed when it replaces a finite trained cutoff, so pass the trained value to keep it |
+| `--dispersion-energy-cutoff-lr-damping` | model's own, else `2.0` | Dispersion damping width [Å]; the model's stored value wins, `2.0` only fills in a missing one (`v1`) |
+| `--theory-level` | `5` | Theory-level head of multi-head models (the tauri models have 16; `5` is so3lr_dev's default and is announced at start-up). Ignored by single-head models |
+| `--model-pme` | off | Use the model's own PME electrostatics (`use_pme`, torch-pme; bundled keywords and `.pt` checkpoints only, periodic cells only; see below) |
+| `--model-pme-smearing`, `--model-pme-mesh-spacing` | `r_max / 5`, `smearing / 2` | Ewald width and FFT spacing [Å] for `--model-pme` |
+| `--model-pme-dispersion` | off | Add the model's PME dispersion k-space term (`use_pme_dispersion`) |
+| `--model-pme-dispersion-smearing`, `--model-pme-dispersion-mesh-spacing` | `r_max_lr / 5`, `smearing / 2` | Width and spacing [Å] for `--model-pme-dispersion` |
 | `--pme-alpha` | derived | Ewald splitting [Å⁻¹] for `--electrostatics nvalchemi` (see below) |
 | `--pme-mesh-dimensions NX NY NZ` | NVAlchemi's estimate | FFT grid for `--electrostatics nvalchemi` (see below) |
 | `--pme-spline-order` | `4` | B-spline order for `--electrostatics nvalchemi` |
@@ -254,22 +369,28 @@ torchkrates-md-nvalchemi \
 | `--log-file` | `md_log.csv` | Output CSV log path |
 | `--log-freq` | `100` | Log every N steps |
 
-**Running the packaged pre-trained model.** `so3krates_torch/pretrained/so3lr/so3lr.model` stores neither a long-range cutoff nor a dispersion damping width, so give both (a model that has long-range terms but no cutoff stops with an error that names `--r-max-lr`). NPT on a periodic cell, with SO3LR's inference defaults of 12.0 Å and 2.0 Å (the values `SO3LRCalculator` uses):
+**Running a bundled pre-trained model.** `--model` takes a bundled keyword (`v1`, `tauri-{s,m,l}-{2602,2606}`, see [Pretrained SO3LR Models](#pretrained-so3lr-models-ase-calculator)), a `<stem>.pt` state_dict with a sibling `<stem>_settings.yaml`, or a pickled `.model`. The long-range cutoff defaults to 12.0 Å and the dispersion damping to 2.0 Å when the model stores none, the same values `SO3LRCalculator` uses, so NPT on a periodic cell needs no extra flags:
 
 ```bash
-MODEL=$(python -c "import os, so3krates_torch as s; print(os.path.join(os.path.dirname(s.__file__), 'pretrained/so3lr/so3lr.model'))")
-
 torchkrates-md-nvalchemi \
-    --model "$MODEL" \
+    --model tauri-s-2606 \
     --atoms my_cell.xyz \
     --ensemble npt --temperature 300 --pressure 1.0 \
-    --r-max-lr 12.0 \
-    --dispersion-energy-cutoff-lr-damping 2.0 \
     --steps 10000 --log-freq 100 \
     --device cuda
 ```
 
-The cutoff is your choice: a larger one adds neighbor pairs (cost) and more of the long-range tail. Other models trained with `r_max_lr` and a damping width store them and need neither flag.
+The multi-head tauri models run at theory level 5 unless you pass `--theory-level N`. Models trained with their own `r_max_lr` keep working: the default replaces the stored cutoff, with a warning, so give `--r-max-lr <trained value>` for them.
+
+**The model's own PME.** `--model-pme` (electrostatics) and `--model-pme-dispersion` switch on the PME terms built into SO3LR: a real-space residual plus a torch-pme k-space term, which extends the trained `erf(r/σ)/r` electrostatics to all periodic images instead of cutting it off at the long-range cutoff. They work on bundled keywords and `.pt` checkpoints, need a periodic cell and `pip install ".[pme]"`, and cannot be combined with `--electrostatics nvalchemi` or `none`. They are not NVAlchemi's own PME (`--electrostatics nvalchemi`, the `--pme-*` options), which computes the full `1/r` Coulomb energy and is a different model.
+
+```bash
+torchkrates-md-nvalchemi --model tauri-s-2606 --atoms my_cell.xyz --ensemble npt \
+    --model-pme --model-pme-smearing 1.18 --model-pme-mesh-spacing 0.59 \
+    --model-pme-dispersion
+```
+
+A larger cutoff adds neighbor pairs (cost) and more of the long-range tail.
 
 **Electrostatics semantics.** `--electrostatics` selects which long-range Coulomb term is active, and the two non-`none` options are *different, non-interchangeable* electrostatics models:
 
@@ -310,9 +431,25 @@ Compute error metrics over an ASE-readable dataset. Prints a table with MAE and 
 torchkrates-metric --models my_model.model --data test_set.xyz
 ```
 
+`--models` accepts the same two additional forms as `torchkrates-eval`'s `--model_path` above (a pretrained keyword, or a `.pt` + sibling `<stem>_settings.yaml`), on top of the original `.model`-file/directory form:
+
+```bash
+torchkrates-metric --models v1 --data test_set.xyz \
+    --device cpu --r_max_lr 12.0 \
+    --dispersion_energy_cutoff_lr_damping 2.0 \
+    --batch_size 1 --output_args energy forces
+
+torchkrates-metric --models my_checkpoint.pt --data test_set.xyz \
+    --device cpu --r_max_lr 12.0 \
+    --dispersion_energy_cutoff_lr_damping 2.0 \
+    --batch_size 1 --output_args energy forces
+```
+
+Note there is no `--multispecies` flag here (unlike `torchkrates-eval`); use `--batch_size 1` instead if the dataset's structures don't all share the same atom count.
+
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--models` | *required* | Path to a model file or a directory of model files |
+| `--models` | *required* | Path to a model file or a directory of model files, a bundled pretrained keyword (`v1`, `tauri-*`, `v2-*`), or a `.pt` state_dict checkpoint with a sibling `<stem>_settings.yaml` |
 | `--data` | *required* | Dataset path (must contain reference values) |
 | `--output_args` | `energy forces` | Properties to evaluate. Can include `stress`, `dipole`, `hirshfeld_ratios`, etc. |
 | `--batch_size` | `16` | Structures per batch |
@@ -351,13 +488,21 @@ torchkrates-metric \
 
 ### `torchkrates-tune-pme` — PME Parameter Tuning
 
-Find optimal PME parameters (`pme_smearing`, `pme_mesh_spacing`) for a given dataset and SR cutoff. Runs `torchpme.tuning.tune_pme()` on a representative sample of training structures and reports the median values. Requires `torch-pme` and `matscipy` to be installed.
+Find optimal PME parameters (`pme_smearing`, `pme_mesh_spacing`) for a given dataset and SR cutoff. Runs `torchpme.tuning.tune_pme()` on a representative sample of training structures and reports the median values. With `--tune_dispersion`, also scans for optimal PME dispersion parameters (`pme_dispersion_smearing`, `pme_dispersion_mesh_spacing`) by comparing coarser candidates against a tight-PME reference on the same structures. Requires `torch-pme` and `matscipy` to be installed.
 
 ```bash
 torchkrates-tune-pme \
     --data_path train_data.h5 \
     --r_max 6.0 \
     --n_samples 50 \
+    --update_config config.yaml
+
+# Also tune PME dispersion parameters
+torchkrates-tune-pme \
+    --data_path train_data.h5 \
+    --r_max 6.0 \
+    --r_max_lr 12.0 \
+    --tune_dispersion \
     --update_config config.yaml
 ```
 
@@ -370,7 +515,10 @@ torchkrates-tune-pme \
 | `--charges_key` | `None` | Key in `atoms.arrays` for partial charges (default: unit charges) |
 | `--device` | `cpu` | Device for torch tensors |
 | `--dtype` | `float64` | `float32` or `float64` |
-| `--update_config` | `None` | If given, write `pme_smearing` and `pme_mesh_spacing` to this YAML config |
+| `--update_config` | `None` | If given, write the tuned parameters to this YAML config |
+| `--r_max_lr` | `None` | Long-range cutoff radius in Å. Required when `--tune_dispersion` is given. |
+| `--tune_dispersion` | `False` | Also scan PME dispersion parameters (`pme_dispersion_smearing`, `pme_dispersion_mesh_spacing`) against a tight-PME reference. |
+| `--dispersion_accuracy` | `1e-3` | Target accuracy (eV/atom) for the dispersion parameter scan. Picks the coarsest grid point within this threshold. |
 
 Example output:
 ```
@@ -378,13 +526,61 @@ PME tuning results (median over structures):
   Electrostatics:
     pme_smearing:     1.1842 Å
     pme_mesh_spacing: 0.5921 Å
+
+  Dispersion (C6, scanned vs tight-PME reference):
+    pme_dispersion_smearing:     2.4000 Å
+    pme_dispersion_mesh_spacing: 1.2000 Å
 ```
 
 ---
 
 ### `torchkrates-jax2torch` / `torchkrates-torch2jax` — Weight Conversion
 
-Convert model weights between the PyTorch and JAX (mlff) implementations. Requires `jax`, `flax`, and [`mlff`](https://github.com/thorben-frank/mlff/tree/v1.0-lrs-gems) to be installed.
+Convert model weights between the PyTorch and JAX implementations. The `--check_parity` default-on path (see below) and the general JAX-model-building path used for conversion require `jax`, `flax`, and the `so3lr_dev` package (this repo's JAX v2 reference implementation) to be installed — they no longer need `mlff`.
+
+**JAX to PyTorch:**
+
+```bash
+torchkrates-jax2torch \
+    --path_to_params params.pkl \
+    --path_to_hyperparams hyperparameters.json \
+    --save_model_path so3lr_torch.model
+```
+
+This writes a loadable torch `SO3LR` model (via `torch.save`) to `--save_model_path`.
+
+Instead of `--path_to_params`/`--path_to_hyperparams`, you can point at one of the bundled `so3lr_dev` checkpoints (`so3lr-tauri-{s,m,l}-{2602,2606}`) by size via `--so3lr_dev_checkpoint {s,m,l}` and, optionally, generation via `--so3lr_dev_generation {2602,2606}` (default `2606`; requires `so3lr_dev` to be installed):
+
+```bash
+torchkrates-jax2torch \
+    --so3lr_dev_checkpoint s \
+    --save_model_path so3lr_s_torch.model
+```
+
+**PyTorch to JAX:**
+
+```bash
+torchkrates-torch2jax \
+    --path_to_state_dict checkpoint.pt \
+    --path_to_hyperparams config.yaml \
+    --save_settings_path ./jax_settings \
+    --save_params_path ./jax_params
+```
+
+This writes `hyperparameters.json` and `params.pkl` into the two given directories, matching mlff's expected JAX checkpoint layout.
+
+**Precision:** `--dtype float32` rounds the weights to float32 in the saved file, which costs about 4e-6 eV in total energy even when you later evaluate in float64. For parity work convert with `--dtype float64`.
+
+**Parity check:** by default, both CLIs verify after conversion that the JAX and PyTorch model representations produce the same energy/forces on a real structure (the bundled `tests/data/aqm_small.xyz` unless `--parity_structure` is given). The converted model/params are saved regardless of the check's outcome, but the CLI exits with status `1` if the check fails, so the failure isn't silently missed.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--check_parity` / `--no-check_parity` | `True` | After conversion, verify the two model representations agree on a real structure's energy/forces. |
+| `--parity_structure` | bundled `aqm_small.xyz` | ASE-readable structure file to check parity on. |
+| `--parity_atol` | `1e-5` | Absolute tolerance for the parity check. |
+| `--parity_rtol` | `1e-4` | Relative tolerance for the parity check. |
+
+The check behind these flags is `so3krates_torch.tools.model_parity.check_model_parity`. Besides energy and forces it can also compare the stress (`compare_stress=True`, periodic structures only), the partial charges, dipole, Hirshfeld and C6 ratios (`compare_observables=(...)`), and any theory-level head (`theory_level=<int>`; the default is so3lr_dev's level 5). See `src/so3krates_torch/tests/test_v2_parity.py` for the tolerances the test suite uses.
 
 ---
 
@@ -466,16 +662,21 @@ These enable the physics-based long-range interactions that distinguish SO3LR fr
 | `dispersion_energy_bool` | `bool` | `True` | Enable van der Waals dispersion interactions via learned Hirshfeld ratios. Requires `r_max_lr`. |
 | `dispersion_energy_scale` | `float` | `1.2` | Scaling factor for the dispersion energy contribution. |
 | `dispersion_energy_cutoff_lr_damping` | `float` | `None` | Damping cutoff (Å) for the TS dispersion damping function. Required when `dispersion_energy_bool: true`. |
+| `legacy_dispersion_bool` | `bool` | `True` | Selects the free-atom alpha/C6 reference table used for dispersion (legacy: elements Z=1–102; refitted: Z=1–86). Also used for PME dispersion's pseudo-charges. See [PME Dispersion](#pme-dispersion-particle-mesh-ewald). |
 | `neighborlist_format_lr` | `str` | `"sparse"` | Storage format for the long-range neighbor list. |
 | `use_pme` | `bool` | `False` | Enable PME electrostatics for periodic systems. See [PME Electrostatics](#pme-electrostatics-particle-mesh-ewald). |
 | `pme_smearing` | `float` | `r_max / 5` | Ewald splitting width (Å) for PME electrostatics. |
 | `pme_mesh_spacing` | `float` | `smearing / 2` | FFT grid spacing (Å) for PME electrostatics. |
+| `use_pme_dispersion` | `bool` | `False` | Enable PME dispersion for periodic systems. See [PME Dispersion](#pme-dispersion-particle-mesh-ewald). |
+| `pme_dispersion_smearing` | `float` | `r_max_lr / 5` | Ewald splitting width (Å) for PME dispersion. |
+| `pme_dispersion_mesh_spacing` | `float` | `smearing / 2` | FFT grid spacing (Å) for PME dispersion. |
+| `pme_mesh_rule` | `str` | `"jax"` | How the PME mesh size is rounded for a given spacing, for both PME terms: `"jax"` matches so3lr_dev (`jax-pme`), `"torchpme"` is stock torch-pme. See [PME Electrostatics](#pme-electrostatics-particle-mesh-ewald). |
 
 #### PME Electrostatics (Particle Mesh Ewald)
 
 For periodic systems, the direct-space Coulomb sum is conditionally convergent and a cutoff scheme introduces systematic errors that worsen with smaller boxes. PME splits the 1/r sum into a real-space part (using the SR neighbor list) and a reciprocal-space FFT part that captures the long-range tail exactly. When `use_pme: true`, `r_max_lr` is no longer required for electrostatics.
 
-**Requires `torch-pme>=0.4` to be installed.** Use `torchkrates-tune-pme` to find optimal parameter values for your dataset.
+**Requires `torch-pme>=0.5` to be installed.** (Versions before 0.5 silently produce wrong dispersion energies for `exponent>3` potentials — see [PME Dispersion](#pme-dispersion-particle-mesh-ewald) below — so this is not just a routine minimum-version bump.) Use `torchkrates-tune-pme` to find optimal parameter values for your dataset.
 
 **Limitations:**
 - PME requires **periodic boundary conditions** (`pbc=True` on all axes). Calling a PME model on a non-periodic system raises a `ValueError`.
@@ -487,6 +688,7 @@ For periodic systems, the direct-space Coulomb sum is conditionally convergent a
 | `use_pme` | `bool` | `False` | Enable PME electrostatics. Replaces the direct cutoff scheme (`ElectrostaticInteraction`) with `PMEElectrostaticInteraction`. When `True`, `r_max_lr` is not required for the electrostatic contribution. |
 | `pme_smearing` | `float` | `r_max / 5` | Ewald splitting width in Å. Controls the split between real- and reciprocal-space contributions. Smaller values shift more work to the mesh but reduce real-space accuracy. Run `torchkrates-tune-pme` to find the optimal value. |
 | `pme_mesh_spacing` | `float` | `smearing / 2` | FFT grid spacing in Å. Finer grids improve reciprocal-space accuracy at higher computational cost. |
+| `pme_mesh_rule` | `str` | `"jax"` | Mesh-size rounding rule, also used by PME dispersion. `jax-pme` (so3lr_dev) picks `2**ceil(log2(2*ceil(L/h)+1))` points per cell axis, stock torch-pme `2**ceil(log2(2*L/h+1))`; near power-of-two boundaries these differ (e.g. a 7.85 Å cell at `h=0.25` Å: 128 vs 64 points, ~0.2 eV). The JAX rule is the default so energies match so3lr_dev; its mesh is never smaller, so accuracy does not drop. Use `"torchpme"` for the previous behavior. |
 
 Example config with PME enabled:
 ```yaml
@@ -498,6 +700,37 @@ ARCHITECTURE:
   pme_mesh_spacing: 0.59
   electrostatic_energy_bool: true
   electrostatic_energy_scale: 4.0
+```
+
+#### PME Dispersion (Particle Mesh Ewald)
+
+`DispersionInteraction`'s direct-space C6 sum is truncated at a cutoff with a smooth switching function; for periodic systems this truncation is a source of systematic error, the same kind of issue (though smaller in magnitude, since the C6 term decays as 1/r⁶) that PME electrostatics addresses for the 1/r Coulomb sum. `PMEDispersionInteraction` adds the missing reciprocal-space (k-space) contribution on top of the existing real-space calculation. Unlike PME electrostatics, this is **additive, not a replacement**: `DispersionInteraction`'s real-space C6 residual and its C8/C10 terms are still computed even when `use_pme_dispersion: true`, so `r_max_lr` remains required.
+
+**Requires `torch-pme>=0.5` to be installed.** (Versions before 0.5 silently produce dispersion energies wrong by O(1) eV/atom for this `exponent=6` potential — the reciprocal-space k=0 term is only supplied correctly by torch-pme's own code starting at 0.5.0.) Use `torchkrates-tune-pme --tune_dispersion` to find optimal parameter values for your dataset.
+
+**Limitations:**
+- PME dispersion requires **periodic boundary conditions** (`pbc=True` on all axes). Calling it on a non-periodic system raises a `ValueError`.
+- Unlike `use_pme`, `use_pme_dispersion` does **not** make `r_max_lr` optional — the real-space residual and C8/C10 terms are always computed alongside the k-space term.
+- PME dispersion, like PME electrostatics, operates on absolute positions and the cell matrix and is **incompatible with the LAMMPS ML-IAP interface**. Use the ASE calculator for PME dispersion production runs.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `use_pme_dispersion` | `bool` | `False` | Enable PME dispersion. Adds `PMEDispersionInteraction`'s k-space term on top of `DispersionInteraction`'s real-space residual + C8/C10 terms (does not replace them). |
+| `pme_dispersion_smearing` | `float` | `r_max_lr / 5` | Ewald splitting width in Å. Run `torchkrates-tune-pme --tune_dispersion` to find the optimal value. |
+| `pme_dispersion_mesh_spacing` | `float` | `smearing / 2` | FFT grid spacing in Å. |
+| `legacy_dispersion_bool` | `bool` | `True` | Selects the free-atom alpha/C6 reference table used for dispersion mixing rules and (when `use_pme_dispersion: true`) pseudo-charges. `True` (default) uses the legacy table (elements Z=1–102); `False` uses the refitted table (Z=1–86). |
+
+Example config with PME dispersion enabled:
+```yaml
+ARCHITECTURE:
+  r_max: 6.0
+  r_max_lr: 12.0            # still required — PME dispersion adds to, not replaces, the real-space term
+  dispersion_energy_bool: true
+  dispersion_energy_scale: 1.2
+  dispersion_energy_cutoff_lr_damping: 2.0
+  use_pme_dispersion: true
+  pme_dispersion_smearing: 2.40        # from torchkrates-tune-pme --tune_dispersion
+  pme_dispersion_mesh_spacing: 1.20
 ```
 
 #### Multi-Head Ensemble
@@ -637,6 +870,8 @@ The loss function is automatically determined based on which weights are non-zer
 | `pretrained_weights` | `str` | `None` | Path to pre-trained weights (state dict). Weights are loaded into the model defined by the `ARCHITECTURE` section. Cannot be combined with `pretrained_model`. |
 | `ft_update_avg_num_neighbors` | `bool` | `False` | Recompute the average number of neighbors from the new training data instead of keeping the value from the pre-trained model. |
 | `force_use_average_shifts` | `bool` | `False` | Use E0 shifts computed from the new training data instead of the pre-trained model's shifts. |
+
+`pretrained_weights` also accepts a converted checkpoint's `.pt` state_dict directly, e.g. `pretrained/so3lr/tauri/so3lr-tauri-s-2606.pt` (one of the bundled checkpoints described in [Pretrained SO3LR Models](#pretrained-so3lr-models-ase-calculator) above) or your own `torchkrates-jax2torch`-converted checkpoint following the same `<stem>.pt` + `<stem>_settings.yaml` naming convention. `ARCHITECTURE` in this config must match the checkpoint's architecture (copy from its sibling `*_settings.yaml`) — see the annotated example and caveats in [`examples/training/train_settings_example.yaml`](examples/training/train_settings_example.yaml) (near `TRAINING.patience`). This is plain warm-started training; for LoRA/DoRA/VeRA fine-tuning of a bundled checkpoint instead, see [`examples/finetuning/finetune_pretrained_so3lr.py`](examples/finetuning/finetune_pretrained_so3lr.py).
 
 #### Fine-Tuning Strategy
 

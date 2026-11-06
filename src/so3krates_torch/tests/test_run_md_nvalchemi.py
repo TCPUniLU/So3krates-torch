@@ -453,6 +453,130 @@ def test_compile_help_text_has_no_graph_break_claim():
     assert "fullgraph" in parser_help
 
 
+def _v1_checkpoint_path():
+    import importlib.resources as resources
+
+    return str(
+        resources.files("so3krates_torch.pretrained.so3lr") / "v1" / "so3lr.pt"
+    )
+
+
+@pytest.mark.parametrize("source", ["keyword", "pt_path"])
+def test_load_model_accepts_bundled_checkpoints(source):
+    """The packaged model is now a state_dict + settings (v1), not a pickled
+    model: ``--model v1`` and ``--model <path>/so3lr.pt`` must both load."""
+    from so3krates_torch.calculator.nvalchemi_so3 import NVAlchemiSO3LR
+    from so3krates_torch.cli.run_md_nvalchemi import load_model
+
+    path = "v1" if source == "keyword" else _v1_checkpoint_path()
+    model = load_model(
+        path,
+        "cpu",
+        torch.float64,
+        r_max_lr=12.0,
+        dispersion_energy_cutoff_lr_damping=2.0,
+    )
+    assert isinstance(model, NVAlchemiSO3LR)
+    assert model.model.r_max_lr == pytest.approx(12.0)
+    assert next(model.model.parameters()).dtype == torch.float64
+    assert not any(p.requires_grad for p in model.model.parameters())
+
+
+def _save_multi_head_model(tmp_path, num_theory_levels, **extra):
+    from so3krates_torch.tests.test_nvalchemi_so3 import _make_so3lr
+
+    path = tmp_path / f"heads{num_theory_levels}.model"
+    torch.manual_seed(0)
+    torch.save(
+        _make_so3lr(
+            electrostatics_bool=True,
+            num_theory_levels=num_theory_levels,
+            **extra,
+        ),
+        path,
+    )
+    return path
+
+
+def test_load_model_multi_head_defaults_to_theory_level_5(tmp_path, capsys):
+    """Like so3lr_dev: level 5 unless --theory-level says otherwise, and the
+    default is announced."""
+    from so3krates_torch.cli.run_md_nvalchemi import load_model
+
+    path = _save_multi_head_model(tmp_path, 6)
+    model = load_model(str(path), "cpu", torch.float64)
+    assert model.theory_level == 5
+    assert "theory level 5" in capsys.readouterr().out
+    assert (
+        load_model(
+            str(path), "cpu", torch.float64, theory_level=2
+        ).theory_level
+        == 2
+    )
+
+
+def test_load_model_theory_level_out_of_range_names_the_flag(tmp_path):
+    from so3krates_torch.cli.run_md_nvalchemi import load_model
+
+    path = _save_multi_head_model(tmp_path, 2)  # default level 5 is invalid
+    with pytest.raises(ValueError, match="--theory-level"):
+        load_model(str(path), "cpu", torch.float64)
+    assert (
+        load_model(
+            str(path), "cpu", torch.float64, theory_level=1
+        ).theory_level
+        == 1
+    )
+
+
+def test_cli_theory_level_selects_the_head(monkeypatch, tmp_path):
+    """Through the CLI, --theory-level changes the energy of a multi-head
+    model (the heads of a fresh random model differ)."""
+    from so3krates_torch.cli import run_md_nvalchemi
+
+    energies = []
+    for level in ("0", "1"):
+        run_dir = tmp_path / f"level{level}"
+        run_dir.mkdir()
+        model = _save_multi_head_model(run_dir, 2)
+        xyz = run_dir / "in.xyz"
+        from ase.io import write
+
+        write(xyz, _nacl_crystal(), format="extxyz")
+        log = run_dir / "md_log.csv"
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "torchkrates-md-nvalchemi",
+                "--model",
+                str(model),
+                "--atoms",
+                str(xyz),
+                "--steps",
+                "1",
+                "--log-freq",
+                "1",
+                "--log-file",
+                str(log),
+                "--device",
+                "cpu",
+                "--theory-level",
+                level,
+            ],
+        )
+        run_md_nvalchemi.main()
+        energies.append(float(_read_csv_rows(log)[0]["energy"]))
+    assert energies[0] != pytest.approx(energies[1], abs=1e-9)
+
+
+def test_load_model_bundled_checkpoint_still_needs_long_range_flags():
+    """v1 stores no long-range cutoff: the early error names the flag."""
+    from so3krates_torch.cli.run_md_nvalchemi import load_model
+
+    with pytest.raises(ValueError, match="--r-max-lr"):
+        load_model("v1", "cpu", torch.float64)
+
+
 # ---------------------------------------------------------------------------
 # Friendly error when nvalchemi is not importable (e.g. Python 3.10)
 # ---------------------------------------------------------------------------
@@ -746,15 +870,294 @@ def test_cli_runs_model_without_stored_cutoff(monkeypatch, tmp_path, ensemble):
     _assert_finite_rows(_read_csv_rows(log), required)
 
 
-def test_cli_without_cutoff_flag_fails_with_a_clear_message(
-    monkeypatch, tmp_path
+def test_cli_r_max_lr_defaults_to_12(monkeypatch, tmp_path):
+    """No --r-max-lr: the long-range cutoff is 12 A (SO3LRCalculator's
+    default), also for a model that stores none."""
+    from so3krates_torch.cli import run_md_nvalchemi
+
+    seen = {}
+    orig = run_md_nvalchemi.NVTLangevin
+
+    def _spy(*args, **kwargs):
+        seen["r_lr"] = kwargs["model"].r_lr
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(run_md_nvalchemi, "NVTLangevin", _spy)
+    _run_cli(
+        monkeypatch,
+        tmp_path,
+        _nacl_crystal(),
+        "--ensemble",
+        "nvt",
+        strip_lr_cutoff=True,
+    )
+    assert seen["r_lr"] == 12.0
+
+
+def test_cli_explicit_r_max_lr_wins_over_the_default(monkeypatch, tmp_path):
+    from so3krates_torch.cli import run_md_nvalchemi
+
+    seen = {}
+    orig = run_md_nvalchemi.NVTLangevin
+
+    def _spy(*args, **kwargs):
+        seen["r_lr"] = kwargs["model"].r_lr
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(run_md_nvalchemi, "NVTLangevin", _spy)
+    _run_cli(
+        monkeypatch,
+        tmp_path,
+        _nacl_crystal(),
+        "--ensemble",
+        "nvt",
+        "--r-max-lr",
+        "6.0",
+    )
+    assert seen["r_lr"] == 6.0
+
+
+def test_load_model_default_r_max_lr_rules(tmp_path):
+    """default_r_max_lr applies when no explicit value is given; it warns
+    when it replaces a finite trained cutoff, and stays quiet for a missing
+    one or the 1000 A 'unbounded' value the tauri models store."""
+    import warnings
+
+    from so3krates_torch.cli.run_md_nvalchemi import load_model
+    from so3krates_torch.tests.test_nvalchemi_so3 import _make_so3lr
+
+    stored_6 = _save_tiny_model(tmp_path)  # stores r_max_lr = 6.0
+    with pytest.warns(UserWarning, match="r_max_lr=6.0"):
+        model = load_model(
+            str(stored_6), "cpu", torch.float64, default_r_max_lr=12.0
+        )
+    assert model.r_lr == 12.0
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        explicit = load_model(
+            str(stored_6),
+            "cpu",
+            torch.float64,
+            r_max_lr=6.0,
+            default_r_max_lr=12.0,
+        )
+    assert explicit.r_lr == 6.0
+
+    for stored, name in ((None, "none"), (1000.0, "unbounded")):
+        path = tmp_path / f"{name}.model"
+        m = _make_so3lr(electrostatics_bool=True)
+        m.r_max_lr = stored
+        torch.save(m, path)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            loaded = load_model(
+                str(path), "cpu", torch.float64, default_r_max_lr=12.0
+            )
+        assert loaded.r_lr == 12.0
+
+
+def test_load_model_default_damping_only_fills_a_missing_width(tmp_path):
+    from so3krates_torch.cli.run_md_nvalchemi import load_model
+    from so3krates_torch.tests.test_nvalchemi_so3 import _make_so3lr
+
+    path = tmp_path / "nodamp.model"
+    m = _make_so3lr(electrostatics_bool=True, dispersion_bool=True)
+    m.dispersion_energy_cutoff_lr_damping = None
+    torch.save(m, path)
+    model = load_model(
+        str(path),
+        "cpu",
+        torch.float64,
+        default_dispersion_damping=2.0,
+    )
+    assert model.model.dispersion_energy_cutoff_lr_damping == 2.0
+
+    stored = tmp_path / "damp.model"  # stores 1.0 (test value)
+    torch.save(
+        _make_so3lr(electrostatics_bool=True, dispersion_bool=True), stored
+    )
+    model = load_model(
+        str(stored), "cpu", torch.float64, default_dispersion_damping=2.0
+    )
+    assert model.model.dispersion_energy_cutoff_lr_damping == 1.0
+
+
+# ---------------------------------------------------------------------------
+# The model's own PME (use_pme / use_pme_dispersion) from the CLI
+# ---------------------------------------------------------------------------
+
+_V1_PME_ARGS = (
+    "--r-max-lr",
+    "12.0",
+    "--dispersion-energy-cutoff-lr-damping",
+    "2.0",
+)
+
+
+def _run_cli_with_model(monkeypatch, tmp_path, frames, model_arg, *extra):
+    from ase.io import write
+
+    from so3krates_torch.cli import run_md_nvalchemi
+
+    xyz = tmp_path / "in.xyz"
+    write(xyz, frames, format="extxyz")
+    log = tmp_path / "md_log.csv"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "torchkrates-md-nvalchemi",
+            "--model",
+            str(model_arg),
+            "--atoms",
+            str(xyz),
+            "--steps",
+            "2",
+            "--log-freq",
+            "1",
+            "--log-file",
+            str(log),
+            "--device",
+            "cpu",
+            *extra,
+        ],
+    )
+    run_md_nvalchemi.main()
+    return log
+
+
+def test_load_model_applies_model_pme_overrides():
+    pytest.importorskip("torchpme", reason="torch-pme not installed")
+    from so3krates_torch.cli.run_md_nvalchemi import load_model
+
+    model = load_model(
+        "v1",
+        "cpu",
+        torch.float64,
+        r_max_lr=12.0,
+        dispersion_energy_cutoff_lr_damping=2.0,
+        architecture_overrides={
+            "use_pme": True,
+            "pme_smearing": 1.0,
+            "pme_mesh_spacing": 0.5,
+        },
+    )
+    assert model.model.use_pme is True
+    assert model.model.pme_smearing == 1.0
+    assert model.model.pme_mesh_spacing == 0.5
+
+
+def test_model_pme_flags_change_the_energy():
+    """The PME flags must be live, not just accepted."""
+    pytest.importorskip("torchpme", reason="torch-pme not installed")
+    from so3krates_torch.cli.run_md_nvalchemi import atoms_to_data, load_model
+    from nvalchemi.data.batch import Batch
+
+    common = dict(r_max_lr=12.0, dispersion_energy_cutoff_lr_damping=2.0)
+    energies = {}
+    for name, overrides in {
+        "plain": None,
+        "pme": {"use_pme": True, "pme_smearing": 1.0, "pme_mesh_spacing": 0.5},
+        "pme+disp": {
+            "use_pme": True,
+            "pme_smearing": 1.0,
+            "pme_mesh_spacing": 0.5,
+            "use_pme_dispersion": True,
+            "pme_dispersion_smearing": 2.4,
+            "pme_dispersion_mesh_spacing": 1.2,
+        },
+    }.items():
+        model = load_model(
+            "v1",
+            "cpu",
+            torch.float64,
+            architecture_overrides=overrides,
+            **common,
+        )
+        model.model_config.active_outputs = {"energy"}
+        hooks = model.make_neighbor_hooks()
+        batch = Batch.from_data_list(
+            [atoms_to_data(_nacl_crystal(), "cpu", torch.float64)]
+        )
+        from nvalchemi.dynamics.base import DynamicsStage
+        from nvalchemi.hooks import HookContext
+
+        for hook in hooks:
+            hook(HookContext(batch=batch), DynamicsStage.BEFORE_COMPUTE)
+        energies[name] = float(model(batch)["energy"].sum())
+    assert energies["pme"] != pytest.approx(energies["plain"], abs=1e-6)
+    assert energies["pme+disp"] != pytest.approx(energies["pme"], abs=1e-6)
+
+
+def test_load_model_rejects_pme_overrides_for_pickled_models(tmp_path):
+    from so3krates_torch.cli.run_md_nvalchemi import load_model
+
+    path = _save_tiny_model(tmp_path)
+    with pytest.raises(ValueError, match="pickled"):
+        load_model(
+            str(path),
+            "cpu",
+            torch.float64,
+            architecture_overrides={"use_pme": True},
+        )
+
+
+@pytest.mark.parametrize("ensemble", ["nvt", "npt"])
+def test_cli_runs_a_bundled_model_with_its_own_pme(
+    monkeypatch, tmp_path, ensemble
 ):
-    with pytest.raises(ValueError, match="--r-max-lr"):
-        _run_cli(
+    """v1 + --model-pme (electrostatics) + --model-pme-dispersion."""
+    pytest.importorskip("torchpme", reason="torch-pme not installed")
+    log = _run_cli_with_model(
+        monkeypatch,
+        tmp_path,
+        _nacl_crystal(),
+        "v1",
+        "--ensemble",
+        ensemble,
+        "--model-pme",
+        "--model-pme-smearing",
+        "1.0",
+        "--model-pme-mesh-spacing",
+        "0.5",
+        "--model-pme-dispersion",
+        "--model-pme-dispersion-smearing",
+        "2.4",
+        "--model-pme-dispersion-mesh-spacing",
+        "1.2",
+        *_V1_PME_ARGS,
+    )
+    required = ["energy", "volume_A3"]
+    if ensemble == "npt":
+        required.append("pressure_bar")
+    _assert_finite_rows(_read_csv_rows(log), required)
+
+
+@pytest.mark.parametrize(
+    "extra, message",
+    [
+        (["--model-pme", "--electrostatics", "nvalchemi"], "nvalchemi"),
+        (["--model-pme", "--electrostatics", "none"], "--electrostatics"),
+        (["--model-pme-smearing", "1.0"], "--model-pme"),
+        (["--model-pme-dispersion-smearing", "2.4"], "--model-pme-dispersion"),
+    ],
+)
+def test_cli_model_pme_flag_conflicts(monkeypatch, tmp_path, extra, message):
+    with pytest.raises(SystemExit) as excinfo:
+        _run_cli_with_model(
+            monkeypatch, tmp_path, _nacl_crystal(), "v1", *extra, *_V1_PME_ARGS
+        )
+    assert message in str(excinfo.value)
+
+
+def test_cli_model_pme_needs_a_periodic_cell(monkeypatch, tmp_path):
+    with pytest.raises(SystemExit) as excinfo:
+        _run_cli_with_model(
             monkeypatch,
             tmp_path,
-            _nacl_crystal(),
-            "--ensemble",
-            "nvt",
-            strip_lr_cutoff=True,
+            _h2o(),
+            "v1",
+            "--model-pme",
+            *_V1_PME_ARGS,
         )
+    assert "periodic" in str(excinfo.value)

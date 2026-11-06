@@ -11,14 +11,37 @@ def main():
     argparser.add_argument(
         "--path_to_params",
         type=str,
-        required=True,
+        default=None,
         help="Path to the model parameters file",
     )
     argparser.add_argument(
         "--path_to_hyperparams",
         type=str,
-        required=True,
+        default=None,
         help="Path to the model hyperparameters file",
+    )
+    argparser.add_argument(
+        "--so3lr_dev_checkpoint",
+        type=str,
+        choices=["s", "m", "l"],
+        default=None,
+        help=(
+            "Load one of the bundled so3lr_dev checkpoints "
+            "(so3lr-tauri-s/-m/-l) by size instead of "
+            "--path_to_params/--path_to_hyperparams. Requires so3lr_dev "
+            "(`pip install -e <so3lr_dev checkout>`) to be installed."
+        ),
+    )
+    argparser.add_argument(
+        "--so3lr_dev_generation",
+        type=str,
+        choices=["2602", "2606"],
+        default="2606",
+        help=(
+            "Generation of the bundled so3lr_dev checkpoint selected by "
+            "--so3lr_dev_checkpoint (so3lr-tauri-<size>-<generation>). "
+            "Defaults to the newest (2606)."
+        ),
     )
     argparser.add_argument(
         "--save_settings_path",
@@ -65,8 +88,64 @@ def main():
         default="cpu",
         help="Device to use for the model (e.g., 'cpu' or 'cuda')",
     )
+    argparser.add_argument(
+        "--check_parity",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Verify JAX/Torch model outputs agree after conversion",
+    )
+    argparser.add_argument(
+        "--parity_structure",
+        type=str,
+        default=None,
+        help="Structure file to check parity on (default: bundled example)",
+    )
+    argparser.add_argument(
+        "--parity_atol",
+        type=float,
+        default=1e-5,
+        help="Absolute tolerance for the parity check",
+    )
+    argparser.add_argument(
+        "--parity_rtol",
+        type=float,
+        default=1e-4,
+        help="Relative tolerance for the parity check",
+    )
 
     args = argparser.parse_args()
+
+    if args.so3lr_dev_checkpoint is not None:
+        if (
+            args.path_to_params is not None
+            or args.path_to_hyperparams is not None
+        ):
+            argparser.error(
+                "--so3lr_dev_checkpoint cannot be combined with "
+                "--path_to_params/--path_to_hyperparams"
+            )
+        from importlib.resources import files
+
+        checkpoint_dir = (
+            files("so3lr")
+            / "models"
+            / f"so3lr-tauri-{args.so3lr_dev_checkpoint}"
+            f"-{args.so3lr_dev_generation}"
+        )
+        args.path_to_params = str(checkpoint_dir / "params.pkl")
+        args.path_to_hyperparams = str(checkpoint_dir / "hyperparameters.json")
+        # Resolved to concrete paths above -- clear this so the
+        # Jax2TorchArgs.model_validate(vars(args)) call below (which
+        # sees this already-resolved args, not the raw --so3lr_dev_
+        # checkpoint/--path_to_params combination a user would type)
+        # doesn't trip its own mutual-exclusivity validator.
+        args.so3lr_dev_checkpoint = None
+    elif args.path_to_params is None or args.path_to_hyperparams is None:
+        argparser.error(
+            "either both --path_to_params and --path_to_hyperparams, or "
+            "--so3lr_dev_checkpoint, must be given"
+        )
+
     validated = Jax2TorchArgs.model_validate(vars(args))
 
     dtype = getattr(torch, validated.dtype, torch.float32)
@@ -86,6 +165,37 @@ def main():
 
     if args.save_model_path is not None:
         torch.save(model, args.save_model_path)
+
+    if args.check_parity:
+        import json
+        import pickle
+
+        from ml_collections import config_dict
+
+        from so3krates_torch.tools.model_parity import check_model_parity
+
+        with open(args.path_to_params, "rb") as f:
+            flax_params = pickle.load(f)
+        with open(args.path_to_hyperparams, "r") as f:
+            cfg = config_dict.ConfigDict(json.load(f))
+
+        parity_ok = check_model_parity(
+            cfg=cfg,
+            flax_params=flax_params,
+            torch_model=model,
+            r_max=cfg.model.cutoff,
+            r_max_lr=cfg.model.cutoff_lr,
+            structure_path=args.parity_structure,
+            atol=args.parity_atol,
+            rtol=args.parity_rtol,
+        )
+        if not parity_ok:
+            print(
+                "WARNING: JAX<->Torch parity check FAILED -- the converted "
+                "model was still saved, but its outputs do not match the "
+                "source model within tolerance. See the table above."
+            )
+            return 1
 
     return 0
 

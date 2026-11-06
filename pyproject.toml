@@ -54,7 +54,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pre-commit", "pytest"]
-pme = ["torch-pme>=0.4"]
+pme = ["torch-pme>=0.5"]
 slurm = ["python-hostlist"]
 jax = ["jax", "flax", "ml-collections"]
 vis = ["matplotlib>=3.5.0", "pandas>=1.5.0"]
@@ -72,7 +72,12 @@ issues = "https://github.com/tohenkes/So3krates-torch/issues"
 where = ["src"]
 
 [tool.setuptools.package-data]
-so3krates_torch = ["pretrained/so3lr/so3lr.model"]
+so3krates_torch = [
+    "pretrained/so3lr/v1/*.pt",
+    "pretrained/so3lr/v1/*.yaml",
+    "pretrained/so3lr/tauri/*.pt",
+    "pretrained/so3lr/tauri/*.yaml",
+]
 "so3krates_torch.blocks" = ["cgmatrix.npz"]
 
 [tool.pytest.ini_options]
