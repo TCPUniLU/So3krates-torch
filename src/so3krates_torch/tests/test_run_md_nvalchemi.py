@@ -576,6 +576,7 @@ def test_load_model_bundled_checkpoint_still_needs_long_range_flags():
     with pytest.raises(ValueError, match="--r-max-lr"):
         load_model("v1", "cpu", torch.float64)
 
+
 class _StopAfterLoad(Exception):
     pass
 
