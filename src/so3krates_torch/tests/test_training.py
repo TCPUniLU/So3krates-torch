@@ -576,7 +576,7 @@ def test_set_dtype_model_invalid_raises(default_model_config):
 
 def test_setup_loss_function_auto_energy_forces():
     from so3krates_torch.tools.training_setup import setup_loss_function
-    from so3krates_torch.modules.loss import WeightedEnergyForcesLoss
+    from so3krates_torch.modules.loss import WeightedPropertiesLoss
 
     config = {
         "TRAINING": {
@@ -585,7 +585,8 @@ def test_setup_loss_function_auto_energy_forces():
         }
     }
     loss = setup_loss_function(config)
-    assert isinstance(loss, WeightedEnergyForcesLoss)
+    assert isinstance(loss, WeightedPropertiesLoss)
+    assert loss.properties == ["energy", "forces"]
     assert abs(loss.energy_weight.item() - 2.0) < 1e-9
     assert abs(loss.forces_weight.item() - 500.0) < 1e-9
 

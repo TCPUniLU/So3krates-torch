@@ -511,3 +511,231 @@ def test_WeightedEnergyForcesChargesHirshfeldLoss(mock_batch_for_loss):
     loss = loss_fn(batch, pred, ddp=False)
     expected = loss_energy + loss_forces + loss_charges + loss_hirshfeld
     assert torch.allclose(loss, expected, atol=1e-6)
+
+
+# ── Masked per-atom ratio losses (c6 / a0) and generic loss ────
+
+
+def _ratio_pred(batch):
+    return {
+        "energy": torch.tensor([8.0, 16.0]),
+        "forces": torch.zeros_like(batch.forces),
+        "dipole": batch.dipole * 0.5,
+        "partial_charges": batch.charges * 0.5,
+        "hirshfeld_ratios": batch.hirshfeld_ratios * 0.5,
+        "c6_ratios": batch.c6_ratios * 0.5,
+    }
+
+
+def _manual_ratio_loss(batch, pred, key, weight_key, mask=None):
+    total, count = 0.0, 0
+    for i, g in enumerate(batch.batch.tolist()):
+        w = batch.weight[g].item() * batch[weight_key][g].item()
+        ref = batch[key][i].item()
+        if mask is not None and not mask[i]:
+            continue
+        total += w * (ref - pred[key][i].item()) ** 2
+        count += 1
+    return total / count
+
+
+def test_weighted_mse_c6_ratios(mock_batch_for_loss):
+    from so3krates_torch.modules.loss import (
+        weighted_mean_squared_error_c6_ratios,
+    )
+
+    batch = mock_batch_for_loss
+    pred = _ratio_pred(batch)
+    loss = weighted_mean_squared_error_c6_ratios(batch, pred, ddp=False)
+    # graph 0: 3 atoms, w=1*1, (2-1)^2=1 ; graph 1: 4 atoms, w=2*2, 0.25
+    expected = (3 * 1.0 + 4 * 4.0 * 0.25) / 7
+    assert torch.allclose(loss, torch.tensor(expected), atol=1e-6)
+
+
+def test_masked_ratio_loss_nan_times_zero_weight_is_finite(
+    mock_batch_for_loss,
+):
+    from so3krates_torch.modules.loss import (
+        weighted_mean_squared_error_c6_ratios,
+    )
+
+    batch = mock_batch_for_loss
+    pred = _ratio_pred(batch)
+    batch.c6_ratios[3:] = float("nan")
+    batch.c6_ratios_weight = torch.tensor([1.0, 0.0])
+    loss = weighted_mean_squared_error_c6_ratios(batch, pred, ddp=False)
+    assert torch.isfinite(loss)
+    # only graph 0's three atoms count
+    assert torch.allclose(loss, torch.tensor(1.0), atol=1e-6)
+
+
+def test_masked_ratio_loss_all_missing_is_zero(mock_batch_for_loss):
+    from so3krates_torch.modules.loss import (
+        weighted_mean_squared_error_c6_ratios,
+    )
+
+    batch = mock_batch_for_loss
+    batch.c6_ratios[:] = float("nan")
+    pred_c6 = torch.ones(7, requires_grad=True)
+    loss = weighted_mean_squared_error_c6_ratios(
+        batch, {"c6_ratios": pred_c6}, ddp=False
+    )
+    assert loss.item() == 0.0
+    loss.backward()
+    assert torch.isfinite(pred_c6.grad).all()
+    assert (pred_c6.grad == 0).all()
+
+
+def test_masked_ratio_loss_partial_nan_atoms(mock_batch_for_loss):
+    from so3krates_torch.modules.loss import (
+        weighted_mean_squared_error_hirshfeld,
+    )
+
+    batch = mock_batch_for_loss
+    pred = _ratio_pred(batch)
+    batch.hirshfeld_ratios[[1, 5]] = float("nan")
+    pred["hirshfeld_ratios"] = torch.full((7,), 0.5)
+    loss = weighted_mean_squared_error_hirshfeld(batch, pred, ddp=False)
+    mask = [True, False, True, True, True, False, True]
+    expected = _manual_ratio_loss(
+        batch, pred, "hirshfeld_ratios", "hirshfeld_ratios_weight", mask
+    )
+    assert torch.allclose(loss, torch.tensor(expected), atol=1e-6)
+
+
+def test_masked_ratio_loss_zero_weight_structure_excluded(
+    mock_batch_for_loss,
+):
+    """Old preprocessed files zero-fill missing labels with weight 0;
+    those atoms must not dilute the mean."""
+    from so3krates_torch.modules.loss import (
+        weighted_mean_squared_error_hirshfeld,
+    )
+
+    batch = mock_batch_for_loss
+    pred = {"hirshfeld_ratios": batch.hirshfeld_ratios * 0.5}
+    batch.hirshfeld_ratios_weight = torch.tensor([1.0, 0.0])
+    batch.hirshfeld_ratios[3:] = 0.0
+    loss = weighted_mean_squared_error_hirshfeld(batch, pred, ddp=False)
+    assert torch.allclose(loss, torch.tensor(0.25), atol=1e-6)
+
+
+_LEGACY_CASES = [
+    (WeightedEnergyForcesLoss, {"energy": 2.0, "forces": 3.0}),
+    (
+        WeightedEnergyForcesDipoleLoss,
+        {"energy": 2.0, "forces": 3.0, "dipole": 0.5},
+    ),
+    (
+        WeightedEnergyForcesHirshfeldLoss,
+        {"energy": 2.0, "forces": 3.0, "hirshfeld": 0.5},
+    ),
+    (
+        WeightedEnergyForcesDipoleHirshfeldLoss,
+        {"energy": 2.0, "forces": 3.0, "dipole": 0.5, "hirshfeld": 0.7},
+    ),
+    (
+        WeightedEnergyForcesChargesLoss,
+        {"energy": 2.0, "forces": 3.0, "charges": 0.5},
+    ),
+    (
+        WeightedEnergyForcesChargesHirshfeldLoss,
+        {"energy": 2.0, "forces": 3.0, "charges": 0.5, "hirshfeld": 0.7},
+    ),
+]
+_LEGACY_TO_PROPERTY = {
+    "energy": "energy",
+    "forces": "forces",
+    "dipole": "dipole",
+    "hirshfeld": "hirshfeld_ratios",
+    "charges": "charges",
+}
+
+
+@pytest.mark.parametrize("legacy_cls,kw", _LEGACY_CASES)
+def test_properties_loss_matches_legacy_classes(
+    mock_batch_for_loss, legacy_cls, kw
+):
+    from so3krates_torch.modules.loss import WeightedPropertiesLoss
+
+    batch = mock_batch_for_loss
+    pred = _ratio_pred(batch)
+    legacy = legacy_cls(**{f"{k}_weight": v for k, v in kw.items()})
+    generic = WeightedPropertiesLoss(
+        {_LEGACY_TO_PROPERTY[k]: v for k, v in kw.items()}
+    )
+    assert torch.allclose(
+        generic(batch, pred, ddp=False),
+        legacy(batch, pred, ddp=False),
+        atol=1e-10,
+    )
+
+
+def test_properties_loss_c6_term_adds_linearly(mock_batch_for_loss):
+    from so3krates_torch.modules.loss import (
+        WeightedPropertiesLoss,
+        weighted_mean_squared_error_c6_ratios,
+    )
+
+    batch = mock_batch_for_loss
+    pred = _ratio_pred(batch)
+    base = {"energy": 2.0, "forces": 3.0, "hirshfeld_ratios": 0.1}
+    without = WeightedPropertiesLoss(base)(batch, pred, ddp=False)
+    with_c6 = WeightedPropertiesLoss({**base, "c6_ratios": 0.1})(
+        batch, pred, ddp=False
+    )
+    c6 = weighted_mean_squared_error_c6_ratios(batch, pred, ddp=False)
+    assert torch.allclose(with_c6, without + 0.1 * c6, atol=1e-10)
+
+
+def test_properties_loss_skips_zero_weight_terms(mock_batch_for_loss):
+    from so3krates_torch.modules.loss import WeightedPropertiesLoss
+
+    batch = mock_batch_for_loss
+    pred = _ratio_pred(batch)
+    del pred["c6_ratios"]  # not needed when its weight is 0
+    loss = WeightedPropertiesLoss(
+        {"energy": 1.0, "forces": 1.0, "c6_ratios": 0.0}
+    )(batch, pred, ddp=False)
+    assert torch.isfinite(loss)
+
+
+def test_properties_loss_missing_pred_key_raises(mock_batch_for_loss):
+    from so3krates_torch.modules.loss import WeightedPropertiesLoss
+
+    batch = mock_batch_for_loss
+    pred = _ratio_pred(batch)
+    del pred["c6_ratios"]
+    loss_fn = WeightedPropertiesLoss({"c6_ratios": 0.1})
+    with pytest.raises(KeyError, match="c6_ratios_bool"):
+        loss_fn(batch, pred, ddp=False)
+
+
+def test_properties_loss_unknown_property_raises():
+    from so3krates_torch.modules.loss import WeightedPropertiesLoss
+
+    with pytest.raises(ValueError, match="stress"):
+        WeightedPropertiesLoss({"stress": 1.0})
+
+
+def test_setup_loss_auto_returns_properties_loss():
+    from so3krates_torch.modules.loss import WeightedPropertiesLoss
+    from so3krates_torch.tools.training_setup import setup_loss_function
+
+    loss = setup_loss_function(
+        {
+            "TRAINING": {
+                "energy_weight": 0.01,
+                "forces_weight": 1.0,
+                "dipole_weight": 0.1,
+                "hirshfeld_weight": 0.1,
+                "c6_ratios_weight": 0.1,
+            }
+        }
+    )
+    assert isinstance(loss, WeightedPropertiesLoss)
+    assert abs(loss.c6_ratios_weight.item() - 0.1) < 1e-6
+    explicit = setup_loss_function(
+        {"TRAINING": {"loss_type": "properties", "c6_ratios_weight": 0.1}}
+    )
+    assert isinstance(explicit, WeightedPropertiesLoss)

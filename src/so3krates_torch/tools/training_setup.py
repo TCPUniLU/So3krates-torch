@@ -10,6 +10,7 @@ from so3krates_torch.modules.loss import (
     WeightedEnergyForcesDipoleHirshfeldLoss,
     WeightedEnergyForcesChargesLoss,
     WeightedEnergyForcesChargesHirshfeldLoss,
+    WeightedPropertiesLoss,
 )
 from so3krates_torch.tools.checkpoint import (
     CheckpointHandler,
@@ -50,59 +51,10 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
     # Check if explicit loss type is specified
     loss_type = loss_config.get("loss_type", "auto")
 
-    if loss_type == "auto":
-        # Auto-determine loss function type based on weights
-        has_dipole = dipole_w > 0
-        has_hirshfeld = hirshfeld_w > 0
-        has_charges = charges_w > 0
-
-        if has_charges and has_hirshfeld:
-            loss_fn = WeightedEnergyForcesChargesHirshfeldLoss(
-                energy_weight=energy_w,
-                forces_weight=forces_w,
-                charges_weight=charges_w,
-                hirshfeld_weight=hirshfeld_w,
-            )
-            logging.info(
-                "Auto-selected WeightedEnergyForcesChargesHirshfeldLoss"
-            )
-        elif has_charges:
-            loss_fn = WeightedEnergyForcesChargesLoss(
-                energy_weight=energy_w,
-                forces_weight=forces_w,
-                charges_weight=charges_w,
-            )
-            logging.info("Auto-selected WeightedEnergyForcesChargesLoss")
-        elif has_dipole and has_hirshfeld:
-            loss_fn = WeightedEnergyForcesDipoleHirshfeldLoss(
-                energy_weight=energy_w,
-                forces_weight=forces_w,
-                dipole_weight=dipole_w,
-                hirshfeld_weight=hirshfeld_w,
-            )
-            logging.info(
-                "Auto-selected WeightedEnergyForcesDipoleHirshfeldLoss"
-            )
-        elif has_dipole:
-            loss_fn = WeightedEnergyForcesDipoleLoss(
-                energy_weight=energy_w,
-                forces_weight=forces_w,
-                dipole_weight=dipole_w,
-            )
-            logging.info("Auto-selected WeightedEnergyForcesDipoleLoss")
-        elif has_hirshfeld:
-            loss_fn = WeightedEnergyForcesHirshfeldLoss(
-                energy_weight=energy_w,
-                forces_weight=forces_w,
-                hirshfeld_weight=hirshfeld_w,
-            )
-            logging.info("Auto-selected WeightedEnergyForcesHirshfeldLoss")
-        else:
-            # Default to basic energy-forces loss from MACE
-            loss_fn = WeightedEnergyForcesLoss(
-                energy_weight=energy_w, forces_weight=forces_w
-            )
-            logging.info("Auto-selected WeightedEnergyForcesLoss")
+    if loss_type in ("auto", "properties"):
+        # One term per non-zero weight (see WeightedPropertiesLoss).
+        loss_fn = WeightedPropertiesLoss(weights)
+        logging.info(f"Selected {loss_fn}")
     else:
         # Explicit loss type specification
         if loss_type == "energy_forces":
@@ -144,6 +96,7 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
         else:
             supported_types = [
                 "auto",
+                "properties",
                 "energy_forces",
                 "energy_forces_dipole",
                 "energy_forces_hirshfeld",
@@ -160,7 +113,8 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
 
     logging.info(
         f"Loss weights: energy={energy_w}, forces={forces_w}, "
-        f"dipole={dipole_w}, hirshfeld={hirshfeld_w}, charges={charges_w}"
+        f"dipole={dipole_w}, hirshfeld={hirshfeld_w}, charges={charges_w}, "
+        f"c6_ratios={weights['c6_ratios']}"
     )
 
     return loss_fn
