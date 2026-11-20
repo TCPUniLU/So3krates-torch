@@ -295,12 +295,14 @@ torchkrates-eval --model_path my_checkpoint.pt \
 | `--compute_dipole` | `False` | Compute dipole predictions |
 | `--compute_stress` | `False` | Compute stress predictions |
 | `--compute_hirshfeld` | `False` | Compute Hirshfeld ratio predictions |
+| `--compute_c6_ratios` | `False` | Compute C6 ratio predictions (needs a model with `c6_ratios_bool: true`, i.e. SO3LR-tauri) |
 | `--compute_partial_charges` | `False` | Compute partial charge predictions |
 | `--energy_key` | `REF_energy` | Key for reference energies in the dataset |
 | `--forces_key` | `REF_forces` | Key for reference forces |
 | `--dipole_key` | `REF_dipoles` | Key for reference dipoles |
 | `--charges_key` | `REF_charges` | Key for reference partial charges |
 | `--hirshfeld_key` | `REF_hirsh_ratios` | Key for reference Hirshfeld ratios |
+| `--c6_key` | `REF_c6_ratios` | Key for reference C6 ratios |
 | `--total_charge_key` | `charge` | Key for total charge |
 | `--total_spin_key` | `total_spin` | Key for total spin |
 
@@ -451,7 +453,7 @@ Note there is no `--multispecies` flag here (unlike `torchkrates-eval`); use `--
 |------|---------|-------------|
 | `--models` | *required* | Path to a model file or a directory of model files, a bundled pretrained keyword (`v1`, `tauri-*`, `v2-*`), or a `.pt` state_dict checkpoint with a sibling `<stem>_settings.yaml` |
 | `--data` | *required* | Dataset path (must contain reference values) |
-| `--output_args` | `energy forces` | Properties to evaluate. Can include `stress`, `dipole`, `hirshfeld_ratios`, etc. |
+| `--output_args` | `energy forces` | Properties to evaluate. Can include `stress`, `virials`, `dipole`, `hirshfeld_ratios`, `c6_ratios`. |
 | `--batch_size` | `16` | Structures per batch |
 | `--device` | `cpu` | `cuda` or `cpu` |
 | `--save` | `./` | Directory for output files |
@@ -464,6 +466,7 @@ Note there is no `--multispecies` flag here (unlike `torchkrates-eval`); use `--
 | `--dipole_key` | `REF_dipoles` | Key for reference dipoles |
 | `--charges_key` | `REF_charges` | Key for reference partial charges |
 | `--hirshfeld_key` | `REF_hirsh_ratios` | Key for reference Hirshfeld ratios |
+| `--c6_key` | `REF_c6_ratios` | Key for reference C6 ratios |
 | `--total_charge_key` | `charge` | Key for total charge |
 | `--total_spin_key` | `total_spin` | Key for total spin |
 
@@ -791,7 +794,8 @@ By default, the trainer reads reference properties using these keys from the ASE
 | Virials | `REF_virials` |
 | Dipole | `dipole` |
 | Charges | `REF_charges` |
-| Hirshfeld ratios | `REF_hirsh_ratios` |
+| Hirshfeld (a0) ratios | `REF_hirsh_ratios` (fallbacks: `hirshfeld_ratios`, `hirsh_ratios`, `a0_ratios`) |
+| C6 ratios | `REF_c6_ratios` (fallback: `c6_ratios`) |
 | Total charge | `total_charge` |
 | Total spin | `total_spin` |
 
@@ -841,8 +845,45 @@ The loss function is automatically determined based on which weights are non-zer
 | `energy_weight` | `float` | `1.0` | Weight of the energy MSE loss term. Energy loss is normalized per atom. |
 | `forces_weight` | `float` | `1000.0` | Weight of the forces MSE loss term. Typically much larger than `energy_weight` since force errors are smaller in magnitude. |
 | `dipole_weight` | `float` | `0.0` | Weight of the dipole loss term. Set > 0 to train dipole predictions (requires dipole labels in training data). |
-| `hirshfeld_weight` | `float` | `0.0` | Weight of the Hirshfeld ratios loss term. Set > 0 to train Hirshfeld volume ratio predictions. |
-| `loss_type` | `str` | `"auto"` | Explicit loss type selection. Options: `auto`, `energy_forces`, `energy_forces_dipole`, `energy_forces_hirshfeld`, `energy_forces_dipole_hirshfeld`. When `auto`, the loss is inferred from which weights are non-zero. |
+| `hirshfeld_weight` | `float` | `0.0` | Weight of the Hirshfeld (polarizability, a0) ratios loss term. Also accepted as `a0_ratios_weight`. |
+| `c6_ratios_weight` | `float` | `0.0` | Weight of the per-atom C6 ratios loss term. Requires `ARCHITECTURE.c6_ratios_bool: true` (SO3LR-tauri). |
+| `loss_type` | `str` | `"auto"` | `auto`/`properties`: one weighted term per non-zero weight (`WeightedPropertiesLoss`). Legacy explicit options: `energy_forces`, `energy_forces_dipole`, `energy_forces_hirshfeld`, `energy_forces_dipole_hirshfeld`, `energy_forces_charges`, `energy_forces_charges_hirshfeld`. |
+
+Per-atom ratio labels (Hirshfeld/a0 and C6) may be missing for part of the training data: atoms with a NaN or absent label, or a zero structure weight, are excluded from the ratio losses and validation metrics (numerator and denominator), mirroring the JAX `so3lr` trainer. The SO3LR-tauri paper trains with forces 1.0, energy 0.01, dipole 0.1, a0 ratios 0.1 and C6 ratios 0.1 (SI Eq. S13); these weights transfer to torch only with `loss_reduction: per_graph`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `loss_reduction` | `str` | `"flat"` | `flat`: one mean over every element of the batch, so larger structures weigh more (MACE-style). `per_graph`: JAX `so3lr` reduction — per-atom terms are averaged per structure, then over structures that carry the label (a structure with any missing per-atom label is skipped); energy and dipole are divided by the number of atoms and averaged over labelled structures. Counts are summed across GPUs, so multi-GPU training weighs every structure equally. Only with `loss_type` `auto`/`properties`. |
+
+**Robust loss.** Instead of the squared error, each term can use Barron's general robust loss ρ(x; α, c) ("A General and Adaptive Robust Loss Function", 2019), as the SO3LR-tauri paper does (SI Eq. S13). α sets how strongly large residuals still pull: 2 = squared error, 1 = Charbonnier/pseudo-Huber (L1-like for large errors), 0 = Cauchy. c sets where "large" starts, in the target's units.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `use_robust_loss` | `bool` | `False` | Fixed robust loss: per-element penalty `2·ρ(x, robust_loss_alpha, 1)`. |
+| `robust_loss_alpha` | `float` | `1.0` | α of the fixed robust loss. |
+| `use_adaptive_robust_loss` | `bool` | `False` | Adaptive robust loss: α ∈ [0, 2] and c > 0 are learned per property through the negative log-likelihood `2·(ρ + log c + log Z(α))`. Loss values can be negative. α and c are logged during validation. |
+| `adaptive_robust_loss_init_alpha` | `float` | `1.0` | Initial α (clipped to [0.01, 1.99]). |
+| `adaptive_robust_loss_init_scale` | `float` | `1.0` | Initial c (at least 0.1). |
+
+The two robust options are mutually exclusive and require `loss_type` `auto`/`properties`. To reproduce the JAX `so3lr` loss, combine `use_adaptive_robust_loss: true` with `loss_reduction: per_graph`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `use_robust_loss_validation` | `bool` | same as `use_robust_loss` | Use the fixed robust loss for the validation loss (which picks the best checkpoint and drives early stopping). Ignored with the adaptive loss: validation then always uses the training loss, as in JAX. |
+| `robust_loss_alpha_validation` | `float` | same as `robust_loss_alpha` | α of the fixed robust validation loss. |
+
+Settings that have no effect (any validation setting with the adaptive loss, or `robust_loss_alpha_validation` while validation uses the squared error) are logged as warnings.
+
+**Two-stage loss weights.** As in the JAX trainer (and the SO3LR-tauri paper, which raises the energy weight from 0.001 to 0.01), the loss weights can change during training:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `stage_two_start_epoch` | `int` | `None` | Epoch (≥ 1) from which the stage-two weights apply, to training and validation. At the switch the best-loss, early-stopping and `reduce_on_plateau` trackers reset; the current learning rate is kept. Early stopping during stage one ends the run, as in JAX. |
+| `stage_two_loss_weights` | `dict` | `None` | Weights for stage two, with the same keys as the `*_weight` options (`energy_weight`, `forces_weight`, `dipole_weight`, `hirshfeld_weight`/`a0_ratios_weight`, `c6_ratios_weight`, `charges_weight`). Keys not listed keep their stage-one value. Labels needed by either stage must be in the data. |
+
+Set both or neither; requires `loss_type` `auto`/`properties`. The adaptive robust-loss α/c are shared between the stages. Not combinable with SWA. A `stage_two_start_epoch` at or beyond `num_epochs` is accepted (you may extend `num_epochs` on a restart) but logged as a warning.
+
+The JAX trainer's per-target loss `scales` and per-element `atom_loss_weights` are not exposed: JAX training never sets them (all 1), so there is nothing to match.
 
 #### Training Loop
 
@@ -883,7 +924,8 @@ When loading a pre-trained model, `finetune_choice` controls which parameters re
 | `freeze_embedding` | `bool` | `True` | Freeze the atomic embedding layers during fine-tuning. |
 | `freeze_zbl` | `bool` | `True` | Freeze ZBL repulsion parameters. |
 | `freeze_partial_charges` | `bool` | `True` | Freeze the partial charges output head. |
-| `freeze_hirshfeld` | `bool` | `True` | Freeze the Hirshfeld ratios output head. |
+| `freeze_hirshfeld` | `bool` | `True` | Freeze the Hirshfeld ratios output head (in SO3LR-tauri this is the polarizability/a0 ratio head). Also accepted as `freeze_a0_ratios`. |
+| `freeze_c6_ratios` | `bool` | `True` | Freeze the C6 ratio output head (SO3LR-tauri, `c6_ratios_bool: true`). A warning is logged if a ratio loss weight is > 0 while its head is frozen. |
 | `freeze_shifts` | `bool` | `False` | Freeze learned atomic energy shifts. |
 | `freeze_scales` | `bool` | `False` | Freeze learned atomic energy scales. |
 

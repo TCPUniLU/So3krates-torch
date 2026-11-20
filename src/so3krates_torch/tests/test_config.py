@@ -262,3 +262,135 @@ def test_preprocess_validate_alias():
         }
     )
     assert cfg.validate_output is True
+
+
+# ── Dispersion-label loss weights (c6_ratios / a0_ratios) ──────
+
+
+def _example_raw():
+    return yaml.safe_load(_EXAMPLE_YAML.read_text())
+
+
+def _training(**kw):
+    section = _example_raw()["TRAINING"]
+    section.pop("hirshfeld_weight", None)
+    section.update(kw)
+    return TrainingConfig(**section)
+
+
+def test_c6_weight_default_zero_and_in_property_weights():
+    from so3krates_torch.tools.training_setup import (
+        get_loss_property_weights,
+    )
+
+    assert get_loss_property_weights({"TRAINING": {}})["c6_ratios"] == 0.0
+    weights = get_loss_property_weights(
+        {"TRAINING": {"c6_ratios_weight": 0.1}}
+    )
+    assert weights["c6_ratios"] == 0.1
+    dumped = _training().model_dump()
+    assert dumped["c6_ratios_weight"] == 0.0
+
+
+def test_a0_ratios_weight_alias():
+    cfg = _training(a0_ratios_weight=0.1)
+    assert cfg.hirshfeld_weight == 0.1
+    assert "a0_ratios_weight" not in cfg.model_dump()
+    # same value under both names is accepted
+    assert (
+        _training(a0_ratios_weight=0.1, hirshfeld_weight=0.1).hirshfeld_weight
+        == 0.1
+    )
+    with pytest.raises(ValidationError, match="a0_ratios_weight"):
+        _training(a0_ratios_weight=0.1, hirshfeld_weight=0.2)
+
+
+def test_c6_weight_requires_c6_head():
+    raw = _example_raw()
+    raw["ARCHITECTURE"]["dispersion_energy_bool"] = True
+    raw["ARCHITECTURE"]["c6_ratios_bool"] = False
+    raw["TRAINING"]["c6_ratios_weight"] = 0.1
+    with pytest.raises(ValidationError, match="c6_ratios_bool"):
+        TrainConfig.model_validate(raw)
+    raw["ARCHITECTURE"]["c6_ratios_bool"] = True
+    cfg = TrainConfig.model_validate(raw)
+    assert cfg.TRAINING.c6_ratios_weight == 0.1
+
+
+def test_c6_weight_with_pretrained_model_skips_architecture_check():
+    """With pretrained_model the architecture comes from the pickled
+    model, so ARCHITECTURE.c6_ratios_bool must not be required."""
+    raw = _example_raw()
+    raw["ARCHITECTURE"]["c6_ratios_bool"] = False
+    raw["TRAINING"]["c6_ratios_weight"] = 0.1
+    raw["TRAINING"]["pretrained_model"] = "/some/tauri.model"
+    cfg = TrainConfig.model_validate(raw)
+    assert cfg.TRAINING.c6_ratios_weight == 0.1
+
+
+def test_loss_reduction_config_default_flat():
+    assert _training().loss_reduction == "flat"
+    assert _training(loss_reduction="per_graph").loss_reduction == "per_graph"
+    with pytest.raises(ValidationError):
+        _training(loss_reduction="mean")
+
+
+def test_robust_flags_mutually_exclusive():
+    cfg = _training()
+    assert cfg.use_robust_loss is False
+    assert cfg.use_adaptive_robust_loss is False
+    assert cfg.robust_loss_alpha == 1.0
+    assert cfg.adaptive_robust_loss_init_alpha == 1.0
+    assert cfg.adaptive_robust_loss_init_scale == 1.0
+    with pytest.raises(ValidationError, match="use_adaptive_robust_loss"):
+        _training(use_robust_loss=True, use_adaptive_robust_loss=True)
+
+
+# ── Two-stage loss weights / validation robust settings ────────
+
+
+def test_stage_two_config_both_or_neither():
+    cfg = _training(
+        stage_two_start_epoch=3, stage_two_loss_weights={"energy_weight": 0.01}
+    )
+    assert cfg.stage_two_start_epoch == 3
+    with pytest.raises(ValidationError, match="stage_two"):
+        _training(stage_two_start_epoch=3)
+    with pytest.raises(ValidationError, match="stage_two"):
+        _training(stage_two_loss_weights={"energy_weight": 0.01})
+
+
+def test_stage_two_config_rejects_bad_values():
+    with pytest.raises(ValidationError, match="stage_two_start_epoch"):
+        _training(
+            stage_two_start_epoch=0,
+            stage_two_loss_weights={"energy_weight": 0.01},
+        )
+    with pytest.raises(ValidationError, match="dipole_vec"):
+        _training(
+            stage_two_start_epoch=2,
+            stage_two_loss_weights={"dipole_vec": 0.1},
+        )
+
+
+def test_stage_two_a0_alias_normalized():
+    cfg = _training(
+        stage_two_start_epoch=2,
+        stage_two_loss_weights={"a0_ratios_weight": 0.1},
+    )
+    assert cfg.stage_two_loss_weights == {"hirshfeld_weight": 0.1}
+
+
+def test_stage_two_c6_requires_head():
+    raw = _example_raw()
+    raw["ARCHITECTURE"]["c6_ratios_bool"] = False
+    raw["TRAINING"]["stage_two_start_epoch"] = 2
+    raw["TRAINING"]["stage_two_loss_weights"] = {"c6_ratios_weight": 0.1}
+    with pytest.raises(ValidationError, match="c6_ratios_bool"):
+        TrainConfig.model_validate(raw)
+
+
+def test_validation_robust_defaults():
+    cfg = _training()
+    assert cfg.use_robust_loss_validation is None
+    assert cfg.robust_loss_alpha_validation is None

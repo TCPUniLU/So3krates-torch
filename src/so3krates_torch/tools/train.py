@@ -11,7 +11,15 @@ import dataclasses
 import logging
 import time
 from contextlib import nullcontext
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Union,
+)
 
 import numpy as np
 import torch
@@ -23,8 +31,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch_ema import ExponentialMovingAverage
 
-from so3krates_torch.cli.visualise_train import TrainingPlotter
-
+from so3krates_torch.modules.loss import robust_param_metrics
 from so3krates_torch.tools import torch_geometric
 from so3krates_torch.tools.checkpoint import CheckpointHandler, CheckpointState
 from so3krates_torch.tools.torch_tools import to_numpy
@@ -34,6 +41,9 @@ from so3krates_torch.tools.utils import (
 from so3krates_torch.tools.eval import ModelEval
 from so3krates_torch.tools.finetune import preserve_grad_state
 
+if TYPE_CHECKING:  # pandas/matplotlib are optional ([vis] extra)
+    from so3krates_torch.cli.visualise_train import TrainingPlotter
+
 
 @dataclasses.dataclass
 class SWAContainer:
@@ -41,6 +51,69 @@ class SWAContainer:
     scheduler: SWALR
     start: int
     loss_fn: torch.nn.Module
+
+
+def _fmt_ratio_mae(value) -> str:
+    """Ratio metrics are absent when no validation atom is labelled."""
+    return "n/a" if value is None else f"{value:8.4f}"
+
+
+def reset_plateau_scheduler_(lr_scheduler) -> None:
+    """Reset ReduceLROnPlateau's best/bad-epoch/cooldown trackers while
+    keeping the current learning rate (JAX two-stage switch). No-op for
+    other schedulers."""
+    if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+        lr_scheduler.best = lr_scheduler.mode_worse
+        lr_scheduler.num_bad_epochs = 0
+        lr_scheduler.cooldown_counter = 0
+
+
+def clip_gradients_(
+    model: torch.nn.Module,
+    loss_fn: Optional[torch.nn.Module],
+    max_norm: float,
+) -> torch.Tensor:
+    """Clip by the global norm over model and learned loss parameters
+    together, like JAX so3lr's optax clip_by_global_norm over the full
+    params tree (which includes the adaptive robust-loss alpha/scale)."""
+    params = list(model.parameters())
+    if loss_fn is not None:
+        params += list(loss_fn.parameters())
+    return torch.nn.utils.clip_grad_norm_(params, max_norm=max_norm)
+
+
+def allreduce_loss_param_grads_(loss_fn: torch.nn.Module) -> None:
+    """Average the gradients of learned loss parameters (adaptive robust
+    loss) across DDP ranks. They live outside the DDP-wrapped model, so
+    DDP does not sync them; without this, alpha/scale drift apart."""
+    if not (
+        torch.distributed.is_initialized()
+        and torch.distributed.get_world_size() > 1
+    ):
+        return
+    world_size = torch.distributed.get_world_size()
+    for param in loss_fn.parameters():
+        if param.grad is None:
+            param.grad = torch.zeros_like(param)
+        torch.distributed.all_reduce(param.grad)
+        param.grad /= world_size
+
+
+def _log_robust_params(initial_phrase, valid_loader_name, eval_metrics):
+    props = [
+        k[len("robust_alpha_") :]
+        for k in eval_metrics
+        if k.startswith("robust_alpha_")
+    ]
+    if props:
+        parts = ", ".join(
+            f"{p} alpha={eval_metrics['robust_alpha_' + p]:.3f} "
+            f"scale={eval_metrics['robust_scale_' + p]:.3f}"
+            for p in props
+        )
+        logging.info(
+            f"{initial_phrase}: head: {valid_loader_name}, robust: {parts}"
+        )
 
 
 def valid_err_log(
@@ -133,17 +206,21 @@ def valid_err_log(
     elif log_errors == "EnergyForceHirshfeldMAE":
         error_e = eval_metrics["mae_e_per_atom"] * 1e3
         error_f = eval_metrics["mae_f"] * 1e3
-        error_hirshfeld_ratios = eval_metrics["mae_hirshfeld_ratios"]
+        error_hirshfeld_ratios = _fmt_ratio_mae(
+            eval_metrics.get("mae_hirshfeld_ratios")
+        )
         logging.info(
-            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_hirshfeld_ratios={error_hirshfeld_ratios:8.4f}",
+            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_hirshfeld_ratios={error_hirshfeld_ratios}",
         )
     elif log_errors == "EnergyForceDipoleHirshfeldMAE":
         error_e = eval_metrics["mae_e_per_atom"] * 1e3
         error_f = eval_metrics["mae_f"] * 1e3
         error_dipole = eval_metrics["mae_dipole"] * 1e3
-        error_hirshfeld_ratios = eval_metrics["mae_hirshfeld_ratios"]
+        error_hirshfeld_ratios = _fmt_ratio_mae(
+            eval_metrics.get("mae_hirshfeld_ratios")
+        )
         logging.info(
-            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_dipole={error_dipole:8.2f} mDebye, MAE_hirshfeld_ratios={error_hirshfeld_ratios:8.4f}",
+            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_dipole={error_dipole:8.2f} mDebye, MAE_hirshfeld_ratios={error_hirshfeld_ratios}",
         )
     elif log_errors == "EnergyForceChargesMAE":
         error_e = eval_metrics["mae_e_per_atom"] * 1e3
@@ -156,9 +233,18 @@ def valid_err_log(
         error_e = eval_metrics["mae_e_per_atom"] * 1e3
         error_f = eval_metrics["mae_f"] * 1e3
         error_charges = eval_metrics["mae_charges"]
-        error_hirshfeld_ratios = eval_metrics["mae_hirshfeld_ratios"]
+        error_hirshfeld_ratios = _fmt_ratio_mae(
+            eval_metrics.get("mae_hirshfeld_ratios")
+        )
         logging.info(
-            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_charges={error_charges:8.4f} e, MAE_hirshfeld_ratios={error_hirshfeld_ratios:8.4f}",
+            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_charges={error_charges:8.4f} e, MAE_hirshfeld_ratios={error_hirshfeld_ratios}",
+        )
+
+    _log_robust_params(initial_phrase, valid_loader_name, eval_metrics)
+    if eval_metrics.get("mae_c6_ratios") is not None:
+        logging.info(
+            f"{initial_phrase}: head: {valid_loader_name}, "
+            f"MAE_c6_ratios={eval_metrics['mae_c6_ratios']:8.4f}"
         )
 
 
@@ -185,7 +271,7 @@ def train(
     log_wandb: bool = False,
     distributed: bool = False,
     save_all_checkpoints: bool = False,
-    plotter: TrainingPlotter = None,
+    plotter: Optional["TrainingPlotter"] = None,
     distributed_model: Optional[DistributedDataParallel] = None,
     train_sampler: Optional[DistributedSampler] = None,
     rank: Optional[int] = 0,
@@ -193,11 +279,38 @@ def train(
     early_stopping_min_delta: float = 0.0,
     early_stopping_warmup: int = 0,
     replay_builder=None,
+    valid_loss_fn: Optional[torch.nn.Module] = None,
+    stage_two=None,
+    resumed_stage_two_active: Optional[bool] = None,
 ):
+    """`valid_loss_fn` (default: `loss_fn`) scores validation.
+    `stage_two` (training_setup.StageTwoLoss) swaps both losses at
+    `stage_two.start_epoch` and resets the best-loss, early-stopping and
+    plateau trackers (JAX so3lr two-stage loss reweighting).
+    `resumed_stage_two_active` is the flag stored in the checkpoint being
+    resumed (None: fresh run or unknown)."""
+    if valid_loss_fn is None:
+        valid_loss_fn = loss_fn
+    if stage_two is not None and swa is not None:
+        raise ValueError("stage_two and SWA stage two cannot be combined.")
+    stage_two_active = False
+    # True while valid_loss still holds a stage-one value after the switch
+    # (eval_interval > 1): ReduceLROnPlateau must not see it.
+    stale_valid_loss = False
+    if resumed_stage_two_active and stage_two is None:
+        raise ValueError(
+            "The checkpoint was taken in stage two of a two-stage run, but "
+            "this run sets no stage_two_start_epoch / "
+            "stage_two_loss_weights. Restore them or restart without the "
+            "checkpoint (MISC.restart_latest: false)."
+        )
     lowest_loss = np.inf
     valid_loss = np.inf
     patience_counter = 0
     swa_start = True
+    # loss_fn may later be swapped for swa.loss_fn; checkpoints keep the
+    # learned parameters of the original one.
+    checkpoint_loss_fn = loss_fn
     keep_last = False
     if log_wandb:
         import wandb
@@ -212,16 +325,43 @@ def train(
     logging.info("Started training, reporting errors on validation set")
     logging.info("Loss metrics on validation set")
     epoch = start_epoch
+    if stage_two is not None and resumed_stage_two_active:
+        # Checkpoint already in stage two: its trackers are stage-two ones.
+        loss_fn = stage_two.loss_fn
+        valid_loss_fn = stage_two.valid_loss_fn
+        stage_two_active = True
+        logging.info(
+            f"Two-stage loss reweighting: resuming in stage two at epoch "
+            f"{epoch}."
+        )
+        if epoch < stage_two.start_epoch:
+            logging.warning(
+                "The checkpoint is in stage two although "
+                f"stage_two_start_epoch={stage_two.start_epoch} is later; "
+                "staying in stage two."
+            )
+    elif stage_two is not None and epoch >= stage_two.start_epoch:
+        # Checkpoint from stage one (or without the flag): full switch.
+        logging.info(
+            f"Two-stage loss reweighting: switching to the stage-two loss at "
+            f"epoch {epoch}; resetting best-loss, early-stopping and plateau "
+            f"trackers."
+        )
+        loss_fn = stage_two.loss_fn
+        valid_loss_fn = stage_two.valid_loss_fn
+        reset_plateau_scheduler_(lr_scheduler)
+        stage_two_active = True
 
     # log validation loss before _any_ training
     for valid_loader_name, valid_loader in valid_loaders.items():
         valid_loss_head, eval_metrics = evaluate(
             model=model,
-            loss_fn=loss_fn,
+            loss_fn=valid_loss_fn,
             data_loader=valid_loader,
             output_args=output_args,
             device=device,
         )
+        eval_metrics.update(robust_param_metrics(loss_fn))
         valid_err_log(
             valid_loss_head,
             eval_metrics,
@@ -246,7 +386,13 @@ def train(
                     hasattr(step_method, "__code__")
                     and "metrics" in step_method.__code__.co_varnames
                 )
-                if has_metrics:
+                if has_metrics and stale_valid_loss:
+                    logging.info(
+                        "Two-stage loss reweighting: skipping plateau "
+                        "scheduler step until the first stage-two "
+                        "validation."
+                    )
+                elif has_metrics:
                     # ReduceLROnPlateau scheduler needs metrics
                     lr_scheduler.step(metrics=valid_loss)
                 else:
@@ -262,6 +408,26 @@ def train(
             swa.model.update_parameters(model)
             if epoch > start_epoch:
                 swa.scheduler.step()
+
+        # Two-stage loss reweighting (after this epoch's scheduler step,
+        # which still uses the stage-one validation loss).
+        if (
+            stage_two is not None
+            and not stage_two_active
+            and epoch >= stage_two.start_epoch
+        ):
+            logging.info(
+                f"Two-stage loss reweighting: switching to the stage-two "
+                f"loss at epoch {epoch}; resetting best-loss, early-stopping "
+                f"and plateau trackers."
+            )
+            loss_fn = stage_two.loss_fn
+            valid_loss_fn = stage_two.valid_loss_fn
+            lowest_loss = np.inf
+            patience_counter = 0
+            reset_plateau_scheduler_(lr_scheduler)
+            stage_two_active = True
+            stale_valid_loss = True
 
         # Rebuild DataLoader with fresh replay data if needed
         if replay_builder is not None:
@@ -310,11 +476,12 @@ def train(
                 for valid_loader_name, valid_loader in valid_loaders.items():
                     valid_loss_head, eval_metrics = evaluate(
                         model=model_to_evaluate,
-                        loss_fn=loss_fn,
+                        loss_fn=valid_loss_fn,
                         data_loader=valid_loader,
                         output_args=output_args,
                         device=device,
                     )
+                    eval_metrics.update(robust_param_metrics(loss_fn))
                     if rank == 0:
                         valid_err_log(
                             valid_loss_head,
@@ -339,6 +506,7 @@ def train(
                     except Exception as e:  # pylint: disable=broad-except
                         logging.debug(f"Plotting failed: {e}")
                 valid_loss = valid_loss_head  # consider only the last head for the checkpoint
+                stale_valid_loss = False
                 if rank == 0:
                     avg_epoch_time = sum(epoch_times) / len(epoch_times)
                     remaining = max_num_epochs - epoch - 1
@@ -365,7 +533,15 @@ def train(
                     with param_context:
                         checkpoint_handler.save(
                             state=CheckpointState(
-                                model, optimizer, lr_scheduler
+                                model,
+                                optimizer,
+                                lr_scheduler,
+                                loss_fn=checkpoint_loss_fn,
+                                stage_two_active=(
+                                    stage_two_active
+                                    if stage_two is not None
+                                    else None
+                                ),
                             ),
                             epochs=epoch,
                             keep_last=keep_last,
@@ -405,7 +581,15 @@ def train(
                         with param_context:
                             checkpoint_handler.save(
                                 state=CheckpointState(
-                                    model, optimizer, lr_scheduler
+                                    model,
+                                    optimizer,
+                                    lr_scheduler,
+                                    loss_fn=checkpoint_loss_fn,
+                                    stage_two_active=(
+                                        stage_two_active
+                                        if stage_two is not None
+                                        else None
+                                    ),
                                 ),
                                 epochs=epoch,
                                 keep_last=True,
@@ -512,10 +696,9 @@ def take_step(
         )
         loss = loss_fn(pred=output, ref=batch)
         loss.backward()
+        allreduce_loss_param_grads_(loss_fn)
         if max_grad_norm is not None:
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                model.parameters(), max_norm=max_grad_norm
-            )
+            grad_norm = clip_gradients_(model, loss_fn, max_grad_norm)
         else:
             grad_norm = None
 
@@ -597,10 +780,10 @@ def take_step_lbfgs(
             batch_loss.backward()
             total_loss += batch_loss
 
+        allreduce_loss_param_grads_(loss_fn)
+
         if max_grad_norm is not None:
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                model.parameters(), max_norm=max_grad_norm
-            )
+            grad_norm = clip_gradients_(model, loss_fn, max_grad_norm)
         else:
             grad_norm = None
 

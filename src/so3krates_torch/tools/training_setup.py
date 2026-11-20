@@ -1,5 +1,6 @@
 import logging
-from typing import Dict, Optional
+import dataclasses
+from typing import Dict, List, Optional
 
 import torch
 
@@ -10,10 +11,13 @@ from so3krates_torch.modules.loss import (
     WeightedEnergyForcesDipoleHirshfeldLoss,
     WeightedEnergyForcesChargesLoss,
     WeightedEnergyForcesChargesHirshfeldLoss,
+    WeightedPropertiesLoss,
+    AdaptiveRobustParams,
 )
 from so3krates_torch.tools.checkpoint import (
     CheckpointHandler,
     CheckpointState,
+    LossStateMismatchError,
 )
 from so3krates_torch.tools.utils import MetricsLogger
 from torch_ema import ExponentialMovingAverage
@@ -27,12 +31,216 @@ def get_loss_property_weights(config: dict) -> Dict[str, float]:
         "energy": loss_config.get("energy_weight", 1.0),
         "forces": loss_config.get("forces_weight", 1000.0),
         "dipole": loss_config.get("dipole_weight", 0.0),
-        "hirshfeld_ratios": loss_config.get("hirshfeld_weight", 0.0),
+        "hirshfeld_ratios": loss_config.get(
+            "hirshfeld_weight", loss_config.get("a0_ratios_weight", 0.0)
+        ),
+        "c6_ratios": loss_config.get("c6_ratios_weight", 0.0),
         "charges": loss_config.get("charges_weight", 0.0),
     }
 
 
-def setup_loss_function(config: dict) -> torch.nn.Module:
+def _stage_two_config(config: dict) -> Optional[dict]:
+    """Config with the stage-two weights merged over the stage-one ones
+    (unlisted keys keep their stage-one value); None without stage two."""
+    loss_config = config["TRAINING"]
+    overrides = loss_config.get("stage_two_loss_weights")
+    if loss_config.get("stage_two_start_epoch") is None or overrides is None:
+        return None
+    overrides = dict(overrides)
+    if "a0_ratios_weight" in overrides:
+        overrides["hirshfeld_weight"] = overrides.pop("a0_ratios_weight")
+    return {**config, "TRAINING": {**loss_config, **overrides}}
+
+
+def get_required_loss_properties(config: dict) -> List[str]:
+    """Properties with a non-zero loss weight in either training stage,
+    i.e. the labels the training data must provide."""
+    configs = [config]
+    stage_two = _stage_two_config(config)
+    if stage_two is not None:
+        configs.append(stage_two)
+    required = []
+    for cfg in configs:
+        for name, weight in get_loss_property_weights(cfg).items():
+            if weight > 0 and name not in required:
+                required.append(name)
+    return required
+
+
+@dataclasses.dataclass
+class StageTwoLoss:
+    start_epoch: int
+    loss_fn: torch.nn.Module
+    valid_loss_fn: torch.nn.Module
+
+
+@dataclasses.dataclass
+class LossFunctions:
+    train: torch.nn.Module
+    valid: torch.nn.Module
+    stage_two: Optional[StageTwoLoss] = None
+
+    def modules(self) -> List[torch.nn.Module]:
+        mods = [self.train, self.valid]
+        if self.stage_two is not None:
+            mods += [self.stage_two.loss_fn, self.stage_two.valid_loss_fn]
+        return mods
+
+
+def _validation_loss(
+    config: dict,
+    train_loss: torch.nn.Module,
+    adaptive: Optional[AdaptiveRobustParams],
+) -> torch.nn.Module:
+    """JAX make_val_fn: the adaptive loss validates with the training
+    loss; otherwise use_robust_loss_validation / _alpha_validation
+    (default: the training settings) pick the validation penalty."""
+    loss_config = config["TRAINING"]
+    if loss_config.get("use_adaptive_robust_loss", False):
+        return train_loss
+    use_fixed = loss_config.get("use_robust_loss", False)
+    alpha = loss_config.get("robust_loss_alpha", 1.0)
+    val_fixed = loss_config.get("use_robust_loss_validation")
+    val_alpha = loss_config.get("robust_loss_alpha_validation")
+    val_fixed = use_fixed if val_fixed is None else val_fixed
+    val_alpha = alpha if val_alpha is None else val_alpha
+    if val_fixed == use_fixed and (not val_fixed or val_alpha == alpha):
+        return train_loss
+    val_config = {
+        **config,
+        "TRAINING": {
+            **loss_config,
+            "use_robust_loss": val_fixed,
+            "robust_loss_alpha": val_alpha,
+        },
+    }
+    logging.info("Validation loss uses its own robust-loss settings:")
+    return setup_loss_function(val_config, adaptive=adaptive)
+
+
+def _check_validation_settings(loss_config: dict) -> None:
+    """Warn about validation robust settings that have no effect, and
+    reject them for legacy loss types with an error naming them."""
+    val_flag = loss_config.get("use_robust_loss_validation")
+    val_alpha = loss_config.get("robust_loss_alpha_validation")
+    loss_type = loss_config.get("loss_type", "auto")
+    legacy = loss_type not in ("auto", "properties")
+    training_robust = loss_config.get(
+        "use_robust_loss", False
+    ) or loss_config.get("use_adaptive_robust_loss", False)
+    # With robust training the training-side error (naming
+    # use_robust_loss / use_adaptive_robust_loss) fires instead.
+    if val_flag and legacy and not training_robust:
+        raise ValueError(
+            f"loss_type '{loss_type}' does not support "
+            "use_robust_loss_validation. Use loss_type 'auto' or "
+            "'properties'."
+        )
+    if loss_config.get("use_adaptive_robust_loss", False):
+        if val_flag is not None or val_alpha is not None:
+            logging.warning(
+                "use_robust_loss_validation / robust_loss_alpha_validation "
+                "are ignored with use_adaptive_robust_loss: validation uses "
+                "the training loss (learned alpha/scale), as in JAX so3lr."
+            )
+        return
+    effective = (
+        loss_config.get("use_robust_loss", False)
+        if val_flag is None
+        else val_flag
+    )
+    if val_alpha is not None and not effective:
+        hint = (
+            ""
+            if legacy
+            else " Set use_robust_loss_validation: true to validate with "
+            "the fixed robust loss."
+        )
+        logging.warning(
+            "robust_loss_alpha_validation has no effect: the validation loss "
+            "uses the squared error." + hint
+        )
+
+
+def _check_stage_two_reachable(loss_config: dict) -> None:
+    """Warn when stage_two_start_epoch lies at or beyond num_epochs (epochs
+    run 0 .. num_epochs-1). A warning, not an error: num_epochs may be
+    raised on a later restart."""
+    start = loss_config.get("stage_two_start_epoch")
+    num_epochs = loss_config.get("num_epochs")
+    if start is None or num_epochs is None or start < num_epochs:
+        return
+    logging.warning(
+        f"stage two never starts: stage_two_start_epoch={start} but "
+        f"num_epochs={num_epochs} (epochs 0..{num_epochs - 1}). Lower "
+        "stage_two_start_epoch or raise num_epochs."
+    )
+
+
+def setup_loss_functions(config: dict) -> LossFunctions:
+    """Training and validation losses for both training stages."""
+    loss_config = config["TRAINING"]
+    _check_validation_settings(loss_config)
+    _check_stage_two_reachable(loss_config)
+    stage_two_config = _stage_two_config(config)
+    loss_type = loss_config.get("loss_type", "auto")
+    if stage_two_config is not None and loss_type not in (
+        "auto",
+        "properties",
+    ):
+        raise ValueError(
+            f"loss_type '{loss_type}' does not support stage_two_loss_weights"
+            " / stage_two_start_epoch. Use loss_type 'auto' or 'properties'."
+        )
+
+    shared = None
+    if (
+        loss_config.get("use_adaptive_robust_loss", False)
+        and stage_two_config is not None
+    ):
+        # One set of alpha/scale for both stages, covering every property
+        # weighted in either (stored by name, unlike JAX's positional).
+        shared = AdaptiveRobustParams(
+            get_required_loss_properties(config),
+            loss_config.get("adaptive_robust_loss_init_alpha", 1.0),
+            loss_config.get("adaptive_robust_loss_init_scale", 1.0),
+        )
+
+    train = setup_loss_function(config, adaptive=shared)
+    fns = LossFunctions(
+        train=train, valid=_validation_loss(config, train, shared)
+    )
+    if stage_two_config is not None:
+        logging.info(
+            "Two-stage loss weights: stage two starts at epoch "
+            f"{loss_config['stage_two_start_epoch']}:"
+        )
+        train_two = setup_loss_function(stage_two_config, adaptive=shared)
+        fns.stage_two = StageTwoLoss(
+            start_epoch=int(loss_config["stage_two_start_epoch"]),
+            loss_fn=train_two,
+            valid_loss_fn=_validation_loss(
+                stage_two_config, train_two, shared
+            ),
+        )
+    return fns
+
+
+def check_loss_outputs(
+    model: torch.nn.Module, loss_fns: LossFunctions, batch
+) -> None:
+    """Fail at startup, not at the stage-two switch: run one forward pass
+    and check that every loss (both stages, train and validation) finds
+    the model outputs it needs."""
+    output = model(batch.to_dict(), training=False, compute_force=True)
+    for module in loss_fns.modules():
+        if hasattr(module, "check_outputs"):
+            module.check_outputs(output)
+
+
+def setup_loss_function(
+    config: dict, adaptive: Optional[AdaptiveRobustParams] = None
+) -> torch.nn.Module:
     """Setup loss function based on configuration."""
     loss_config = config["TRAINING"]
 
@@ -46,62 +254,52 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
 
     # Check if explicit loss type is specified
     loss_type = loss_config.get("loss_type", "auto")
+    reduction = loss_config.get("loss_reduction", "flat")
+    use_fixed = loss_config.get("use_robust_loss", False)
+    use_adaptive = loss_config.get("use_adaptive_robust_loss", False)
+    if use_fixed and use_adaptive:
+        raise ValueError(
+            "Cannot use both 'use_robust_loss' and "
+            "'use_adaptive_robust_loss'."
+        )
+    robust = "adaptive" if use_adaptive else "fixed" if use_fixed else "none"
 
-    if loss_type == "auto":
-        # Auto-determine loss function type based on weights
-        has_dipole = dipole_w > 0
-        has_hirshfeld = hirshfeld_w > 0
-        has_charges = charges_w > 0
-
-        if has_charges and has_hirshfeld:
-            loss_fn = WeightedEnergyForcesChargesHirshfeldLoss(
-                energy_weight=energy_w,
-                forces_weight=forces_w,
-                charges_weight=charges_w,
-                hirshfeld_weight=hirshfeld_w,
-            )
-            logging.info(
-                "Auto-selected WeightedEnergyForcesChargesHirshfeldLoss"
-            )
-        elif has_charges:
-            loss_fn = WeightedEnergyForcesChargesLoss(
-                energy_weight=energy_w,
-                forces_weight=forces_w,
-                charges_weight=charges_w,
-            )
-            logging.info("Auto-selected WeightedEnergyForcesChargesLoss")
-        elif has_dipole and has_hirshfeld:
-            loss_fn = WeightedEnergyForcesDipoleHirshfeldLoss(
-                energy_weight=energy_w,
-                forces_weight=forces_w,
-                dipole_weight=dipole_w,
-                hirshfeld_weight=hirshfeld_w,
-            )
-            logging.info(
-                "Auto-selected WeightedEnergyForcesDipoleHirshfeldLoss"
-            )
-        elif has_dipole:
-            loss_fn = WeightedEnergyForcesDipoleLoss(
-                energy_weight=energy_w,
-                forces_weight=forces_w,
-                dipole_weight=dipole_w,
-            )
-            logging.info("Auto-selected WeightedEnergyForcesDipoleLoss")
-        elif has_hirshfeld:
-            loss_fn = WeightedEnergyForcesHirshfeldLoss(
-                energy_weight=energy_w,
-                forces_weight=forces_w,
-                hirshfeld_weight=hirshfeld_w,
-            )
-            logging.info("Auto-selected WeightedEnergyForcesHirshfeldLoss")
-        else:
-            # Default to basic energy-forces loss from MACE
-            loss_fn = WeightedEnergyForcesLoss(
-                energy_weight=energy_w, forces_weight=forces_w
-            )
-            logging.info("Auto-selected WeightedEnergyForcesLoss")
+    if loss_type in ("auto", "properties"):
+        # One term per non-zero weight (see WeightedPropertiesLoss).
+        loss_fn = WeightedPropertiesLoss(
+            weights,
+            reduction=reduction,
+            robust=robust,
+            robust_alpha=loss_config.get("robust_loss_alpha", 1.0),
+            adaptive_init_alpha=loss_config.get(
+                "adaptive_robust_loss_init_alpha", 1.0
+            ),
+            adaptive_init_scale=loss_config.get(
+                "adaptive_robust_loss_init_scale", 1.0
+            ),
+            adaptive=adaptive,
+        )
+        logging.info(f"Selected {loss_fn}")
     else:
         # Explicit loss type specification
+        if robust != "none":
+            raise ValueError(
+                f"loss_type '{loss_type}' does not support the robust loss "
+                "(use_robust_loss / use_adaptive_robust_loss). Use loss_type "
+                "'auto' or 'properties'."
+            )
+        if reduction != "flat":
+            raise ValueError(
+                f"loss_type '{loss_type}' only supports loss_reduction "
+                f"'flat' (got '{reduction}'). Use loss_type 'auto' or "
+                "'properties'."
+            )
+        if weights["c6_ratios"] > 0:
+            raise ValueError(
+                f"loss_type '{loss_type}' has no C6 ratio term but "
+                "c6_ratios_weight > 0. Use loss_type 'auto' or "
+                "'properties'."
+            )
         if loss_type == "energy_forces":
             loss_fn = WeightedEnergyForcesLoss(
                 energy_weight=energy_w, forces_weight=forces_w
@@ -141,6 +339,7 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
         else:
             supported_types = [
                 "auto",
+                "properties",
                 "energy_forces",
                 "energy_forces_dipole",
                 "energy_forces_hirshfeld",
@@ -157,7 +356,8 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
 
     logging.info(
         f"Loss weights: energy={energy_w}, forces={forces_w}, "
-        f"dipole={dipole_w}, hirshfeld={hirshfeld_w}, charges={charges_w}"
+        f"dipole={dipole_w}, hirshfeld={hirshfeld_w}, charges={charges_w}, "
+        f"c6_ratios={weights['c6_ratios']}"
     )
 
     return loss_fn
@@ -166,9 +366,27 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
 def setup_optimizer_and_scheduler(
     model: torch.nn.Module,
     config: dict,
+    loss_fn: Optional[torch.nn.Module] = None,
 ) -> tuple:
-    """Setup optimizer and learning rate scheduler."""
+    """Setup optimizer and learning rate scheduler.
+
+    Learned loss parameters (adaptive robust loss) get their own param
+    group with the same lr and weight decay, like JAX so3lr's single
+    optimizer over the full params tree. Without them the optimizer is
+    unchanged (one group), so existing checkpoints stay loadable."""
     train_config = config["TRAINING"]
+    loss_params = (
+        [p for p in loss_fn.parameters() if p.requires_grad]
+        if loss_fn is not None
+        else []
+    )
+
+    def _with_loss_params(groups):
+        if not loss_params:
+            return groups
+        if not isinstance(groups[0], dict):
+            groups = [{"params": list(groups)}]
+        return list(groups) + [{"params": loss_params}]
 
     optimizer_name = train_config.get("optimizer", "adam").lower()
     lr = train_config["lr"]
@@ -185,45 +403,47 @@ def setup_optimizer_and_scheduler(
             ), "lora_B_lr must be provided for LoRA+"
             # for LoRA+ adjust learning rate for A and B matrices
             optimizer = torch.optim.Adam(
-                [
-                    {
-                        "params": [
-                            p
-                            for n, p in model.named_parameters()
-                            if "lora_A" in n
-                        ],
-                        "lr": lr,
-                    },
-                    {
-                        "params": [
-                            p
-                            for n, p in model.named_parameters()
-                            if "lora_B" in n
-                        ],
-                        "lr": lora_B_lr,
-                    },
-                    {
-                        "params": [
-                            p
-                            for n, p in model.named_parameters()
-                            if "lora_A" not in n and "lora_B" not in n
-                        ]
-                    },
-                ],
+                _with_loss_params(
+                    [
+                        {
+                            "params": [
+                                p
+                                for n, p in model.named_parameters()
+                                if "lora_A" in n
+                            ],
+                            "lr": lr,
+                        },
+                        {
+                            "params": [
+                                p
+                                for n, p in model.named_parameters()
+                                if "lora_B" in n
+                            ],
+                            "lr": lora_B_lr,
+                        },
+                        {
+                            "params": [
+                                p
+                                for n, p in model.named_parameters()
+                                if "lora_A" not in n and "lora_B" not in n
+                            ]
+                        },
+                    ]
+                ),
                 lr=lr,
                 weight_decay=weight_decay,
                 amsgrad=amsgrad,
             )
         else:
             optimizer = torch.optim.Adam(
-                model.parameters(),
+                _with_loss_params(list(model.parameters())),
                 lr=lr,
                 weight_decay=weight_decay,
                 amsgrad=amsgrad,
             )
     elif optimizer_name == "adamw":
         optimizer = torch.optim.AdamW(
-            model.parameters(),
+            _with_loss_params(list(model.parameters())),
             lr=lr,
             weight_decay=weight_decay,
             betas=train_config.get("betas", (0.9, 0.999)),
@@ -352,9 +572,12 @@ def load_checkpoint_if_exists(
     ema: ExponentialMovingAverage,
     device: torch.device,
     config: dict,
+    loss_fn: Optional[torch.nn.Module] = None,
+    resume_state: Optional[dict] = None,
 ) -> int:
     """
     Load checkpoint if it exists and return the starting epoch.
+    `resume_state`, if given, receives {"stage_two_active": bool | None}.
     Returns 0 if no checkpoint is found.
     """
     # Check if we should restart from latest checkpoint
@@ -366,7 +589,10 @@ def load_checkpoint_if_exists(
 
     # Create checkpoint state
     checkpoint_state = CheckpointState(
-        model=model, optimizer=optimizer, lr_scheduler=lr_scheduler
+        model=model,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        loss_fn=loss_fn,
     )
 
     # Try to load latest checkpoint
@@ -380,6 +606,10 @@ def load_checkpoint_if_exists(
 
         if start_epoch is not None:
             logging.info(f"Loaded checkpoint from epoch {start_epoch}")
+            if resume_state is not None:
+                resume_state["stage_two_active"] = (
+                    checkpoint_state.stage_two_active
+                )
 
             # Load EMA state if available and EMA is enabled
             if ema is not None:
@@ -404,6 +634,8 @@ def load_checkpoint_if_exists(
             logging.info("No checkpoint found, starting from epoch 0")
             return 0
 
+    except LossStateMismatchError:
+        raise
     except Exception as e:
         logging.warning(f"Error loading checkpoint: {e}")
         logging.info("Starting from epoch 0")

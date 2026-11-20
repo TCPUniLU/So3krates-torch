@@ -60,6 +60,8 @@ from so3krates_torch.data.utils import (
     Configuration,
     Configurations,
     KeySpecification,
+    RATIO_LABEL_FALLBACKS,
+    resolve_arrays_key,
     config_from_atoms,
     compute_average_E0s,
     pluralize_property_clause,
@@ -181,6 +183,23 @@ def _remap_ase_reserved_keys(
                 atoms.info["stress"] = atoms.get_stress()
             except Exception:
                 atoms.info["stress"] = None
+
+
+def _normalize_ratio_label_keys(
+    batch: List[ase.Atoms], key_spec: KeySpecification
+) -> None:
+    """Copy ratio labels stored under a fallback key (see
+    RATIO_LABEL_FALLBACKS) to the configured key, so a file mixing
+    e.g. 'hirsh_ratios' and 'a0_ratios' keeps one column. Mutates
+    batch in-place, like `_remap_ase_reserved_keys`."""
+    for name in RATIO_LABEL_FALLBACKS:
+        configured = key_spec.arrays_keys.get(name)
+        if configured is None:
+            continue
+        for atoms in batch:
+            found = resolve_arrays_key(name, configured, atoms.arrays.keys())
+            if found is not None and found != configured:
+                atoms.arrays[configured] = atoms.arrays[found]
 
 
 def _detect_prop_meta(
@@ -345,9 +364,14 @@ def _stream_atoms_to_hdf5_v2(
         # --- Remap ASE-reserved keys (energy/forces/stress) ---
         _remap_ase_reserved_keys(batch, key_spec)
 
-        # --- Detect property shapes from first batch ---
+        _normalize_ratio_label_keys(batch, key_spec)
+
+        # --- Detect property shapes; a property first seen in a later
+        # batch gets its column then, back-filled with NaN (= missing) ---
         if prop_meta is None:
-            prop_meta = _detect_prop_meta(batch, key_spec)
+            prop_meta = {}
+        for key, meta in _detect_prop_meta(batch, key_spec).items():
+            prop_meta.setdefault(key, meta)
 
         prop_arrays = _collect_batch_arrays(batch, prop_meta, batch_n_atoms)
 
@@ -429,22 +453,29 @@ def _stream_atoms_to_hdf5_v2(
                     chunks=(c,),
                 )
 
-            for key, (is_per_atom, item_shape, dtype) in prop_meta.items():
-                grp_path = (
-                    "properties/arrays" if is_per_atom else "properties/info"
-                )
-                grp = f.require_group(grp_path)
-                # (c,) + () = (c,);  (c,) + (3,) = (c, 3)
-                ds_chunks = (c,) + item_shape
-                grp.create_dataset(
-                    key,
-                    shape=(0,) + item_shape,
-                    maxshape=(None,) + item_shape,
-                    dtype=dtype,
-                    chunks=ds_chunks,
-                )
-
             datasets_created = True
+
+        for key, (is_per_atom, item_shape, dtype) in prop_meta.items():
+            grp_path = (
+                "properties/arrays" if is_per_atom else "properties/info"
+            )
+            grp = f.require_group(grp_path)
+            if key in grp:
+                continue
+            # (c,) + () = (c,);  (c,) + (3,) = (c, 3)
+            ds_chunks = (c,) + item_shape
+            ds = grp.create_dataset(
+                key,
+                shape=(0,) + item_shape,
+                maxshape=(None,) + item_shape,
+                dtype=dtype,
+                chunks=ds_chunks,
+            )
+            n_prev = total_atoms if is_per_atom else total_configs
+            if n_prev:
+                _append_dataset(
+                    ds, np.full((n_prev,) + item_shape, np.nan, dtype=dtype)
+                )
 
         # --- Append batch to datasets ---
         _append_dataset(f["n_atoms"], batch_n_atoms)
@@ -832,7 +863,8 @@ def scan_raw_hdf5_property_presence(
             name
         )
         if atoms_key is not None and (
-            atoms_key in info_keys or atoms_key in arrays_keys
+            atoms_key in info_keys
+            or resolve_arrays_key(name, atoms_key, arrays_keys) is not None
         ):
             presence[name] = True
     return presence
@@ -1055,6 +1087,8 @@ def _write_atomic_data_to_hdf5_group(
         props_grp["charges"] = data.charges.cpu().numpy()
     if data.hirshfeld_ratios is not None:
         props_grp["hirshfeld_ratios"] = data.hirshfeld_ratios.cpu().numpy()
+    if getattr(data, "c6_ratios", None) is not None:
+        props_grp["c6_ratios"] = data.c6_ratios.cpu().numpy()
     if data.total_charge is not None:
         props_grp["total_charge"] = data.total_charge.cpu().numpy()
     if data.total_spin is not None:
@@ -1077,9 +1111,21 @@ def _write_atomic_data_to_hdf5_group(
     if data.charges_weight is not None:
         weights_grp["charges_weight"] = data.charges_weight.cpu().numpy()
     if data.hirshfeld_ratios_weight is not None:
-        weights_grp[
-            "hirshfeld_ratios_weight"
-        ] = data.hirshfeld_ratios_weight.cpu().numpy()
+        weights_grp["hirshfeld_ratios_weight"] = (
+            data.hirshfeld_ratios_weight.cpu().numpy()
+        )
+    if getattr(data, "c6_ratios_weight", None) is not None:
+        weights_grp["c6_ratios_weight"] = data.c6_ratios_weight.cpu().numpy()
+
+
+def _read_ratio_label(
+    props_grp: h5py.Group, name: str, num_nodes: int
+) -> torch.Tensor:
+    if name in props_grp:
+        return torch.from_numpy(np.array(props_grp[name]))
+    return torch.full(
+        (num_nodes,), float("nan"), dtype=torch.get_default_dtype()
+    )
 
 
 def _read_atomic_data_from_hdf5_group(
@@ -1164,11 +1210,12 @@ def _read_atomic_data_from_hdf5_group(
         if "charges" in props_grp
         else None
     )
-    hirshfeld_ratios = (
-        torch.from_numpy(np.array(props_grp["hirshfeld_ratios"]))
-        if "hirshfeld_ratios" in props_grp
-        else None
+    # Ratio labels absent from the file (written before they existed,
+    # or never labelled) read as NaN + weight 0, like in-memory data.
+    hirshfeld_ratios = _read_ratio_label(
+        props_grp, "hirshfeld_ratios", num_nodes
     )
+    c6_ratios = _read_ratio_label(props_grp, "c6_ratios", num_nodes)
     total_charge = (
         torch.from_numpy(np.array(props_grp["total_charge"]))
         if "total_charge" in props_grp
@@ -1223,7 +1270,12 @@ def _read_atomic_data_from_hdf5_group(
     hirshfeld_ratios_weight = (
         torch.from_numpy(np.array(weights_grp["hirshfeld_ratios_weight"]))
         if "hirshfeld_ratios_weight" in weights_grp
-        else None
+        else torch.tensor(0.0, dtype=torch.get_default_dtype())
+    )
+    c6_ratios_weight = (
+        torch.from_numpy(np.array(weights_grp["c6_ratios_weight"]))
+        if "c6_ratios_weight" in weights_grp
+        else torch.tensor(0.0, dtype=torch.get_default_dtype())
     )
 
     # Create AtomicData
@@ -1258,6 +1310,8 @@ def _read_atomic_data_from_hdf5_group(
         shifts_lr=shifts_lr,
         unit_shifts_lr=unit_shifts_lr,
         theory_level=theory_level,
+        c6_ratios_weight=c6_ratios_weight,
+        c6_ratios=c6_ratios,
     )
 
 
@@ -1312,8 +1366,12 @@ def raise_if_preprocessed_properties_missing(
     all carry the same properties, and would otherwise crash later
     with a confusing error instead of failing fast here."""
     missing = [name for name, (count, total) in presence.items() if count == 0]
+    # Ratio labels are masked per atom in the loss, so partial coverage
+    # (mixed datasets) is expected there; only "missing" applies.
     inconsistent = [
-        name for name, (count, total) in presence.items() if 0 < count < total
+        name
+        for name, (count, total) in presence.items()
+        if 0 < count < total and name not in RATIO_LABEL_FALLBACKS
     ]
     if not missing and not inconsistent:
         return
@@ -1819,9 +1877,9 @@ def merge_raw_hdf5_files(
                     out["config_metadata/config_type"][
                         cfg_off : cfg_off + b_len
                     ] = inp["config_metadata/config_type"][b_start:b_end]
-                    out["config_metadata/head"][
-                        cfg_off : cfg_off + b_len
-                    ] = inp["config_metadata/head"][b_start:b_end]
+                    out["config_metadata/head"][cfg_off : cfg_off + b_len] = (
+                        inp["config_metadata/head"][b_start:b_end]
+                    )
                     out["config_metadata/weight"][
                         cfg_off : cfg_off + b_len
                     ] = inp["config_metadata/weight"][b_start:b_end]

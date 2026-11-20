@@ -68,6 +68,11 @@ issues = "https://github.com/tohenkes/So3krates-torch/issues"
 "Bug Reports" = "https://github.com/tohenkes/So3krates-torch/issues"
 "Source Code" = "https://github.com/tohenkes/So3krates-torch"
 
+[tool.setuptools]
+# Ship third-party license texts (Apache-2.0 robust loss, CC BY-NC 4.0
+# tauri weights) with the wheel; see NOTICE.md.
+license-files = ["LICENSE.md", "NOTICE.md", "licenses/*"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
@@ -79,6 +84,7 @@ so3krates_torch = [
     "pretrained/so3lr/tauri/*.yaml",
 ]
 "so3krates_torch.blocks" = ["cgmatrix.npz"]
+"so3krates_torch.modules.robust_loss" = ["data/*.npz", "README.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["src/so3krates_torch/tests"]

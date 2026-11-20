@@ -312,7 +312,7 @@ class TestRequiredPropertyPresenceHDF5:
         atoms_with = molecule("H2O")
         atoms_with.info["REF_energy"] = -10.0
         atoms_with.arrays["REF_forces"] = np.random.randn(3, 3)
-        atoms_with.arrays["REF_hirsh_ratios"] = np.ones(3)
+        atoms_with.arrays["REF_charges"] = np.ones(3)
 
         atoms_without = molecule("NH3")
         atoms_without.info["REF_energy"] = -10.0
@@ -322,7 +322,7 @@ class TestRequiredPropertyPresenceHDF5:
             info_keys={"energy": "REF_energy"},
             arrays_keys={
                 "forces": "REF_forces",
-                "hirshfeld_ratios": "REF_hirsh_ratios",
+                "charges": "REF_charges",
             },
         )
         z_table = AtomicNumberTable([1, 7, 8])
@@ -341,11 +341,11 @@ class TestRequiredPropertyPresenceHDF5:
         )
 
         presence = scan_preprocessed_hdf5_property_presence(
-            out_path, ["hirshfeld_ratios"]
+            out_path, ["charges"]
         )
-        assert presence["hirshfeld_ratios"] == (1, 2)
+        assert presence["charges"] == (1, 2)
 
-        with pytest.raises(ValueError, match="hirshfeld_ratios"):
+        with pytest.raises(ValueError, match="charges"):
             raise_if_preprocessed_properties_missing(presence, out_path)
 
     def test_scan_raw_hdf5_statistics_raises_for_missing_property(
@@ -636,7 +636,7 @@ class TestHDF5Merge:
             info_keys={"energy": "REF_energy"},
             arrays_keys={
                 "forces": "REF_forces",
-                "hirshfeld_ratios": "REF_hirsh_ratios",
+                "charges": "REF_charges",
             },
         )
         z_table = AtomicNumberTable([1, 8])
@@ -644,7 +644,7 @@ class TestHDF5Merge:
         atoms_with = molecule("H2O")
         atoms_with.info["REF_energy"] = -10.0
         atoms_with.arrays["REF_forces"] = np.random.randn(3, 3)
-        atoms_with.arrays["REF_hirsh_ratios"] = np.ones(3)
+        atoms_with.arrays["REF_charges"] = np.ones(3)
         data_with = AtomicData.from_config(
             config_from_atoms(atoms_with, keyspec),
             z_table=z_table,
@@ -678,10 +678,10 @@ class TestHDF5Merge:
         merge_preprocessed_hdf5_files([path_with, path_without], merged_path)
 
         presence = scan_preprocessed_hdf5_property_presence(
-            merged_path, ["hirshfeld_ratios"]
+            merged_path, ["charges"]
         )
-        assert presence["hirshfeld_ratios"] == (1, 2)
-        with pytest.raises(ValueError, match="hirshfeld_ratios"):
+        assert presence["charges"] == (1, 2)
+        with pytest.raises(ValueError, match="charges"):
             raise_if_preprocessed_properties_missing(presence, merged_path)
 
     def test_merge_format_mismatch_raises(

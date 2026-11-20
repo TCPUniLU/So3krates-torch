@@ -256,3 +256,95 @@ def test_preserve_grad_state_restores(base_model):
     # After exit: original state fully restored
     for param in base_model.parameters():
         assert param.requires_grad == original_state[id(param)]
+
+
+# ---------------------------------------------------------------------------
+# Dispersion heads (SO3LR-tauri: polarizability/a0 + C6 ratio heads)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def tauri_like_model(so3lr_model_config):
+    from so3krates_torch.modules.models import SO3LR
+
+    config = {
+        **so3lr_model_config,
+        "num_layers": 2,
+        "c6_ratios_bool": True,
+        "use_simple_hirshfeld": True,
+    }
+    return SO3LR(**config)
+
+
+def _trainable(model, block):
+    params = [p for n, p in model.named_parameters() if n.startswith(block)]
+    assert params, f"{block} has no parameters; fixture broken"
+    return all(p.requires_grad for p in params), any(
+        p.requires_grad for p in params
+    )
+
+
+@pytest.mark.parametrize(
+    "freeze_hirshfeld,freeze_c6", [(True, True), (False, True), (True, False)]
+)
+def test_freeze_dispersion_heads_independently(
+    tauri_like_model, freeze_hirshfeld, freeze_c6
+):
+    freeze_model_parameters(
+        tauri_like_model,
+        "last_layer",
+        freeze_hirshfeld=freeze_hirshfeld,
+        freeze_c6_ratios=freeze_c6,
+    )
+    all_h, any_h = _trainable(tauri_like_model, "hirshfeld_output_block")
+    all_c, any_c = _trainable(tauri_like_model, "c6_ratios_output_block")
+    assert (all_h, any_h) == (not freeze_hirshfeld,) * 2
+    assert (all_c, any_c) == (not freeze_c6,) * 2
+
+
+def test_freeze_c6_ratios_default_is_frozen(tauri_like_model):
+    freeze_model_parameters(tauri_like_model, "lora+mlp")
+    assert _trainable(tauri_like_model, "c6_ratios_output_block") == (
+        False,
+        False,
+    )
+
+
+def test_handle_finetuning_reads_dispersion_freeze_keys(tauri_like_model):
+    from so3krates_torch.tools.model_setup import handle_finetuning
+
+    config = {
+        "GENERAL": {"seed": 1},
+        "ARCHITECTURE": {},
+        "TRAINING": {
+            "finetune_choice": "lora",
+            "freeze_a0_ratios": False,
+            "freeze_c6_ratios": False,
+        },
+    }
+    model = handle_finetuning(config, tauri_like_model, 3, "cpu")
+    assert _trainable(model, "hirshfeld_output_block")[0]
+    assert _trainable(model, "c6_ratios_output_block")[0]
+
+
+def test_freeze_a0_ratios_alias_in_training_config():
+    import yaml
+    from pathlib import Path
+
+    from so3krates_torch.config import TrainingConfig
+
+    example = (
+        Path(__file__).resolve().parents[3]
+        / "examples"
+        / "training"
+        / "train_settings_example.yaml"
+    )
+    section = yaml.safe_load(example.read_text())["TRAINING"]
+    cfg = TrainingConfig(**section, freeze_a0_ratios=False).model_dump()
+    assert cfg["freeze_hirshfeld"] is False
+    assert cfg["freeze_c6_ratios"] is True
+    assert "freeze_a0_ratios" not in cfg
+    with pytest.raises(ValueError, match="freeze_a0_ratios"):
+        TrainingConfig(
+            **section, freeze_a0_ratios=False, freeze_hirshfeld=True
+        )

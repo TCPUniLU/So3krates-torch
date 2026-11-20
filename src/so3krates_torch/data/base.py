@@ -35,12 +35,10 @@ class BaseAtomicDataset(torch.utils.data.Dataset):
         self.cache = cache
 
     @abstractmethod
-    def __len__(self) -> int:
-        ...
+    def __len__(self) -> int: ...
 
     @abstractmethod
-    def _load_config(self, idx: int) -> Configuration:
-        ...
+    def _load_config(self, idx: int) -> Configuration: ...
 
     def _build_graph(self, config: Configuration) -> AtomicData:
         return AtomicData.from_config(

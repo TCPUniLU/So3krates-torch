@@ -52,6 +52,7 @@ class TFDSDataset(BaseAtomicDataset):
         "forces": "REF_forces",
         "charges": "REF_charges",
         "hirshfeld_ratios": "REF_hirsh_ratios",
+        "c6_ratios": "REF_c6_ratios",
     }
 
     def __init__(

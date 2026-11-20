@@ -732,13 +732,13 @@ def _model_pme_overrides(args, periodic: bool) -> dict:
     if args.model_pme_dispersion:
         overrides["use_pme_dispersion"] = True
         if args.model_pme_dispersion_smearing is not None:
-            overrides[
-                "pme_dispersion_smearing"
-            ] = args.model_pme_dispersion_smearing
+            overrides["pme_dispersion_smearing"] = (
+                args.model_pme_dispersion_smearing
+            )
         if args.model_pme_dispersion_mesh_spacing is not None:
-            overrides[
-                "pme_dispersion_mesh_spacing"
-            ] = args.model_pme_dispersion_mesh_spacing
+            overrides["pme_dispersion_mesh_spacing"] = (
+                args.model_pme_dispersion_mesh_spacing
+            )
     return overrides
 
 

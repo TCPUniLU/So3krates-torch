@@ -27,7 +27,8 @@ from so3krates_torch.tools.data_setup import (
     setup_data_loaders,
 )
 from so3krates_torch.tools.training_setup import (
-    setup_loss_function,
+    check_loss_outputs,
+    setup_loss_functions,
     setup_optimizer_and_scheduler,
     setup_training_tools,
     load_checkpoint_if_exists,
@@ -201,10 +202,15 @@ def run_training(config: dict) -> None:
         ddp_model = wrap_model_ddp(model, local_rank)
 
     # Setup loss function
-    loss_fn = setup_loss_function(config)
+    loss_fns = setup_loss_functions(config)
+    for module in loss_fns.modules():
+        module.to(device)
+    loss_fn = loss_fns.train
 
     # Setup optimizer and scheduler
-    optimizer, lr_scheduler = setup_optimizer_and_scheduler(model, config)
+    optimizer, lr_scheduler = setup_optimizer_and_scheduler(
+        model, config, loss_fn=loss_fn
+    )
 
     # Setup training tools
     logger, checkpoint_handler, ema = setup_training_tools(config, model)
@@ -216,6 +222,7 @@ def run_training(config: dict) -> None:
     # fine-tuning run must still reload the training checkpoint.
     # load_checkpoint_if_exists() handles the "no checkpoint found"
     # case gracefully (returns 0), so removing the guard is safe.
+    resume_state = {}
     start_epoch = load_checkpoint_if_exists(
         model=model,
         optimizer=optimizer,
@@ -224,6 +231,8 @@ def run_training(config: dict) -> None:
         ema=ema,
         device=device,
         config=config,
+        loss_fn=loss_fn,
+        resume_state=resume_state,
     )
 
     if rank == 0:
@@ -235,6 +244,10 @@ def run_training(config: dict) -> None:
                     f"Training data contains NaN/Inf"
                     f" in '{_key}'. Check your dataset."
                 )
+
+    # Every loss (both stages, train and validation) must find its model
+    # outputs; check now rather than at the stage-two switch.
+    check_loss_outputs(model, loss_fns, next(iter(train_loader)).to(device))
 
     logging.info("Model, data loaders, and training components initialized")
     if start_epoch > 0:
@@ -268,6 +281,9 @@ def run_training(config: dict) -> None:
     train(
         model=model,
         loss_fn=loss_fn,
+        valid_loss_fn=loss_fns.valid,
+        stage_two=loss_fns.stage_two,
+        resumed_stage_two_active=resume_state.get("stage_two_active"),
         train_loader=train_loader,
         valid_loaders=valid_loaders,
         optimizer=optimizer,

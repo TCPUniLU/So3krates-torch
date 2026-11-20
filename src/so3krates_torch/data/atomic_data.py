@@ -40,6 +40,7 @@ class AtomicData(torch_geometric.data.Data):
     virials: torch.Tensor
     dipole: torch.Tensor
     hirshfeld_ratios: torch.Tensor
+    c6_ratios: torch.Tensor
     charges: torch.Tensor
     total_charge: torch.Tensor
     total_spin: torch.Tensor
@@ -83,6 +84,8 @@ class AtomicData(torch_geometric.data.Data):
         total_charge: Optional[torch.Tensor] = None,  # [,]
         total_spin: Optional[torch.Tensor] = None,  # [,]
         theory_level: Optional[torch.Tensor] = None,  # [,] scalar int64
+        c6_ratios_weight: Optional[torch.Tensor] = None,  # [,]
+        c6_ratios: Optional[torch.Tensor] = None,  # [n_nodes, ]
     ):
         # Check shapes
         num_nodes = node_attrs.shape[0]
@@ -117,6 +120,8 @@ class AtomicData(torch_geometric.data.Data):
         assert hirshfeld_ratios is None or hirshfeld_ratios.shape == (
             num_nodes,
         )
+        assert c6_ratios_weight is None or len(c6_ratios_weight.shape) == 0
+        assert c6_ratios is None or c6_ratios.shape == (num_nodes,)
         assert elec_temp is None or len(elec_temp.shape) == 0
         assert total_charge is None or len(total_charge.shape) == 0
         assert total_spin is None or len(total_spin.shape) == 0
@@ -154,6 +159,8 @@ class AtomicData(torch_geometric.data.Data):
             "dipole": dipole,
             "charges": charges,
             "hirshfeld_ratios": hirshfeld_ratios,
+            "c6_ratios_weight": c6_ratios_weight,
+            "c6_ratios": c6_ratios,
             "elec_temp": elec_temp,
             "total_charge": total_charge,
             "total_spin": total_spin,
@@ -307,6 +314,14 @@ class AtomicData(torch_geometric.data.Data):
             if config.property_weights.get("hirshfeld_ratios") is not None
             else torch.tensor(1.0, dtype=torch.get_default_dtype())
         )
+        c6_ratios_weight = (
+            torch.tensor(
+                config.property_weights.get("c6_ratios"),
+                dtype=torch.get_default_dtype(),
+            )
+            if config.property_weights.get("c6_ratios") is not None
+            else torch.tensor(0.0, dtype=torch.get_default_dtype())
+        )
 
         forces = (
             torch.tensor(
@@ -360,14 +375,10 @@ class AtomicData(torch_geometric.data.Data):
             if config.properties.get("charges") is not None
             else torch.zeros(num_atoms, dtype=torch.get_default_dtype())
         )
-        hirshfeld_ratios = (
-            torch.tensor(
-                config.properties.get("hirshfeld_ratios"),
-                dtype=torch.get_default_dtype(),
-            )
-            if config.properties.get("hirshfeld_ratios") is not None
-            else torch.zeros(num_atoms, dtype=torch.get_default_dtype())
-        )
+        # Missing per-atom ratio labels are NaN (as in JAX so3lr) so the
+        # loss and metrics can mask them; other labels stay zero-filled.
+        hirshfeld_ratios = _ratio_label(config, "hirshfeld_ratios", num_atoms)
+        c6_ratios = _ratio_label(config, "c6_ratios", num_atoms)
         elec_temp = (
             torch.tensor(
                 config.properties.get("elec_temp"),
@@ -426,10 +437,25 @@ class AtomicData(torch_geometric.data.Data):
             hirshfeld_ratios=hirshfeld_ratios,
             charges=charges,
             elec_temp=elec_temp,
+            c6_ratios_weight=c6_ratios_weight,
+            c6_ratios=c6_ratios,
             total_charge=total_charge,
             total_spin=total_spin,
             theory_level=theory_level,
         )
+
+
+def _ratio_label(
+    config: Configuration, name: str, num_atoms: int
+) -> torch.Tensor:
+    value = config.properties.get(name)
+    if value is None:
+        return torch.full(
+            (num_atoms,), float("nan"), dtype=torch.get_default_dtype()
+        )
+    return torch.tensor(value, dtype=torch.get_default_dtype()).reshape(
+        num_atoms
+    )
 
 
 def get_data_loader(

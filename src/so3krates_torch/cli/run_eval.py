@@ -60,6 +60,7 @@ def run_evaluation(
     compute_dipole: bool = False,
     compute_stress: bool = False,
     compute_hirshfeld: bool = False,
+    compute_c6_ratios: bool = False,
     compute_partial_charges: bool = False,
     dispersion_energy_cutoff_lr_damping: Optional[float] = None,
     energy_key: str = "REF_energy",
@@ -71,6 +72,7 @@ def run_evaluation(
     total_charge_key: str = "charge",
     total_spin_key: str = "total_spin",
     hirshfeld_key: str = "REF_hirsh_ratios",
+    c6_key: str = "REF_c6_ratios",
     head_key: str = "head",
     dtype: str = "float32",
     return_att: bool = False,
@@ -164,6 +166,7 @@ def run_evaluation(
             "stress": stress_key,
             "virials": virials_key,
             "hirshfeld_ratios": hirshfeld_key,
+            "c6_ratios": c6_key,
             "charges": charges_key,
         },
     )
@@ -185,6 +188,7 @@ def run_evaluation(
             compute_stress=compute_stress,
             compute_dipole=compute_dipole,
             compute_hirshfeld=compute_hirshfeld,
+            compute_c6_ratios=compute_c6_ratios,
             compute_partial_charges=compute_partial_charges,
             return_att=return_att,
             return_inv_descriptors=return_inv_descriptors,
@@ -209,6 +213,7 @@ def run_evaluation(
             compute_stress=compute_stress,
             compute_dipole=compute_dipole,
             compute_hirshfeld=compute_hirshfeld,
+            compute_c6_ratios=compute_c6_ratios,
             compute_partial_charges=compute_partial_charges,
             key_spec=keyspec,
             compile=compile,
@@ -248,6 +253,12 @@ def main():
     )
     argparser.add_argument(
         "--compute_hirshfeld", action="store_true", default=False
+    )
+    argparser.add_argument(
+        "--compute_c6_ratios",
+        action="store_true",
+        default=False,
+        help="Export per-atom C6-ratio predictions (SO3LR-tauri models)",
     )
     argparser.add_argument(
         "--compute_partial_charges", action="store_true", default=False
@@ -290,6 +301,12 @@ def main():
         type=str,
         help="Hirshfeld key",
         default="REF_hirsh_ratios",
+    )
+    argparser.add_argument(
+        "--c6_key",
+        type=str,
+        help="C6-ratio key",
+        default="REF_c6_ratios",
     )
     argparser.add_argument(
         "--head_key", type=str, help="Head key", default="head"
@@ -373,6 +390,7 @@ def main():
     compute_dipole = validated.compute_dipole
     compute_stress = validated.compute_stress
     compute_hirshfeld = validated.compute_hirshfeld
+    compute_c6_ratios = validated.compute_c6_ratios
     compute_partial_charges = validated.compute_partial_charges
     dispersion_energy_cutoff_lr_damping = (
         validated.dispersion_energy_cutoff_lr_damping
@@ -386,6 +404,7 @@ def main():
     total_charge_key = validated.total_charge_key
     total_spin_key = validated.total_spin_key
     hirshfeld_key = validated.hirshfeld_key
+    c6_key = validated.c6_key
     head_key = validated.head_key
     dtype = validated.dtype
     return_att = validated.return_att
@@ -410,6 +429,7 @@ def main():
         compute_stress=compute_stress,
         compute_dipole=compute_dipole,
         compute_hirshfeld=compute_hirshfeld,
+        compute_c6_ratios=compute_c6_ratios,
         compute_partial_charges=compute_partial_charges,
         dispersion_energy_cutoff_lr_damping=dispersion_energy_cutoff_lr_damping,
         energy_key=energy_key,
@@ -421,6 +441,7 @@ def main():
         total_charge_key=total_charge_key,
         total_spin_key=total_spin_key,
         hirshfeld_key=hirshfeld_key,
+        c6_key=c6_key,
         head_key=head_key,
         dtype=dtype,
         return_att=return_att,

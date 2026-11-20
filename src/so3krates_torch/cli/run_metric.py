@@ -8,6 +8,31 @@ from prettytable import PrettyTable
 import logging
 
 
+POSSIBLE_OUTPUT_ARGS = (
+    "energy",
+    "forces",
+    "stress",
+    "virials",
+    "dipole",
+    "hirshfeld_ratios",
+    "c6_ratios",
+)
+
+
+def parse_output_args(names) -> dict:
+    """Map CLI output names (case-insensitive) to a full bool dict."""
+    output_args = {name: False for name in POSSIBLE_OUTPUT_ARGS}
+    for name in names:
+        name = name.lower()
+        if name not in output_args:
+            raise ValueError(
+                f"Invalid output argument '{name}'; use one of "
+                f"{POSSIBLE_OUTPUT_ARGS}."
+            )
+        output_args[name] = True
+    return output_args
+
+
 def main():
     parser = argparse.ArgumentParser(description="Test ensemble of models")
     parser.add_argument(
@@ -94,6 +119,12 @@ def main():
         default="total_spin",
     )
     parser.add_argument(
+        "--c6_key",
+        type=str,
+        help="C6-ratio key",
+        default="REF_c6_ratios",
+    )
+    parser.add_argument(
         "--hirshfeld_key",
         type=str,
         help="Hirshfeld key",
@@ -138,35 +169,7 @@ def main():
             model.return_mean = True
             logging.info("Multihead model: Returning mean over heads.")
 
-    possible_args = [
-        "energy",
-        "forces",
-        "stress",
-        "virials",
-        "dipole",
-        "hirshfeld_ratios",
-    ]
-    output_args = {}
-    for arg in args.output_args:
-        arg = arg.lower()
-        if arg not in possible_args:
-            raise ValueError("Invalid output argument")
-        if arg == "energy":
-            output_args["energy"] = True
-        if arg == "forces":
-            output_args["forces"] = True
-        if arg == "stress":
-            output_args["stress"] = True
-        if arg == "virials":
-            output_args["virials"] = True
-        if arg == "dipole":
-            output_args["dipole"] = True
-        if arg == "hirshfeld_ratios":
-            output_args["hirshfeld_ratios"] = True
-
-    for arg in possible_args:
-        if arg not in output_args:
-            output_args[arg] = False
+    output_args = parse_output_args(args.output_args)
 
     (avg_ensemble_metrics, ensemble_metrics) = test_ensemble(
         ensemble=ensemble,
@@ -184,6 +187,7 @@ def main():
         total_charge_key=args.total_charge_key,
         total_spin_key=args.total_spin_key,
         hirshfeld_key=args.hirshfeld_key,
+        c6_key=args.c6_key,
         head_name=args.head_name,
         head_key=args.head_key,
         r_max_lr=args.r_max_lr,

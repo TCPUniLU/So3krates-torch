@@ -576,7 +576,7 @@ def test_set_dtype_model_invalid_raises(default_model_config):
 
 def test_setup_loss_function_auto_energy_forces():
     from so3krates_torch.tools.training_setup import setup_loss_function
-    from so3krates_torch.modules.loss import WeightedEnergyForcesLoss
+    from so3krates_torch.modules.loss import WeightedPropertiesLoss
 
     config = {
         "TRAINING": {
@@ -585,7 +585,8 @@ def test_setup_loss_function_auto_energy_forces():
         }
     }
     loss = setup_loss_function(config)
-    assert isinstance(loss, WeightedEnergyForcesLoss)
+    assert isinstance(loss, WeightedPropertiesLoss)
+    assert loss.properties == ["energy", "forces"]
     assert abs(loss.energy_weight.item() - 2.0) < 1e-9
     assert abs(loss.forces_weight.item() - 500.0) < 1e-9
 
@@ -612,6 +613,7 @@ def test_get_loss_property_weights_defaults():
         "dipole": 0.0,
         "hirshfeld_ratios": 3.0,
         "charges": 0.0,
+        "c6_ratios": 0.0,
     }
 
 
@@ -1118,3 +1120,672 @@ def test_determine_num_elements(example_xyz_with_data):
     n = determine_num_elements(loader)
     # H2O -> H,O; NH3 -> N,H; CH4 -> C,H  ->  {H, O, N, C} = 4 elements
     assert n == 4
+
+
+# ── End-to-end: dispersion ratio labels (a0 + C6), mixed dataset ─
+
+
+def _ratio_label_config(tmp_path):
+    import ase.io
+    import numpy as np
+    import yaml
+    from ase.build import molecule
+
+    rng = np.random.default_rng(0)
+    atoms_list = []
+    for i, name in enumerate(["H2O", "NH3", "CH4", "H2O", "NH3", "CH4"]):
+        atoms = molecule(name)
+        atoms.rattle(0.05, seed=i)
+        atoms.info["REF_energy"] = -10.0 * len(atoms)
+        atoms.arrays["REF_forces"] = rng.normal(size=(len(atoms), 3)) * 0.1
+        if i % 2 == 0:  # half the structures carry dispersion labels
+            atoms.arrays["REF_hirsh_ratios"] = rng.uniform(
+                0.6, 1.0, len(atoms)
+            )
+            atoms.arrays["REF_c6_ratios"] = rng.uniform(0.4, 1.0, len(atoms))
+        atoms_list.append(atoms)
+    data_path = tmp_path / "train.xyz"
+    ase.io.write(data_path, atoms_list)
+
+    example = (
+        Path(__file__).resolve().parents[3]
+        / "examples"
+        / "training"
+        / "train_settings_example.yaml"
+    )
+    raw = yaml.safe_load(example.read_text())
+    raw["GENERAL"].update(
+        checkpoints_dir=str(tmp_path / "ckpt"),
+        model_dir=str(tmp_path / "model"),
+        log_dir=str(tmp_path / "logs"),
+        name_exp="ratio_labels",
+    )
+    raw["ARCHITECTURE"].update(
+        degrees=[1],
+        num_features=8,
+        num_heads=2,
+        num_layers=1,
+        num_radial_basis_fn=4,
+        energy_regression_dim=8,
+        r_max=4.0,
+        r_max_lr=6.0,
+        electrostatic_energy_bool=False,
+        dispersion_energy_bool=True,
+        c6_ratios_bool=True,
+        use_simple_hirshfeld=True,
+        zbl_repulsion_bool=False,
+    )
+    raw["TRAINING"].update(
+        path_to_train_data=str(data_path),
+        # validate on all six so labelled structures are always present
+        path_to_val_data=str(data_path),
+        batch_size=2,
+        valid_batch_size=2,
+        num_epochs=1,
+        energy_weight=0.01,
+        forces_weight=1.0,
+        a0_ratios_weight=0.1,
+        c6_ratios_weight=0.1,
+    )
+    raw["MISC"].update(device="cpu", error_table="PerAtomMAE")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(raw))
+    return config_path
+
+
+def test_train_with_c6_and_a0_labels_mixed_dataset(tmp_path):
+    from so3krates_torch.cli.run_train import setup_config_from_yaml
+    from so3krates_torch.modules.loss import WeightedPropertiesLoss
+    from so3krates_torch.tools.data_setup import setup_data_loaders
+    from so3krates_torch.tools.model_setup import create_model
+    from so3krates_torch.tools.training_setup import setup_loss_function
+
+    torch.set_default_dtype(torch.float64)
+    try:
+        config = setup_config_from_yaml(str(_ratio_label_config(tmp_path)))
+        assert config["TRAINING"]["hirshfeld_weight"] == 0.1
+        model = create_model(config, torch.device("cpu"))
+        train_loader, *_ = setup_data_loaders(config)
+        loss_fn = setup_loss_function(config)
+        assert isinstance(loss_fn, WeightedPropertiesLoss)
+        assert "c6_ratios" in loss_fn.properties
+
+        saw_missing = saw_labelled = False
+        for batch in train_loader:
+            saw_missing |= bool(torch.isnan(batch.c6_ratios).any())
+            saw_labelled |= bool(torch.isfinite(batch.c6_ratios).any())
+            model.zero_grad()
+            out = model(batch.to_dict(), training=True, compute_force=True)
+            loss = loss_fn(ref=batch, pred=out, ddp=False)
+            assert torch.isfinite(loss)
+            loss.backward()
+        assert saw_missing and saw_labelled
+
+        c6_grads = [
+            p.grad
+            for p in model.c6_ratios_output_block.parameters()
+            if p.grad is not None
+        ]
+        assert c6_grads and any(bool((g != 0).any()) for g in c6_grads)
+        assert all(bool(torch.isfinite(g).all()) for g in c6_grads)
+    finally:
+        torch.set_default_dtype(torch.float32)
+
+
+def test_run_training_logs_c6_metrics(tmp_path, monkeypatch):
+    from so3krates_torch.cli.run_train import (
+        run_training,
+        setup_config_from_yaml,
+    )
+
+    config = setup_config_from_yaml(str(_ratio_label_config(tmp_path)))
+    # run_training saves '<name_exp>.model' relative to the cwd
+    monkeypatch.chdir(tmp_path)
+    try:
+        run_training(config)
+    finally:
+        torch.set_default_dtype(torch.float32)
+    log_text = "".join(
+        p.read_text() for p in (tmp_path / "logs").rglob("*.log")
+    )
+    assert "MAE_c6_ratios=" in log_text
+    assert "loss=nan" not in log_text.lower()
+    assert (tmp_path / "ratio_labels.model").exists()
+
+
+# ── Adaptive robust loss: optimizer, DDP, logging ──────────────
+
+
+def _adaptive_loss():
+    from so3krates_torch.modules.loss import WeightedPropertiesLoss
+
+    return WeightedPropertiesLoss(
+        {"energy": 1.0, "forces": 1.0}, robust="adaptive"
+    )
+
+
+def test_optimizer_includes_loss_params():
+    from so3krates_torch.tools.training_setup import (
+        setup_optimizer_and_scheduler,
+    )
+
+    model = torch.nn.Linear(3, 2)
+    loss_fn = _adaptive_loss()
+    for opt in ("adam", "adamw"):
+        config = {"TRAINING": {"lr": 1e-3, "optimizer": opt}}
+        optimizer, _ = setup_optimizer_and_scheduler(model, config, loss_fn)
+        ids = {id(p) for g in optimizer.param_groups for p in g["params"]}
+        assert all(id(p) in ids for p in loss_fn.parameters())
+        assert all(id(p) in ids for p in model.parameters())
+    # no loss params -> unchanged single group
+    optimizer, _ = setup_optimizer_and_scheduler(
+        model, {"TRAINING": {"lr": 1e-3}}, None
+    )
+    assert len(optimizer.param_groups) == 1
+
+
+def test_loss_param_grads_averaged_across_ranks(monkeypatch):
+    import torch.distributed as dist
+    from so3krates_torch.tools.train import allreduce_loss_param_grads_
+
+    loss_fn = _adaptive_loss()
+    for p in loss_fn.parameters():
+        p.grad = torch.ones_like(p)
+
+    def all_reduce(t, op=None):
+        t += 3.0  # other rank's gradient
+
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda: 2)
+    monkeypatch.setattr(dist, "all_reduce", all_reduce)
+    allreduce_loss_param_grads_(loss_fn)
+    for p in loss_fn.parameters():
+        assert torch.allclose(p.grad, torch.full_like(p, 2.0))
+
+
+def test_valid_err_log_reports_robust_params(caplog):
+    import logging
+    from so3krates_torch.modules.loss import robust_param_metrics
+    from so3krates_torch.tools.train import valid_err_log
+
+    class _Logger:
+        def log(self, _):
+            pass
+
+    metrics = {"mae_e_per_atom": 0.001, "mae_f": 0.01}
+    metrics.update(robust_param_metrics(_adaptive_loss()))
+    assert metrics["robust_alpha_forces"] == pytest.approx(1.0, abs=1e-6)
+    with caplog.at_level(logging.INFO):
+        valid_err_log(0.1, metrics, _Logger(), "PerAtomMAE", epoch=1)
+    assert "robust: energy alpha=1.000 scale=1.000" in caplog.text
+
+
+def test_run_training_adaptive_per_graph_smoke(tmp_path, monkeypatch):
+    import yaml
+    from so3krates_torch.cli.run_train import (
+        run_training,
+        setup_config_from_yaml,
+    )
+
+    config_path = _ratio_label_config(tmp_path)
+    raw = yaml.safe_load(config_path.read_text())
+    raw["TRAINING"].update(
+        loss_reduction="per_graph",
+        use_adaptive_robust_loss=True,
+        num_epochs=2,
+    )
+    config_path.write_text(yaml.dump(raw))
+    config = setup_config_from_yaml(str(config_path))
+    monkeypatch.chdir(tmp_path)
+    try:
+        run_training(config)
+    finally:
+        torch.set_default_dtype(torch.float32)
+    log_text = "".join(
+        p.read_text() for p in (tmp_path / "logs").rglob("*.log")
+    )
+    assert "robust: " in log_text
+    for prop in ("energy", "forces", "hirshfeld_ratios", "c6_ratios"):
+        assert f"{prop} alpha=" in log_text
+    assert "loss=nan" not in log_text.lower()
+    ckpts = list((tmp_path / "ckpt").glob("*.pt"))
+    assert ckpts and "loss_fn" in torch.load(ckpts[0], weights_only=False)
+
+
+def test_clip_gradients_includes_loss_params():
+    """JAX clips the global norm over the full params tree, including
+    the adaptive robust-loss parameters."""
+    from so3krates_torch.tools.train import clip_gradients_
+
+    model = torch.nn.Linear(1, 1, bias=False)
+    model.weight.grad = torch.ones_like(model.weight)
+    loss_fn = _adaptive_loss()
+    for p in loss_fn.parameters():
+        p.grad = torch.full_like(p, 100.0)
+    norm = clip_gradients_(model, loss_fn, max_norm=1.0)
+    assert norm.item() == pytest.approx((1 + 4 * 100.0**2) ** 0.5)
+    assert model.weight.grad.item() < 0.01  # scaled by the global norm
+    total = torch.sqrt(
+        model.weight.grad.square().sum()
+        + sum(p.grad.square().sum() for p in loss_fn.parameters())
+    )
+    assert total.item() == pytest.approx(1.0, rel=1e-4)
+
+
+# ── setup_loss_functions: validation robust + two-stage ────────
+
+
+def _loss_cfg(**training):
+    return {
+        "TRAINING": {"energy_weight": 0.001, "forces_weight": 1.0, **training}
+    }
+
+
+def test_setup_loss_functions_defaults_share_train_loss():
+    from so3krates_torch.tools.training_setup import setup_loss_functions
+
+    fns = setup_loss_functions(_loss_cfg())
+    assert fns.valid is fns.train
+    assert fns.stage_two is None
+
+
+def test_validation_robust_overrides():
+    from so3krates_torch.tools.training_setup import setup_loss_functions
+
+    fns = setup_loss_functions(
+        _loss_cfg(use_robust_loss=True, use_robust_loss_validation=False)
+    )
+    assert fns.train.robust == "fixed" and fns.valid.robust == "none"
+    fns = setup_loss_functions(
+        _loss_cfg(
+            use_robust_loss_validation=True, robust_loss_alpha_validation=0.5
+        )
+    )
+    assert fns.train.robust == "none"
+    assert fns.valid.robust == "fixed" and fns.valid.robust_alpha == 0.5
+
+
+def test_adaptive_validation_uses_training_loss():
+    from so3krates_torch.tools.training_setup import setup_loss_functions
+
+    fns = setup_loss_functions(
+        _loss_cfg(
+            use_adaptive_robust_loss=True, use_robust_loss_validation=False
+        )
+    )
+    assert fns.valid is fns.train
+
+
+def test_stage_two_weights_inherit_and_override():
+    from so3krates_torch.tools.training_setup import setup_loss_functions
+
+    fns = setup_loss_functions(
+        _loss_cfg(
+            stage_two_start_epoch=4,
+            stage_two_loss_weights={"energy_weight": 0.01},
+        )
+    )
+    s2 = fns.stage_two
+    assert s2.start_epoch == 4
+    assert s2.loss_fn.energy_weight.item() == pytest.approx(0.01)
+    assert s2.loss_fn.forces_weight.item() == pytest.approx(1.0)
+    assert fns.train.energy_weight.item() == pytest.approx(0.001)
+    assert s2.valid_loss_fn is s2.loss_fn
+
+
+def test_stage_two_shares_adaptive_params():
+    from so3krates_torch.tools.training_setup import setup_loss_functions
+
+    fns = setup_loss_functions(
+        _loss_cfg(
+            use_adaptive_robust_loss=True,
+            stage_two_start_epoch=2,
+            stage_two_loss_weights={"dipole_weight": 0.1},
+        )
+    )
+    assert fns.stage_two.loss_fn.adaptive is fns.train.adaptive
+    assert set(fns.train.adaptive.alpha_raw.keys()) == {
+        "energy",
+        "forces",
+        "dipole",
+    }
+    names = {n for n, _ in fns.train.named_parameters()}
+    assert names == {n for n, _ in fns.stage_two.loss_fn.named_parameters()}
+
+
+def test_legacy_loss_type_rejects_stage_two():
+    from so3krates_torch.tools.training_setup import setup_loss_functions
+
+    with pytest.raises(ValueError, match="stage_two"):
+        setup_loss_functions(
+            _loss_cfg(
+                loss_type="energy_forces",
+                stage_two_start_epoch=2,
+                stage_two_loss_weights={"energy_weight": 0.01},
+            )
+        )
+
+
+def test_required_loss_properties_include_stage_two():
+    from so3krates_torch.tools.training_setup import (
+        get_required_loss_properties,
+    )
+
+    required = get_required_loss_properties(
+        _loss_cfg(
+            stage_two_start_epoch=2,
+            stage_two_loss_weights={"c6_ratios_weight": 0.1},
+        )
+    )
+    assert set(required) == {"energy", "forces", "c6_ratios"}
+
+
+def test_reset_plateau_scheduler_keeps_lr():
+    from so3krates_torch.tools.train import reset_plateau_scheduler_
+
+    model = torch.nn.Linear(1, 1)
+    opt = torch.optim.Adam(model.parameters(), lr=1.0)
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        opt, patience=0, factor=0.5
+    )
+    sched.step(1.0)
+    sched.step(2.0)  # no improvement -> lr halved
+    assert opt.param_groups[0]["lr"] == 0.5
+    sched.step(3.0)
+    reset_plateau_scheduler_(sched)
+    assert sched.best == sched.mode_worse
+    assert sched.num_bad_epochs == 0 and sched.cooldown_counter == 0
+    assert opt.param_groups[0]["lr"] == 0.25  # reduction kept
+    reset_plateau_scheduler_(
+        torch.optim.lr_scheduler.ExponentialLR(opt, 0.9)
+    )  # no-op for other schedulers
+
+
+def test_run_training_two_stage_switch(tmp_path, monkeypatch):
+    import yaml
+    from so3krates_torch.cli.run_train import (
+        run_training,
+        setup_config_from_yaml,
+    )
+
+    config_path = _ratio_label_config(tmp_path)
+    raw = yaml.safe_load(config_path.read_text())
+    raw["TRAINING"].update(
+        num_epochs=3,
+        stage_two_start_epoch=1,
+        stage_two_loss_weights={"energy_weight": 1.0},
+    )
+    config_path.write_text(yaml.dump(raw))
+    config = setup_config_from_yaml(str(config_path))
+    monkeypatch.chdir(tmp_path)
+    try:
+        run_training(config)
+    finally:
+        torch.set_default_dtype(torch.float32)
+    log_text = (tmp_path / "logs" / "ratio_labels.log").read_text()
+    debug_text = (tmp_path / "logs" / "ratio_labels_debug.log").read_text()
+    assert log_text.count("switching to the stage-two loss at epoch 1") == 1
+    assert "loss=nan" not in log_text.lower()
+    # best-loss tracker reset: the first stage-two epoch is checkpointed
+    # even though its (re-weighted) loss is higher than stage one's
+    assert "ratio_labels_epoch-1.pt" in debug_text
+
+
+# ── Two-stage: restarts, stale plateau losses, startup output check ─
+
+
+def _two_stage_run(tmp_path, monkeypatch, **training):
+    import yaml
+    from so3krates_torch.cli.run_train import (
+        run_training,
+        setup_config_from_yaml,
+    )
+
+    config_path = _ratio_label_config(tmp_path)
+    raw = yaml.safe_load(config_path.read_text())
+    raw["TRAINING"].pop("stage_two_start_epoch", None)
+    raw["TRAINING"].pop("stage_two_loss_weights", None)
+    raw["TRAINING"].update(scheduler="reduce_on_plateau", **training)
+    raw["MISC"]["keep_checkpoints"] = True  # checkpoint every epoch
+    config_path.write_text(yaml.dump(raw))
+    monkeypatch.chdir(tmp_path)
+    try:
+        run_training(setup_config_from_yaml(str(config_path)))
+    finally:
+        torch.set_default_dtype(torch.float32)
+    return (tmp_path / "logs" / "ratio_labels.log").read_text()
+
+
+def test_resume_from_stage_one_checkpoint_runs_full_switch(
+    tmp_path, monkeypatch
+):
+    _two_stage_run(tmp_path, monkeypatch, num_epochs=2)
+    log = _two_stage_run(
+        tmp_path,
+        monkeypatch,
+        num_epochs=3,
+        stage_two_start_epoch=2,
+        stage_two_loss_weights={"energy_weight": 50.0},
+    )
+    # checkpoint was taken in stage one -> full switch incl. tracker reset
+    assert "switching to the stage-two loss at epoch 2" in log
+    assert "resuming in stage two" not in log
+
+
+def test_resume_stage_two_checkpoint_without_stage_two_raises(
+    tmp_path, monkeypatch
+):
+    _two_stage_run(
+        tmp_path,
+        monkeypatch,
+        num_epochs=2,
+        stage_two_start_epoch=1,
+        stage_two_loss_weights={"energy_weight": 1.0},
+    )
+    with pytest.raises(ValueError, match="stage two"):
+        _two_stage_run(tmp_path, monkeypatch, num_epochs=3)
+
+
+def test_checkpoint_stores_stage_two_flag(tmp_path):
+    from so3krates_torch.tools.checkpoint import (
+        CheckpointBuilder,
+        CheckpointState,
+    )
+
+    model = torch.nn.Linear(2, 1)
+    opt = torch.optim.Adam(model.parameters())
+    sched = torch.optim.lr_scheduler.ExponentialLR(opt, 0.9)
+    ckpt = CheckpointBuilder.create_checkpoint(
+        CheckpointState(model, opt, sched, stage_two_active=True)
+    )
+    assert ckpt["stage_two_active"] is True
+    state = CheckpointState(model, opt, sched)
+    CheckpointBuilder.load_checkpoint(state, ckpt, strict=True)
+    assert state.stage_two_active is True
+
+
+def test_stale_stage_one_loss_skips_plateau_step(tmp_path, monkeypatch):
+    log = _two_stage_run(
+        tmp_path,
+        monkeypatch,
+        num_epochs=4,
+        eval_interval=2,
+        stage_two_start_epoch=1,
+        stage_two_loss_weights={"energy_weight": 50.0},
+    )
+    assert "skipping plateau scheduler step" in log
+
+
+def test_startup_check_catches_stage_two_only_output(
+    so3lr_model_config, make_batch, h2o_atoms
+):
+    from so3krates_torch.modules.models import SO3LR
+    from so3krates_torch.tools.training_setup import (
+        check_loss_outputs,
+        setup_loss_functions,
+    )
+
+    config = {**so3lr_model_config, "electrostatic_energy_bool": False}
+    model = SO3LR(**config).to(torch.float64)
+    batch = make_batch(h2o_atoms, r_max=5.0, cutoff_lr=10.0)
+    fns = setup_loss_functions(
+        _loss_cfg(
+            stage_two_start_epoch=5,
+            stage_two_loss_weights={"dipole_weight": 0.1},
+        )
+    )
+    with pytest.raises(KeyError, match="dipole"):
+        check_loss_outputs(model, fns, batch)
+    ok = setup_loss_functions(_loss_cfg())
+    check_loss_outputs(model, ok, batch)  # no error
+
+
+# ── Loss config warnings ───────────────────────────────────────
+
+import logging  # noqa: E402
+
+from so3krates_torch.tools.training_setup import (  # noqa: E402
+    setup_loss_functions as _setup_loss_functions,
+)
+
+
+def test_adaptive_ignores_validation_settings_warns(caplog):
+    with caplog.at_level(logging.WARNING):
+        _setup_loss_functions(
+            _loss_cfg(
+                use_adaptive_robust_loss=True,
+                use_robust_loss_validation=False,
+                robust_loss_alpha_validation=0.5,
+            )
+        )
+    assert caplog.text.count("ignored with use_adaptive_robust_loss") == 1
+
+
+def test_alpha_validation_without_robust_validation_warns(caplog):
+    with caplog.at_level(logging.WARNING):
+        _setup_loss_functions(_loss_cfg(robust_loss_alpha_validation=0.5))
+    assert "robust_loss_alpha_validation has no effect" in caplog.text
+
+
+def test_legacy_loss_type_names_validation_key():
+    with pytest.raises(ValueError, match="use_robust_loss_validation"):
+        _setup_loss_functions(
+            _loss_cfg(
+                loss_type="energy_forces", use_robust_loss_validation=True
+            )
+        )
+
+
+def test_no_warning_by_default(caplog):
+    with caplog.at_level(logging.WARNING):
+        _setup_loss_functions(
+            _loss_cfg(
+                use_robust_loss_validation=None,
+                robust_loss_alpha_validation=None,
+            )
+        )
+    assert caplog.text == ""
+
+
+def test_no_warning_when_validation_matches_training(caplog):
+    with caplog.at_level(logging.WARNING):
+        _setup_loss_functions(
+            _loss_cfg(
+                use_robust_loss=True,
+                use_robust_loss_validation=True,
+                robust_loss_alpha_validation=1.0,
+            )
+        )
+    assert caplog.text == ""
+
+
+def test_ignored_validation_warning_logged_once_with_stage_two(caplog):
+    with caplog.at_level(logging.WARNING):
+        _setup_loss_functions(
+            _loss_cfg(
+                use_adaptive_robust_loss=True,
+                use_robust_loss_validation=True,
+                stage_two_start_epoch=2,
+                stage_two_loss_weights={"energy_weight": 0.01},
+            )
+        )
+    assert caplog.text.count("ignored with use_adaptive_robust_loss") == 1
+
+
+@pytest.mark.parametrize("start", [5, 7])
+def test_stage_two_never_starts_warns(caplog, start):
+    with caplog.at_level(logging.WARNING):
+        _setup_loss_functions(
+            _loss_cfg(
+                num_epochs=5,
+                stage_two_start_epoch=start,
+                stage_two_loss_weights={"energy_weight": 0.01},
+            )
+        )
+    assert "stage two never starts" in caplog.text
+    assert f"stage_two_start_epoch={start}" in caplog.text
+    assert "num_epochs=5" in caplog.text
+
+
+def test_stage_two_reachable_no_warning(caplog):
+    with caplog.at_level(logging.WARNING):
+        _setup_loss_functions(
+            _loss_cfg(
+                num_epochs=5,
+                stage_two_start_epoch=4,
+                stage_two_loss_weights={"energy_weight": 0.01},
+            )
+        )
+    assert caplog.text == ""
+
+
+def test_stage_two_check_without_num_epochs(caplog):
+    with caplog.at_level(logging.WARNING):
+        _setup_loss_functions(
+            _loss_cfg(
+                stage_two_start_epoch=4,
+                stage_two_loss_weights={"energy_weight": 0.01},
+            )
+        )
+    assert caplog.text == ""
+
+
+@pytest.mark.parametrize(
+    "robust_key", ["use_robust_loss", "use_adaptive_robust_loss"]
+)
+def test_legacy_error_names_training_key_when_training_is_robust(robust_key):
+    with pytest.raises(ValueError) as err:
+        _setup_loss_functions(
+            _loss_cfg(
+                loss_type="energy_forces",
+                use_robust_loss_validation=True,
+                **{robust_key: True},
+            )
+        )
+    assert "use_robust_loss / use_adaptive_robust_loss" in str(err.value)
+
+
+def test_alpha_warning_no_suggestion_for_legacy_loss_type(caplog):
+    with caplog.at_level(logging.WARNING):
+        _setup_loss_functions(
+            _loss_cfg(
+                loss_type="energy_forces", robust_loss_alpha_validation=0.5
+            )
+        )
+    assert "robust_loss_alpha_validation has no effect" in caplog.text
+    assert "Set use_robust_loss_validation" not in caplog.text
+
+
+def test_train_module_imports_without_pandas():
+    # pandas belongs to the optional [vis] extra; training must not need it
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; sys.modules['pandas'] = None; "
+        "import so3krates_torch.tools.train"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
