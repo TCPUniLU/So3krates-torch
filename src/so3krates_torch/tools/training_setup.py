@@ -124,7 +124,13 @@ def _check_validation_settings(loss_config: dict) -> None:
     val_flag = loss_config.get("use_robust_loss_validation")
     val_alpha = loss_config.get("robust_loss_alpha_validation")
     loss_type = loss_config.get("loss_type", "auto")
-    if val_flag and loss_type not in ("auto", "properties"):
+    legacy = loss_type not in ("auto", "properties")
+    training_robust = loss_config.get(
+        "use_robust_loss", False
+    ) or loss_config.get("use_adaptive_robust_loss", False)
+    # With robust training the training-side error (naming
+    # use_robust_loss / use_adaptive_robust_loss) fires instead.
+    if val_flag and legacy and not training_robust:
         raise ValueError(
             f"loss_type '{loss_type}' does not support "
             "use_robust_loss_validation. Use loss_type 'auto' or "
@@ -144,10 +150,15 @@ def _check_validation_settings(loss_config: dict) -> None:
         else val_flag
     )
     if val_alpha is not None and not effective:
+        hint = (
+            ""
+            if legacy
+            else " Set use_robust_loss_validation: true to validate with "
+            "the fixed robust loss."
+        )
         logging.warning(
             "robust_loss_alpha_validation has no effect: the validation loss "
-            "uses the squared error. Set use_robust_loss_validation: true "
-            "to validate with the fixed robust loss."
+            "uses the squared error." + hint
         )
 
 

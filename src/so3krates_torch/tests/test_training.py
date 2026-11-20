@@ -1748,3 +1748,29 @@ def test_stage_two_check_without_num_epochs(caplog):
             )
         )
     assert caplog.text == ""
+
+
+@pytest.mark.parametrize(
+    "robust_key", ["use_robust_loss", "use_adaptive_robust_loss"]
+)
+def test_legacy_error_names_training_key_when_training_is_robust(robust_key):
+    with pytest.raises(ValueError) as err:
+        _setup_loss_functions(
+            _loss_cfg(
+                loss_type="energy_forces",
+                use_robust_loss_validation=True,
+                **{robust_key: True},
+            )
+        )
+    assert "use_robust_loss / use_adaptive_robust_loss" in str(err.value)
+
+
+def test_alpha_warning_no_suggestion_for_legacy_loss_type(caplog):
+    with caplog.at_level(logging.WARNING):
+        _setup_loss_functions(
+            _loss_cfg(
+                loss_type="energy_forces", robust_loss_alpha_validation=0.5
+            )
+        )
+    assert "robust_loss_alpha_validation has no effect" in caplog.text
+    assert "Set use_robust_loss_validation" not in caplog.text
