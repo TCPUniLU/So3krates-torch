@@ -1251,3 +1251,102 @@ def test_run_training_logs_c6_metrics(tmp_path, monkeypatch):
     assert "MAE_c6_ratios=" in log_text
     assert "loss=nan" not in log_text.lower()
     assert (tmp_path / "ratio_labels.model").exists()
+
+
+# ── Adaptive robust loss: optimizer, DDP, logging ──────────────
+
+
+def _adaptive_loss():
+    from so3krates_torch.modules.loss import WeightedPropertiesLoss
+
+    return WeightedPropertiesLoss(
+        {"energy": 1.0, "forces": 1.0}, robust="adaptive"
+    )
+
+
+def test_optimizer_includes_loss_params():
+    from so3krates_torch.tools.training_setup import (
+        setup_optimizer_and_scheduler,
+    )
+
+    model = torch.nn.Linear(3, 2)
+    loss_fn = _adaptive_loss()
+    for opt in ("adam", "adamw"):
+        config = {"TRAINING": {"lr": 1e-3, "optimizer": opt}}
+        optimizer, _ = setup_optimizer_and_scheduler(model, config, loss_fn)
+        ids = {id(p) for g in optimizer.param_groups for p in g["params"]}
+        assert all(id(p) in ids for p in loss_fn.parameters())
+        assert all(id(p) in ids for p in model.parameters())
+    # no loss params -> unchanged single group
+    optimizer, _ = setup_optimizer_and_scheduler(
+        model, {"TRAINING": {"lr": 1e-3}}, None
+    )
+    assert len(optimizer.param_groups) == 1
+
+
+def test_loss_param_grads_averaged_across_ranks(monkeypatch):
+    import torch.distributed as dist
+    from so3krates_torch.tools.train import allreduce_loss_param_grads_
+
+    loss_fn = _adaptive_loss()
+    for p in loss_fn.parameters():
+        p.grad = torch.ones_like(p)
+
+    def all_reduce(t, op=None):
+        t += 3.0  # other rank's gradient
+
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda: 2)
+    monkeypatch.setattr(dist, "all_reduce", all_reduce)
+    allreduce_loss_param_grads_(loss_fn)
+    for p in loss_fn.parameters():
+        assert torch.allclose(p.grad, torch.full_like(p, 2.0))
+
+
+def test_valid_err_log_reports_robust_params(caplog):
+    import logging
+    from so3krates_torch.modules.loss import robust_param_metrics
+    from so3krates_torch.tools.train import valid_err_log
+
+    class _Logger:
+        def log(self, _):
+            pass
+
+    metrics = {"mae_e_per_atom": 0.001, "mae_f": 0.01}
+    metrics.update(robust_param_metrics(_adaptive_loss()))
+    assert metrics["robust_alpha_forces"] == pytest.approx(1.0, abs=1e-6)
+    with caplog.at_level(logging.INFO):
+        valid_err_log(0.1, metrics, _Logger(), "PerAtomMAE", epoch=1)
+    assert "robust: energy alpha=1.000 scale=1.000" in caplog.text
+
+
+def test_run_training_adaptive_per_graph_smoke(tmp_path, monkeypatch):
+    import yaml
+    from so3krates_torch.cli.run_train import (
+        run_training,
+        setup_config_from_yaml,
+    )
+
+    config_path = _ratio_label_config(tmp_path)
+    raw = yaml.safe_load(config_path.read_text())
+    raw["TRAINING"].update(
+        loss_reduction="per_graph",
+        use_adaptive_robust_loss=True,
+        num_epochs=2,
+    )
+    config_path.write_text(yaml.dump(raw))
+    config = setup_config_from_yaml(str(config_path))
+    monkeypatch.chdir(tmp_path)
+    try:
+        run_training(config)
+    finally:
+        torch.set_default_dtype(torch.float32)
+    log_text = "".join(
+        p.read_text() for p in (tmp_path / "logs").rglob("*.log")
+    )
+    assert "robust: " in log_text
+    for prop in ("energy", "forces", "hirshfeld_ratios", "c6_ratios"):
+        assert f"{prop} alpha=" in log_text
+    assert "loss=nan" not in log_text.lower()
+    ckpts = list((tmp_path / "ckpt").glob("*.pt"))
+    assert ckpts and "loss_fn" in torch.load(ckpts[0], weights_only=False)

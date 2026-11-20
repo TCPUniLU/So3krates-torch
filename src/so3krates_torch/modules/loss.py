@@ -741,3 +741,18 @@ class WeightedPropertiesLoss(torch.nn.Module):
             f"{self.__class__.__name__}({weights}, "
             f"reduction={self.reduction}, robust={self.robust})"
         )
+
+
+def robust_param_metrics(loss_fn: torch.nn.Module) -> Dict[str, float]:
+    """Current adaptive robust-loss alpha/scale per property, as
+    `robust_alpha_<prop>` / `robust_scale_<prop>` (empty otherwise)."""
+    adaptive = getattr(loss_fn, "adaptive", None)
+    if adaptive is None:
+        return {}
+    metrics = {}
+    with torch.no_grad():
+        for prop in adaptive.alpha_raw.keys():
+            alpha, scale = adaptive.alpha_scale(prop)
+            metrics[f"robust_alpha_{prop}"] = float(alpha)
+            metrics[f"robust_scale_{prop}"] = float(scale)
+    return metrics

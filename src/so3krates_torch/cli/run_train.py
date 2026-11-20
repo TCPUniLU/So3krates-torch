@@ -201,10 +201,12 @@ def run_training(config: dict) -> None:
         ddp_model = wrap_model_ddp(model, local_rank)
 
     # Setup loss function
-    loss_fn = setup_loss_function(config)
+    loss_fn = setup_loss_function(config).to(device)
 
     # Setup optimizer and scheduler
-    optimizer, lr_scheduler = setup_optimizer_and_scheduler(model, config)
+    optimizer, lr_scheduler = setup_optimizer_and_scheduler(
+        model, config, loss_fn=loss_fn
+    )
 
     # Setup training tools
     logger, checkpoint_handler, ema = setup_training_tools(config, model)
@@ -224,6 +226,7 @@ def run_training(config: dict) -> None:
         ema=ema,
         device=device,
         config=config,
+        loss_fn=loss_fn,
     )
 
     if rank == 0:

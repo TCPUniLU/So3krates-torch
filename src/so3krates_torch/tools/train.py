@@ -25,6 +25,7 @@ from torch_ema import ExponentialMovingAverage
 
 from so3krates_torch.cli.visualise_train import TrainingPlotter
 
+from so3krates_torch.modules.loss import robust_param_metrics
 from so3krates_torch.tools import torch_geometric
 from so3krates_torch.tools.checkpoint import CheckpointHandler, CheckpointState
 from so3krates_torch.tools.torch_tools import to_numpy
@@ -46,6 +47,40 @@ class SWAContainer:
 def _fmt_ratio_mae(value) -> str:
     """Ratio metrics are absent when no validation atom is labelled."""
     return "n/a" if value is None else f"{value:8.4f}"
+
+
+def allreduce_loss_param_grads_(loss_fn: torch.nn.Module) -> None:
+    """Average the gradients of learned loss parameters (adaptive robust
+    loss) across DDP ranks. They live outside the DDP-wrapped model, so
+    DDP does not sync them; without this, alpha/scale drift apart."""
+    if not (
+        torch.distributed.is_initialized()
+        and torch.distributed.get_world_size() > 1
+    ):
+        return
+    world_size = torch.distributed.get_world_size()
+    for param in loss_fn.parameters():
+        if param.grad is None:
+            param.grad = torch.zeros_like(param)
+        torch.distributed.all_reduce(param.grad)
+        param.grad /= world_size
+
+
+def _log_robust_params(initial_phrase, valid_loader_name, eval_metrics):
+    props = [
+        k[len("robust_alpha_") :]
+        for k in eval_metrics
+        if k.startswith("robust_alpha_")
+    ]
+    if props:
+        parts = ", ".join(
+            f"{p} alpha={eval_metrics['robust_alpha_' + p]:.3f} "
+            f"scale={eval_metrics['robust_scale_' + p]:.3f}"
+            for p in props
+        )
+        logging.info(
+            f"{initial_phrase}: head: {valid_loader_name}, robust: {parts}"
+        )
 
 
 def valid_err_log(
@@ -172,6 +207,7 @@ def valid_err_log(
             f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_charges={error_charges:8.4f} e, MAE_hirshfeld_ratios={error_hirshfeld_ratios}",
         )
 
+    _log_robust_params(initial_phrase, valid_loader_name, eval_metrics)
     if eval_metrics.get("mae_c6_ratios") is not None:
         logging.info(
             f"{initial_phrase}: head: {valid_loader_name}, "
@@ -215,6 +251,9 @@ def train(
     valid_loss = np.inf
     patience_counter = 0
     swa_start = True
+    # loss_fn may later be swapped for swa.loss_fn; checkpoints keep the
+    # learned parameters of the original one.
+    checkpoint_loss_fn = loss_fn
     keep_last = False
     if log_wandb:
         import wandb
@@ -239,6 +278,7 @@ def train(
             output_args=output_args,
             device=device,
         )
+        eval_metrics.update(robust_param_metrics(loss_fn))
         valid_err_log(
             valid_loss_head,
             eval_metrics,
@@ -332,6 +372,7 @@ def train(
                         output_args=output_args,
                         device=device,
                     )
+                    eval_metrics.update(robust_param_metrics(loss_fn))
                     if rank == 0:
                         valid_err_log(
                             valid_loss_head,
@@ -382,7 +423,10 @@ def train(
                     with param_context:
                         checkpoint_handler.save(
                             state=CheckpointState(
-                                model, optimizer, lr_scheduler
+                                model,
+                                optimizer,
+                                lr_scheduler,
+                                loss_fn=checkpoint_loss_fn,
                             ),
                             epochs=epoch,
                             keep_last=keep_last,
@@ -422,7 +466,10 @@ def train(
                         with param_context:
                             checkpoint_handler.save(
                                 state=CheckpointState(
-                                    model, optimizer, lr_scheduler
+                                    model,
+                                    optimizer,
+                                    lr_scheduler,
+                                    loss_fn=checkpoint_loss_fn,
                                 ),
                                 epochs=epoch,
                                 keep_last=True,
@@ -529,6 +576,7 @@ def take_step(
         )
         loss = loss_fn(pred=output, ref=batch)
         loss.backward()
+        allreduce_loss_param_grads_(loss_fn)
         if max_grad_norm is not None:
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 model.parameters(), max_norm=max_grad_norm
@@ -613,6 +661,8 @@ def take_step_lbfgs(
 
             batch_loss.backward()
             total_loss += batch_loss
+
+        allreduce_loss_param_grads_(loss_fn)
 
         if max_grad_norm is not None:
             grad_norm = torch.nn.utils.clip_grad_norm_(

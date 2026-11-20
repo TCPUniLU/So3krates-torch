@@ -15,6 +15,7 @@ from so3krates_torch.modules.loss import (
 from so3krates_torch.tools.checkpoint import (
     CheckpointHandler,
     CheckpointState,
+    LossStateMismatchError,
 )
 from so3krates_torch.tools.utils import MetricsLogger
 from torch_ema import ExponentialMovingAverage
@@ -161,9 +162,27 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
 def setup_optimizer_and_scheduler(
     model: torch.nn.Module,
     config: dict,
+    loss_fn: Optional[torch.nn.Module] = None,
 ) -> tuple:
-    """Setup optimizer and learning rate scheduler."""
+    """Setup optimizer and learning rate scheduler.
+
+    Learned loss parameters (adaptive robust loss) get their own param
+    group with the same lr and weight decay, like JAX so3lr's single
+    optimizer over the full params tree. Without them the optimizer is
+    unchanged (one group), so existing checkpoints stay loadable."""
     train_config = config["TRAINING"]
+    loss_params = (
+        [p for p in loss_fn.parameters() if p.requires_grad]
+        if loss_fn is not None
+        else []
+    )
+
+    def _with_loss_params(groups):
+        if not loss_params:
+            return groups
+        if not isinstance(groups[0], dict):
+            groups = [{"params": list(groups)}]
+        return list(groups) + [{"params": loss_params}]
 
     optimizer_name = train_config.get("optimizer", "adam").lower()
     lr = train_config["lr"]
@@ -180,45 +199,47 @@ def setup_optimizer_and_scheduler(
             ), "lora_B_lr must be provided for LoRA+"
             # for LoRA+ adjust learning rate for A and B matrices
             optimizer = torch.optim.Adam(
-                [
-                    {
-                        "params": [
-                            p
-                            for n, p in model.named_parameters()
-                            if "lora_A" in n
-                        ],
-                        "lr": lr,
-                    },
-                    {
-                        "params": [
-                            p
-                            for n, p in model.named_parameters()
-                            if "lora_B" in n
-                        ],
-                        "lr": lora_B_lr,
-                    },
-                    {
-                        "params": [
-                            p
-                            for n, p in model.named_parameters()
-                            if "lora_A" not in n and "lora_B" not in n
-                        ]
-                    },
-                ],
+                _with_loss_params(
+                    [
+                        {
+                            "params": [
+                                p
+                                for n, p in model.named_parameters()
+                                if "lora_A" in n
+                            ],
+                            "lr": lr,
+                        },
+                        {
+                            "params": [
+                                p
+                                for n, p in model.named_parameters()
+                                if "lora_B" in n
+                            ],
+                            "lr": lora_B_lr,
+                        },
+                        {
+                            "params": [
+                                p
+                                for n, p in model.named_parameters()
+                                if "lora_A" not in n and "lora_B" not in n
+                            ]
+                        },
+                    ]
+                ),
                 lr=lr,
                 weight_decay=weight_decay,
                 amsgrad=amsgrad,
             )
         else:
             optimizer = torch.optim.Adam(
-                model.parameters(),
+                _with_loss_params(list(model.parameters())),
                 lr=lr,
                 weight_decay=weight_decay,
                 amsgrad=amsgrad,
             )
     elif optimizer_name == "adamw":
         optimizer = torch.optim.AdamW(
-            model.parameters(),
+            _with_loss_params(list(model.parameters())),
             lr=lr,
             weight_decay=weight_decay,
             betas=train_config.get("betas", (0.9, 0.999)),
@@ -347,6 +368,7 @@ def load_checkpoint_if_exists(
     ema: ExponentialMovingAverage,
     device: torch.device,
     config: dict,
+    loss_fn: Optional[torch.nn.Module] = None,
 ) -> int:
     """
     Load checkpoint if it exists and return the starting epoch.
@@ -361,7 +383,10 @@ def load_checkpoint_if_exists(
 
     # Create checkpoint state
     checkpoint_state = CheckpointState(
-        model=model, optimizer=optimizer, lr_scheduler=lr_scheduler
+        model=model,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        loss_fn=loss_fn,
     )
 
     # Try to load latest checkpoint
@@ -399,6 +424,8 @@ def load_checkpoint_if_exists(
             logging.info("No checkpoint found, starting from epoch 0")
             return 0
 
+    except LossStateMismatchError:
+        raise
     except Exception as e:
         logging.warning(f"Error loading checkpoint: {e}")
         logging.info("Starting from epoch 0")
