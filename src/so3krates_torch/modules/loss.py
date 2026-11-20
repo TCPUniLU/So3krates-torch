@@ -724,15 +724,10 @@ class WeightedPropertiesLoss(torch.nn.Module):
     def forward(
         self, ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
     ) -> torch.Tensor:
+        self.check_outputs(pred)
         total = 0.0
         for name in self.properties:
             term, pred_key, flag = _PROPERTY_LOSS_TERMS[name]
-            if pred.get(pred_key) is None:
-                hint = f" (enable ARCHITECTURE.{flag})" if flag else ""
-                raise KeyError(
-                    f"Loss weight for '{name}' is > 0 but the model output "
-                    f"has no '{pred_key}'{hint}."
-                )
             total = total + getattr(self, f"{name}_weight") * term(
                 ref,
                 pred,
@@ -741,6 +736,17 @@ class WeightedPropertiesLoss(torch.nn.Module):
                 penalty=self.penalty,
             )
         return total
+
+    def check_outputs(self, pred: TensorDict) -> None:
+        """Raise KeyError if the model output lacks a weighted property."""
+        for name in self.properties:
+            _term, pred_key, flag = _PROPERTY_LOSS_TERMS[name]
+            if pred.get(pred_key) is None:
+                hint = f" (enable ARCHITECTURE.{flag})" if flag else ""
+                raise KeyError(
+                    f"Loss weight for '{name}' is > 0 but the model output "
+                    f"has no '{pred_key}'{hint}."
+                )
 
     def __repr__(self):
         weights = ", ".join(

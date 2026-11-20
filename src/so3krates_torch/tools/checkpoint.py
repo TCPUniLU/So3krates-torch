@@ -32,6 +32,9 @@ class CheckpointState:
     # Loss module; only its parameters (adaptive robust loss alpha/scale)
     # are checkpointed, never its weight buffers (those come from config).
     loss_fn: Optional[torch.nn.Module] = None
+    # Two-stage loss weights: whether the checkpoint was taken in stage
+    # two (None: unknown / no two-stage training). Filled on load.
+    stage_two_active: Optional[bool] = None
 
 
 def _loss_params(
@@ -53,6 +56,8 @@ class CheckpointBuilder:
             "optimizer": state.optimizer.state_dict(),
             "lr_scheduler": state.lr_scheduler.state_dict(),
         }
+        if state.stage_two_active is not None:
+            ckpt["stage_two_active"] = bool(state.stage_two_active)
         loss_params = _loss_params(state.loss_fn)
         if loss_params:
             ckpt["loss_fn"] = {
@@ -79,7 +84,8 @@ class CheckpointBuilder:
                     f"{sorted(loss_params)}, but the checkpoint holds "
                     f"{sorted(saved) if saved else 'none'}. Restart without "
                     "the checkpoint (MISC.restart_latest: false) or with the "
-                    "same use_adaptive_robust_loss / loss weights."
+                    "same use_adaptive_robust_loss, loss weights and "
+                    "stage_two_loss_weights."
                 )
         elif saved is not None:
             optimizer_state = _drop_loss_param_group(
@@ -97,6 +103,7 @@ class CheckpointBuilder:
                 for name, param in loss_params.items():
                     param.copy_(saved[name])
         state.lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+        state.stage_two_active = checkpoint.get("stage_two_active")
 
 
 def _drop_loss_param_group(optimizer_state: dict, optimizer) -> dict:

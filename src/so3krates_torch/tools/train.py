@@ -272,16 +272,29 @@ def train(
     replay_builder=None,
     valid_loss_fn: Optional[torch.nn.Module] = None,
     stage_two=None,
+    resumed_stage_two_active: Optional[bool] = None,
 ):
     """`valid_loss_fn` (default: `loss_fn`) scores validation.
     `stage_two` (training_setup.StageTwoLoss) swaps both losses at
     `stage_two.start_epoch` and resets the best-loss, early-stopping and
-    plateau trackers (JAX so3lr two-stage loss reweighting)."""
+    plateau trackers (JAX so3lr two-stage loss reweighting).
+    `resumed_stage_two_active` is the flag stored in the checkpoint being
+    resumed (None: fresh run or unknown)."""
     if valid_loss_fn is None:
         valid_loss_fn = loss_fn
     if stage_two is not None and swa is not None:
         raise ValueError("stage_two and SWA stage two cannot be combined.")
     stage_two_active = False
+    # True while valid_loss still holds a stage-one value after the switch
+    # (eval_interval > 1): ReduceLROnPlateau must not see it.
+    stale_valid_loss = False
+    if resumed_stage_two_active and stage_two is None:
+        raise ValueError(
+            "The checkpoint was taken in stage two of a two-stage run, but "
+            "this run sets no stage_two_start_epoch / "
+            "stage_two_loss_weights. Restore them or restart without the "
+            "checkpoint (MISC.restart_latest: false)."
+        )
     lowest_loss = np.inf
     valid_loss = np.inf
     patience_counter = 0
@@ -303,7 +316,8 @@ def train(
     logging.info("Started training, reporting errors on validation set")
     logging.info("Loss metrics on validation set")
     epoch = start_epoch
-    if stage_two is not None and epoch >= stage_two.start_epoch:
+    if stage_two is not None and resumed_stage_two_active:
+        # Checkpoint already in stage two: its trackers are stage-two ones.
         loss_fn = stage_two.loss_fn
         valid_loss_fn = stage_two.valid_loss_fn
         stage_two_active = True
@@ -311,6 +325,23 @@ def train(
             f"Two-stage loss reweighting: resuming in stage two at epoch "
             f"{epoch}."
         )
+        if epoch < stage_two.start_epoch:
+            logging.warning(
+                "The checkpoint is in stage two although "
+                f"stage_two_start_epoch={stage_two.start_epoch} is later; "
+                "staying in stage two."
+            )
+    elif stage_two is not None and epoch >= stage_two.start_epoch:
+        # Checkpoint from stage one (or without the flag): full switch.
+        logging.info(
+            f"Two-stage loss reweighting: switching to the stage-two loss at "
+            f"epoch {epoch}; resetting best-loss, early-stopping and plateau "
+            f"trackers."
+        )
+        loss_fn = stage_two.loss_fn
+        valid_loss_fn = stage_two.valid_loss_fn
+        reset_plateau_scheduler_(lr_scheduler)
+        stage_two_active = True
 
     # log validation loss before _any_ training
     for valid_loader_name, valid_loader in valid_loaders.items():
@@ -346,7 +377,13 @@ def train(
                     hasattr(step_method, "__code__")
                     and "metrics" in step_method.__code__.co_varnames
                 )
-                if has_metrics:
+                if has_metrics and stale_valid_loss:
+                    logging.info(
+                        "Two-stage loss reweighting: skipping plateau "
+                        "scheduler step until the first stage-two "
+                        "validation."
+                    )
+                elif has_metrics:
                     # ReduceLROnPlateau scheduler needs metrics
                     lr_scheduler.step(metrics=valid_loss)
                 else:
@@ -381,6 +418,7 @@ def train(
             patience_counter = 0
             reset_plateau_scheduler_(lr_scheduler)
             stage_two_active = True
+            stale_valid_loss = True
 
         # Rebuild DataLoader with fresh replay data if needed
         if replay_builder is not None:
@@ -459,6 +497,7 @@ def train(
                     except Exception as e:  # pylint: disable=broad-except
                         logging.debug(f"Plotting failed: {e}")
                 valid_loss = valid_loss_head  # consider only the last head for the checkpoint
+                stale_valid_loss = False
                 if rank == 0:
                     avg_epoch_time = sum(epoch_times) / len(epoch_times)
                     remaining = max_num_epochs - epoch - 1
@@ -489,6 +528,11 @@ def train(
                                 optimizer,
                                 lr_scheduler,
                                 loss_fn=checkpoint_loss_fn,
+                                stage_two_active=(
+                                    stage_two_active
+                                    if stage_two is not None
+                                    else None
+                                ),
                             ),
                             epochs=epoch,
                             keep_last=keep_last,
@@ -532,6 +576,11 @@ def train(
                                     optimizer,
                                     lr_scheduler,
                                     loss_fn=checkpoint_loss_fn,
+                                    stage_two_active=(
+                                        stage_two_active
+                                        if stage_two is not None
+                                        else None
+                                    ),
                                 ),
                                 epochs=epoch,
                                 keep_last=True,

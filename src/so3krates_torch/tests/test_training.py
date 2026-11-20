@@ -1529,3 +1529,112 @@ def test_run_training_two_stage_switch(tmp_path, monkeypatch):
     # best-loss tracker reset: the first stage-two epoch is checkpointed
     # even though its (re-weighted) loss is higher than stage one's
     assert "ratio_labels_epoch-1.pt" in debug_text
+
+
+# ── Two-stage: restarts, stale plateau losses, startup output check ─
+
+
+def _two_stage_run(tmp_path, monkeypatch, **training):
+    import yaml
+    from so3krates_torch.cli.run_train import (
+        run_training,
+        setup_config_from_yaml,
+    )
+
+    config_path = _ratio_label_config(tmp_path)
+    raw = yaml.safe_load(config_path.read_text())
+    raw["TRAINING"].pop("stage_two_start_epoch", None)
+    raw["TRAINING"].pop("stage_two_loss_weights", None)
+    raw["TRAINING"].update(scheduler="reduce_on_plateau", **training)
+    raw["MISC"]["keep_checkpoints"] = True  # checkpoint every epoch
+    config_path.write_text(yaml.dump(raw))
+    monkeypatch.chdir(tmp_path)
+    try:
+        run_training(setup_config_from_yaml(str(config_path)))
+    finally:
+        torch.set_default_dtype(torch.float32)
+    return (tmp_path / "logs" / "ratio_labels.log").read_text()
+
+
+def test_resume_from_stage_one_checkpoint_runs_full_switch(
+    tmp_path, monkeypatch
+):
+    _two_stage_run(tmp_path, monkeypatch, num_epochs=2)
+    log = _two_stage_run(
+        tmp_path,
+        monkeypatch,
+        num_epochs=3,
+        stage_two_start_epoch=2,
+        stage_two_loss_weights={"energy_weight": 50.0},
+    )
+    # checkpoint was taken in stage one -> full switch incl. tracker reset
+    assert "switching to the stage-two loss at epoch 2" in log
+    assert "resuming in stage two" not in log
+
+
+def test_resume_stage_two_checkpoint_without_stage_two_raises(
+    tmp_path, monkeypatch
+):
+    _two_stage_run(
+        tmp_path,
+        monkeypatch,
+        num_epochs=2,
+        stage_two_start_epoch=1,
+        stage_two_loss_weights={"energy_weight": 1.0},
+    )
+    with pytest.raises(ValueError, match="stage two"):
+        _two_stage_run(tmp_path, monkeypatch, num_epochs=3)
+
+
+def test_checkpoint_stores_stage_two_flag(tmp_path):
+    from so3krates_torch.tools.checkpoint import (
+        CheckpointBuilder,
+        CheckpointState,
+    )
+
+    model = torch.nn.Linear(2, 1)
+    opt = torch.optim.Adam(model.parameters())
+    sched = torch.optim.lr_scheduler.ExponentialLR(opt, 0.9)
+    ckpt = CheckpointBuilder.create_checkpoint(
+        CheckpointState(model, opt, sched, stage_two_active=True)
+    )
+    assert ckpt["stage_two_active"] is True
+    state = CheckpointState(model, opt, sched)
+    CheckpointBuilder.load_checkpoint(state, ckpt, strict=True)
+    assert state.stage_two_active is True
+
+
+def test_stale_stage_one_loss_skips_plateau_step(tmp_path, monkeypatch):
+    log = _two_stage_run(
+        tmp_path,
+        monkeypatch,
+        num_epochs=4,
+        eval_interval=2,
+        stage_two_start_epoch=1,
+        stage_two_loss_weights={"energy_weight": 50.0},
+    )
+    assert "skipping plateau scheduler step" in log
+
+
+def test_startup_check_catches_stage_two_only_output(
+    so3lr_model_config, make_batch, h2o_atoms
+):
+    from so3krates_torch.modules.models import SO3LR
+    from so3krates_torch.tools.training_setup import (
+        check_loss_outputs,
+        setup_loss_functions,
+    )
+
+    config = {**so3lr_model_config, "electrostatic_energy_bool": False}
+    model = SO3LR(**config).to(torch.float64)
+    batch = make_batch(h2o_atoms, r_max=5.0, cutoff_lr=10.0)
+    fns = setup_loss_functions(
+        _loss_cfg(
+            stage_two_start_epoch=5,
+            stage_two_loss_weights={"dipole_weight": 0.1},
+        )
+    )
+    with pytest.raises(KeyError, match="dipole"):
+        check_loss_outputs(model, fns, batch)
+    ok = setup_loss_functions(_loss_cfg())
+    check_loss_outputs(model, ok, batch)  # no error

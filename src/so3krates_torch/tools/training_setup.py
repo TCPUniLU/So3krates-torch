@@ -165,6 +165,18 @@ def setup_loss_functions(config: dict) -> LossFunctions:
     return fns
 
 
+def check_loss_outputs(
+    model: torch.nn.Module, loss_fns: LossFunctions, batch
+) -> None:
+    """Fail at startup, not at the stage-two switch: run one forward pass
+    and check that every loss (both stages, train and validation) finds
+    the model outputs it needs."""
+    output = model(batch.to_dict(), training=False, compute_force=True)
+    for module in loss_fns.modules():
+        if hasattr(module, "check_outputs"):
+            module.check_outputs(output)
+
+
 def setup_loss_function(
     config: dict, adaptive: Optional[AdaptiveRobustParams] = None
 ) -> torch.nn.Module:
@@ -500,9 +512,11 @@ def load_checkpoint_if_exists(
     device: torch.device,
     config: dict,
     loss_fn: Optional[torch.nn.Module] = None,
+    resume_state: Optional[dict] = None,
 ) -> int:
     """
     Load checkpoint if it exists and return the starting epoch.
+    `resume_state`, if given, receives {"stage_two_active": bool | None}.
     Returns 0 if no checkpoint is found.
     """
     # Check if we should restart from latest checkpoint
@@ -531,6 +545,10 @@ def load_checkpoint_if_exists(
 
         if start_epoch is not None:
             logging.info(f"Loaded checkpoint from epoch {start_epoch}")
+            if resume_state is not None:
+                resume_state["stage_two_active"] = (
+                    checkpoint_state.stage_two_active
+                )
 
             # Load EMA state if available and EMA is enabled
             if ema is not None:
