@@ -607,9 +607,9 @@ def load_checkpoint_if_exists(
         if start_epoch is not None:
             logging.info(f"Loaded checkpoint from epoch {start_epoch}")
             if resume_state is not None:
-                resume_state[
-                    "stage_two_active"
-                ] = checkpoint_state.stage_two_active
+                resume_state["stage_two_active"] = (
+                    checkpoint_state.stage_two_active
+                )
 
             # Load EMA state if available and EMA is enabled
             if ema is not None:

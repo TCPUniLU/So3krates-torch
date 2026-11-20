@@ -313,9 +313,11 @@ def build_example_jax_inputs(
     # TracerArrayConversionError (numpy fancy-indexing with a tracer).
     inputs = jtu.tree_map(jnp.asarray, graph_to_batch_fn(batched))
     return jtu.tree_map(
-        lambda x: x.astype(jnp.float64)
-        if jnp.issubdtype(x.dtype, jnp.floating)
-        else x,
+        lambda x: (
+            x.astype(jnp.float64)
+            if jnp.issubdtype(x.dtype, jnp.floating)
+            else x
+        ),
         inputs,
     )
 
