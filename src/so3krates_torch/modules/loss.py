@@ -7,6 +7,10 @@ from typing import Callable, Dict, Optional
 from torch_geometric.data import Batch
 import torch.distributed as dist
 
+import math
+from typing import Sequence, Tuple
+
+from so3krates_torch.modules.robust_loss import Distribution, general_loss
 from so3krates_torch.modules.loss_reduction import (
     is_ddp_enabled,
     per_graph_node_mean,
@@ -23,6 +27,61 @@ REDUCTIONS = ("flat", "per_graph")
 
 def squared_penalty(x: torch.Tensor, prop: str) -> torch.Tensor:
     return torch.square(x)
+
+
+ROBUST_MODES = ("none", "fixed", "adaptive")
+
+
+def fixed_robust_penalty(alpha: float) -> Penalty:
+    """JAX `use_robust_loss`: 2 * rho(x, alpha, 1.0)."""
+
+    def _penalty(x: torch.Tensor, prop: str) -> torch.Tensor:
+        return 2.0 * general_loss(x, alpha, 1.0)
+
+    return _penalty
+
+
+class AdaptiveRobustParams(torch.nn.Module):
+    """Learned per-property shape alpha and scale c of the adaptive robust
+    loss (JAX `use_adaptive_robust_loss`). Stored unconstrained, keyed by
+    property name: alpha = 2*sigmoid(alpha_raw), c = softplus(scale_raw)
+    + 1e-6. The penalty is 2 * NLL(x | alpha, c)."""
+
+    def __init__(
+        self,
+        properties: Sequence[str],
+        init_alpha: float = 1.0,
+        init_scale: float = 1.0,
+    ) -> None:
+        super().__init__()
+        a = min(max(float(init_alpha), 0.01), 1.99)
+        alpha_raw = math.log(a / (2.0 - a))
+        scale_raw = math.log(math.expm1(max(float(init_scale), 0.1)))
+        dtype = torch.get_default_dtype()
+        self.alpha_raw = torch.nn.ParameterDict(
+            {
+                p: torch.nn.Parameter(torch.tensor(alpha_raw, dtype=dtype))
+                for p in properties
+            }
+        )
+        self.scale_raw = torch.nn.ParameterDict(
+            {
+                p: torch.nn.Parameter(torch.tensor(scale_raw, dtype=dtype))
+                for p in properties
+            }
+        )
+        self._distribution = Distribution()
+
+    def alpha_scale(self, prop: str) -> Tuple[torch.Tensor, torch.Tensor]:
+        alpha = 2.0 * torch.sigmoid(self.alpha_raw[prop])
+        scale = torch.nn.functional.softplus(self.scale_raw[prop]) + 1e-6
+        return alpha, scale
+
+    def penalty(self, x: torch.Tensor, prop: str) -> torch.Tensor:
+        alpha, scale = self.alpha_scale(prop)
+        return 2.0 * self._distribution.nllfun(
+            x, alpha.to(x.dtype), scale.to(x.dtype)
+        )
 
 
 def reduce_loss(
@@ -605,11 +664,24 @@ class WeightedPropertiesLoss(torch.nn.Module):
         weights: Dict[str, float],
         reduction: str = "flat",
         penalty: Optional[Penalty] = None,
+        robust: str = "none",
+        robust_alpha: float = 1.0,
+        adaptive_init_alpha: float = 1.0,
+        adaptive_init_scale: float = 1.0,
     ) -> None:
         super().__init__()
         _check_reduction(reduction)
+        if robust not in ROBUST_MODES:
+            raise ValueError(
+                f"Unknown robust mode '{robust}'; use one of {ROBUST_MODES}."
+            )
+        if penalty is not None and robust != "none":
+            raise ValueError(
+                "Pass either an explicit penalty or robust != 'none', "
+                "not both."
+            )
         self.reduction = reduction
-        self.penalty = penalty or squared_penalty
+        self.robust = robust
         unknown = set(weights) - set(_PROPERTY_LOSS_TERMS)
         if unknown:
             raise ValueError(
@@ -619,6 +691,17 @@ class WeightedPropertiesLoss(torch.nn.Module):
         self.properties = [
             name for name in _PROPERTY_LOSS_TERMS if weights.get(name, 0.0)
         ]
+        self.adaptive = None
+        if robust == "adaptive":
+            self.adaptive = AdaptiveRobustParams(
+                self.properties, adaptive_init_alpha, adaptive_init_scale
+            )
+            self.penalty = self.adaptive.penalty
+        elif robust == "fixed":
+            self.robust_alpha = float(robust_alpha)
+            self.penalty = fixed_robust_penalty(self.robust_alpha)
+        else:
+            self.penalty = penalty or squared_penalty
         for name in _PROPERTY_LOSS_TERMS:
             self.register_buffer(
                 f"{name}_weight",
@@ -656,5 +739,5 @@ class WeightedPropertiesLoss(torch.nn.Module):
         )
         return (
             f"{self.__class__.__name__}({weights}, "
-            f"reduction={self.reduction})"
+            f"reduction={self.reduction}, robust={self.robust})"
         )

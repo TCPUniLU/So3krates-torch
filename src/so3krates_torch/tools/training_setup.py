@@ -51,13 +51,38 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
     # Check if explicit loss type is specified
     loss_type = loss_config.get("loss_type", "auto")
     reduction = loss_config.get("loss_reduction", "flat")
+    use_fixed = loss_config.get("use_robust_loss", False)
+    use_adaptive = loss_config.get("use_adaptive_robust_loss", False)
+    if use_fixed and use_adaptive:
+        raise ValueError(
+            "Cannot use both 'use_robust_loss' and "
+            "'use_adaptive_robust_loss'."
+        )
+    robust = "adaptive" if use_adaptive else "fixed" if use_fixed else "none"
 
     if loss_type in ("auto", "properties"):
         # One term per non-zero weight (see WeightedPropertiesLoss).
-        loss_fn = WeightedPropertiesLoss(weights, reduction=reduction)
+        loss_fn = WeightedPropertiesLoss(
+            weights,
+            reduction=reduction,
+            robust=robust,
+            robust_alpha=loss_config.get("robust_loss_alpha", 1.0),
+            adaptive_init_alpha=loss_config.get(
+                "adaptive_robust_loss_init_alpha", 1.0
+            ),
+            adaptive_init_scale=loss_config.get(
+                "adaptive_robust_loss_init_scale", 1.0
+            ),
+        )
         logging.info(f"Selected {loss_fn}")
     else:
         # Explicit loss type specification
+        if robust != "none":
+            raise ValueError(
+                f"loss_type '{loss_type}' does not support the robust loss "
+                "(use_robust_loss / use_adaptive_robust_loss). Use loss_type "
+                "'auto' or 'properties'."
+            )
         if reduction != "flat":
             raise ValueError(
                 f"loss_type '{loss_type}' only supports loss_reduction "

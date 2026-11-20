@@ -163,6 +163,14 @@ class TrainingConfig(BaseModel):
     # "per_graph": JAX so3lr reduction (per-structure mean, then mean
     # over structures carrying the label), DDP-correct.
     loss_reduction: Literal["flat", "per_graph"] = "flat"
+    # Robust loss (Barron 2019), as in JAX so3lr. Fixed: penalty
+    # 2*rho(x, robust_loss_alpha, 1). Adaptive: per-property alpha/scale
+    # learned through the NLL; JAX parity needs loss_reduction per_graph.
+    use_robust_loss: bool = False
+    robust_loss_alpha: float = 1.0
+    use_adaptive_robust_loss: bool = False
+    adaptive_robust_loss_init_alpha: float = 1.0
+    adaptive_robust_loss_init_scale: float = 1.0
     # Fine-tuning (finetune_choice != naive): keep dispersion heads frozen.
     # `freeze_hirshfeld` may also be given as `freeze_a0_ratios`.
     freeze_hirshfeld: bool = True
@@ -217,6 +225,15 @@ class TrainingConfig(BaseModel):
                 )
             data[name] = value
         return data
+
+    @model_validator(mode="after")
+    def validate_robust_loss(self):
+        if self.use_robust_loss and self.use_adaptive_robust_loss:
+            raise ValueError(
+                "Cannot use both 'use_robust_loss' (fixed) and "
+                "'use_adaptive_robust_loss' (learned). Enable only one."
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_pretrained(self):

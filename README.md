@@ -852,6 +852,18 @@ Per-atom ratio labels (Hirshfeld/a0 and C6) may be missing for part of the train
 |-----|------|---------|-------------|
 | `loss_reduction` | `str` | `"flat"` | `flat`: one mean over every element of the batch, so larger structures weigh more (MACE-style). `per_graph`: JAX `so3lr` reduction — per-atom terms are averaged per structure, then over structures that carry the label (a structure with any missing per-atom label is skipped); energy and dipole are divided by the number of atoms and averaged over labelled structures. Counts are summed across GPUs, so multi-GPU training weighs every structure equally. Only with `loss_type` `auto`/`properties`. |
 
+**Robust loss.** Instead of the squared error, each term can use Barron's general robust loss ρ(x; α, c) ("A General and Adaptive Robust Loss Function", 2019), as the SO3LR-tauri paper does (SI Eq. S13). α sets how strongly large residuals still pull: 2 = squared error, 1 = Charbonnier/pseudo-Huber (L1-like for large errors), 0 = Cauchy. c sets where "large" starts, in the target's units.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `use_robust_loss` | `bool` | `False` | Fixed robust loss: per-element penalty `2·ρ(x, robust_loss_alpha, 1)`. |
+| `robust_loss_alpha` | `float` | `1.0` | α of the fixed robust loss. |
+| `use_adaptive_robust_loss` | `bool` | `False` | Adaptive robust loss: α ∈ [0, 2] and c > 0 are learned per property through the negative log-likelihood `2·(ρ + log c + log Z(α))`. Loss values can be negative. α and c are logged during validation. |
+| `adaptive_robust_loss_init_alpha` | `float` | `1.0` | Initial α (clipped to [0.01, 1.99]). |
+| `adaptive_robust_loss_init_scale` | `float` | `1.0` | Initial c (at least 0.1). |
+
+The two robust options are mutually exclusive and require `loss_type` `auto`/`properties`. To reproduce the JAX `so3lr` loss, combine `use_adaptive_robust_loss: true` with `loss_reduction: per_graph`.
+
 The JAX trainer's per-target loss `scales` and per-element `atom_loss_weights` are not exposed: JAX training never sets them (all 1), so there is nothing to match.
 
 #### Training Loop

@@ -141,6 +141,14 @@ TRAINING:
   # loss_reduction: flat  # flat = one mean over all elements (default);
   #   per_graph = JAX so3lr reduction (per-structure mean, then mean over
   #   labelled structures; multi-GPU counts are global)
+  # Robust loss (Barron 2019; JAX so3lr default is adaptive). alpha: 2 = L2,
+  # 1 = Charbonnier, 0 = Cauchy. Mutually exclusive:
+  # use_robust_loss: false            # fixed: 2*rho(x, robust_loss_alpha, 1)
+  # robust_loss_alpha: 1.0
+  # use_adaptive_robust_loss: false   # learn alpha/scale per property (NLL;
+  #                                   #   loss can be negative)
+  # adaptive_robust_loss_init_alpha: 1.0
+  # adaptive_robust_loss_init_scale: 1.0
   eval_interval: 1
   num_epochs: 5
   path_to_train_data: ./path/to/train/data

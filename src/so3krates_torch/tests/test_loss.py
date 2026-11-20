@@ -923,3 +923,149 @@ def test_setup_loss_passes_reduction():
 
     loss = setup_loss_function({"TRAINING": {"loss_reduction": "per_graph"}})
     assert loss.reduction == "per_graph"
+
+
+# ── Robust loss (fixed / adaptive) ─────────────────────────────
+
+
+@pytest.mark.parametrize("reduction", ["flat", "per_graph"])
+def test_fixed_robust_alpha2_equals_l2(mock_batch_for_loss, reduction):
+    from so3krates_torch.modules.loss import WeightedPropertiesLoss
+
+    batch = mock_batch_for_loss
+    pred = _ratio_pred(batch)
+    l2 = WeightedPropertiesLoss(_ALL_W, reduction=reduction)
+    robust = WeightedPropertiesLoss(
+        _ALL_W, reduction=reduction, robust="fixed", robust_alpha=2.0
+    )
+    # 2 * rho(x, 2, 1) = 2 * 0.5 x^2 = x^2
+    assert torch.allclose(
+        robust(batch, pred, ddp=False), l2(batch, pred, ddp=False)
+    )
+
+
+def test_adaptive_init_values():
+    from so3krates_torch.modules.loss import AdaptiveRobustParams
+
+    params = AdaptiveRobustParams(["forces", "energy"], 1.0, 1.0)
+    alpha, scale = params.alpha_scale("forces")
+    assert alpha.item() == pytest.approx(1.0, abs=1e-6)
+    assert scale.item() == pytest.approx(1.0, abs=1e-5)
+    alpha, scale = AdaptiveRobustParams(["forces"], 2.5, 0.01).alpha_scale(
+        "forces"
+    )
+    assert alpha.item() == pytest.approx(1.99, abs=1e-5)  # clipped
+    assert scale.item() == pytest.approx(0.1, abs=1e-5)  # floored
+
+
+def test_adaptive_params_receive_grads(mock_batch_for_loss):
+    from so3krates_torch.modules.loss import WeightedPropertiesLoss
+
+    batch = mock_batch_for_loss
+    loss_fn = WeightedPropertiesLoss(
+        {"energy": 1.0, "forces": 1.0}, robust="adaptive"
+    )
+    loss_fn(batch, _ratio_pred(batch), ddp=False).backward()
+    grads = [p.grad for p in loss_fn.parameters()]
+    assert len(grads) == 4
+    assert all(g is not None and torch.isfinite(g).all() for g in grads)
+    assert any(g.abs().sum() > 0 for g in grads)
+
+
+def test_adaptive_only_weighted_properties_have_params():
+    from so3krates_torch.modules.loss import WeightedPropertiesLoss
+
+    loss_fn = WeightedPropertiesLoss(
+        {"energy": 1.0, "forces": 1.0, "dipole": 0.0}, robust="adaptive"
+    )
+    assert set(loss_fn.adaptive.alpha_raw.keys()) == {"energy", "forces"}
+    assert WeightedPropertiesLoss({"forces": 1.0}).adaptive is None
+
+
+def test_robust_and_explicit_penalty_conflict():
+    from so3krates_torch.modules.loss import (
+        WeightedPropertiesLoss,
+        squared_penalty,
+    )
+
+    with pytest.raises(ValueError, match="penalty"):
+        WeightedPropertiesLoss(
+            {"forces": 1.0}, penalty=squared_penalty, robust="fixed"
+        )
+
+
+@pytest.mark.parametrize("mode", ["fixed", "adaptive"])
+def test_robust_matches_jax(mock_batch_for_loss, jax_so3lr, mode):
+    import jax.numpy as jnp
+    from so3krates_torch.modules.loss import (
+        AdaptiveRobustParams,
+        fixed_robust_penalty,
+        mean_squared_error_forces,
+        weighted_mean_squared_error_energy,
+    )
+
+    tu = jax_so3lr.training_utils
+    batch = mock_batch_for_loss
+    for key in ("weight", "energy_weight", "forces_weight"):
+        setattr(batch, key, torch.ones(2))
+    torch.manual_seed(1)
+    pred = {"forces": torch.randn(7, 3), "energy": torch.tensor([9.0, 23.0])}
+    args = _jax_args(batch)
+
+    def j(t):
+        return jnp.asarray(t.detach().numpy())
+
+    if mode == "fixed":
+        penalty = fixed_robust_penalty(1.0)
+        jkw = dict(use_robust_loss=True, robust_loss_alpha=1.0)
+        jkw_f, jkw_e = jkw, jkw
+    else:
+        params = AdaptiveRobustParams(["forces", "energy"], 1.3, 0.4)
+        penalty = params.penalty
+        af, sf = (t.detach().numpy() for t in params.alpha_scale("forces"))
+        ae, se = (t.detach().numpy() for t in params.alpha_scale("energy"))
+        jkw_f = dict(adaptive_alpha=jnp.asarray(af), adaptive_scale=sf)
+        jkw_e = dict(adaptive_alpha=jnp.asarray(ae), adaptive_scale=se)
+
+    ref_f = tu.node_mse_loss(
+        j(pred["forces"]), j(batch.forces), **args, **jkw_f
+    )
+    ref_e = tu.graph_mse_loss_per_atom(
+        j(pred["energy"]), j(batch.energy), **args, **jkw_e
+    )
+    kw = dict(ddp=False, reduction="per_graph", penalty=penalty)
+    f = mean_squared_error_forces(batch, pred, **kw)
+    e = weighted_mean_squared_error_energy(batch, pred, **kw)
+    assert f.item() == pytest.approx(float(ref_f.squeeze()), rel=1e-5)
+    assert e.item() == pytest.approx(float(ref_e.squeeze()), rel=1e-5)
+
+
+def test_legacy_loss_type_rejects_robust():
+    from so3krates_torch.tools.training_setup import setup_loss_function
+
+    with pytest.raises(ValueError, match="robust"):
+        setup_loss_function(
+            {
+                "TRAINING": {
+                    "loss_type": "energy_forces",
+                    "use_adaptive_robust_loss": True,
+                }
+            }
+        )
+
+
+def test_setup_loss_builds_adaptive():
+    from so3krates_torch.tools.training_setup import setup_loss_function
+
+    loss = setup_loss_function(
+        {
+            "TRAINING": {
+                "use_adaptive_robust_loss": True,
+                "adaptive_robust_loss_init_alpha": 1.5,
+                "adaptive_robust_loss_init_scale": 0.5,
+            }
+        }
+    )
+    alpha, scale = loss.adaptive.alpha_scale("forces")
+    assert alpha.item() == pytest.approx(1.5, abs=1e-5)
+    assert scale.item() == pytest.approx(0.5, abs=1e-5)

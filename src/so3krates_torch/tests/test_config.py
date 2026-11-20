@@ -333,3 +333,14 @@ def test_loss_reduction_config_default_flat():
     assert _training(loss_reduction="per_graph").loss_reduction == "per_graph"
     with pytest.raises(ValidationError):
         _training(loss_reduction="mean")
+
+
+def test_robust_flags_mutually_exclusive():
+    cfg = _training()
+    assert cfg.use_robust_loss is False
+    assert cfg.use_adaptive_robust_loss is False
+    assert cfg.robust_loss_alpha == 1.0
+    assert cfg.adaptive_robust_loss_init_alpha == 1.0
+    assert cfg.adaptive_robust_loss_init_scale == 1.0
+    with pytest.raises(ValidationError, match="use_adaptive_robust_loss"):
+        _training(use_robust_loss=True, use_adaptive_robust_loss=True)
