@@ -1638,3 +1638,75 @@ def test_startup_check_catches_stage_two_only_output(
         check_loss_outputs(model, fns, batch)
     ok = setup_loss_functions(_loss_cfg())
     check_loss_outputs(model, ok, batch)  # no error
+
+
+# ── Loss config warnings ───────────────────────────────────────
+
+import logging  # noqa: E402
+
+from so3krates_torch.tools.training_setup import (  # noqa: E402
+    setup_loss_functions as _setup_loss_functions,
+)
+
+
+def test_adaptive_ignores_validation_settings_warns(caplog):
+    with caplog.at_level(logging.WARNING):
+        _setup_loss_functions(
+            _loss_cfg(
+                use_adaptive_robust_loss=True,
+                use_robust_loss_validation=False,
+                robust_loss_alpha_validation=0.5,
+            )
+        )
+    assert caplog.text.count("ignored with use_adaptive_robust_loss") == 1
+
+
+def test_alpha_validation_without_robust_validation_warns(caplog):
+    with caplog.at_level(logging.WARNING):
+        _setup_loss_functions(_loss_cfg(robust_loss_alpha_validation=0.5))
+    assert "robust_loss_alpha_validation has no effect" in caplog.text
+
+
+def test_legacy_loss_type_names_validation_key():
+    with pytest.raises(ValueError, match="use_robust_loss_validation"):
+        _setup_loss_functions(
+            _loss_cfg(
+                loss_type="energy_forces", use_robust_loss_validation=True
+            )
+        )
+
+
+def test_no_warning_by_default(caplog):
+    with caplog.at_level(logging.WARNING):
+        _setup_loss_functions(
+            _loss_cfg(
+                use_robust_loss_validation=None,
+                robust_loss_alpha_validation=None,
+            )
+        )
+    assert caplog.text == ""
+
+
+def test_no_warning_when_validation_matches_training(caplog):
+    with caplog.at_level(logging.WARNING):
+        _setup_loss_functions(
+            _loss_cfg(
+                use_robust_loss=True,
+                use_robust_loss_validation=True,
+                robust_loss_alpha_validation=1.0,
+            )
+        )
+    assert caplog.text == ""
+
+
+def test_ignored_validation_warning_logged_once_with_stage_two(caplog):
+    with caplog.at_level(logging.WARNING):
+        _setup_loss_functions(
+            _loss_cfg(
+                use_adaptive_robust_loss=True,
+                use_robust_loss_validation=True,
+                stage_two_start_epoch=2,
+                stage_two_loss_weights={"energy_weight": 0.01},
+            )
+        )
+    assert caplog.text.count("ignored with use_adaptive_robust_loss") == 1

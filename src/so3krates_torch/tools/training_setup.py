@@ -118,9 +118,43 @@ def _validation_loss(
     return setup_loss_function(val_config, adaptive=adaptive)
 
 
+def _check_validation_settings(loss_config: dict) -> None:
+    """Warn about validation robust settings that have no effect, and
+    reject them for legacy loss types with an error naming them."""
+    val_flag = loss_config.get("use_robust_loss_validation")
+    val_alpha = loss_config.get("robust_loss_alpha_validation")
+    loss_type = loss_config.get("loss_type", "auto")
+    if val_flag and loss_type not in ("auto", "properties"):
+        raise ValueError(
+            f"loss_type '{loss_type}' does not support "
+            "use_robust_loss_validation. Use loss_type 'auto' or "
+            "'properties'."
+        )
+    if loss_config.get("use_adaptive_robust_loss", False):
+        if val_flag is not None or val_alpha is not None:
+            logging.warning(
+                "use_robust_loss_validation / robust_loss_alpha_validation "
+                "are ignored with use_adaptive_robust_loss: validation uses "
+                "the training loss (learned alpha/scale), as in JAX so3lr."
+            )
+        return
+    effective = (
+        loss_config.get("use_robust_loss", False)
+        if val_flag is None
+        else val_flag
+    )
+    if val_alpha is not None and not effective:
+        logging.warning(
+            "robust_loss_alpha_validation has no effect: the validation loss "
+            "uses the squared error. Set use_robust_loss_validation: true "
+            "to validate with the fixed robust loss."
+        )
+
+
 def setup_loss_functions(config: dict) -> LossFunctions:
     """Training and validation losses for both training stages."""
     loss_config = config["TRAINING"]
+    _check_validation_settings(loss_config)
     stage_two_config = _stage_two_config(config)
     loss_type = loss_config.get("loss_type", "auto")
     if stage_two_config is not None and loss_type not in (

@@ -872,6 +872,8 @@ The two robust options are mutually exclusive and require `loss_type` `auto`/`pr
 | `use_robust_loss_validation` | `bool` | same as `use_robust_loss` | Use the fixed robust loss for the validation loss (which picks the best checkpoint and drives early stopping). Ignored with the adaptive loss: validation then always uses the training loss, as in JAX. |
 | `robust_loss_alpha_validation` | `float` | same as `robust_loss_alpha` | α of the fixed robust validation loss. |
 
+Settings that have no effect (any validation setting with the adaptive loss, or `robust_loss_alpha_validation` while validation uses the squared error) are logged as warnings.
+
 **Two-stage loss weights.** As in the JAX trainer (and the SO3LR-tauri paper, which raises the energy weight from 0.001 to 0.01), the loss weights can change during training:
 
 | Key | Type | Default | Description |
