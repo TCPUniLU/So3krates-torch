@@ -48,8 +48,13 @@ argparser.add_argument(
     "--so3lr_model",
     type=str,
     default="v2-s",
-    choices=["v1", "v2-s", "v2-m", "v2-l"],
-    help="Which bundled pretrained SO3LR checkpoint to use with --so3lr.",
+    choices=(
+        ["v1"]
+        + [f"tauri-{s}-{g}" for g in ("2602", "2606") for s in "sml"]
+        + [f"v2-{s}" for s in "sml"]
+    ),
+    help="Which bundled pretrained SO3LR checkpoint to use with --so3lr "
+    "(v2-{s,m,l} are aliases of tauri-{s,m,l}-2602).",
 )
 argparser.add_argument(
     "--use_pme",
@@ -63,8 +68,8 @@ argparser.add_argument(
     "--theory_level",
     type=int,
     default=5,
-    help="Theory-level head of the v2 SO3LR models (16 heads; so3lr_dev "
-    "uses 5). Ignored for --so3lr_model v1.",
+    help="Theory-level head of the tauri SO3LR models (16 heads; "
+    "so3lr_dev uses 5). Ignored for --so3lr_model v1.",
 )
 argparser.add_argument("--dtype", type=str, default="float32")
 args = argparser.parse_args()
@@ -83,7 +88,7 @@ else:
     # No --start_path given (or it doesn't exist): fall back to a small,
     # bundled, self-contained periodic structure so this example can be
     # run out of the box, e.g. to smoke-test --use_pme (PME requires a
-    # periodic cell) across all 4 --so3lr_model checkpoints.
+    # periodic cell) across all --so3lr_model checkpoints.
     from ase.build import bulk
 
     print(
@@ -102,7 +107,7 @@ if args.so3lr:
         device=args.device,
         default_dtype=args.dtype,
         use_pme=args.use_pme,
-        # v2 models have 16 theory-level heads and require a choice;
+        # tauri models have 16 theory-level heads and require a choice;
         # 5 is the level so3lr_dev uses. Ignored by the v1 model.
         theory_level=args.theory_level if args.so3lr_model != "v1" else None,
     )

@@ -74,7 +74,7 @@ print(atoms.get_potential_energy())
 print(atoms.get_forces())
 ```
 
-`model` is a required keyword selecting which bundled checkpoint to load. The remaining constructor keywords cover general calculator settings (`r_max_lr` (default `12.0`, long-range cutoff for electrostatics/dispersion), `dispersion_energy_cutoff_lr_damping` (default `2.0`, damping cutoff for the TS dispersion damping function), `compute_stress`, `device`, `energy_units_to_eV`, `length_units_to_A`, `default_dtype`, `charges_key`, `key_specification`, `theory_level` (required for the v2 models, which have 16 theory-level heads; `so3lr_dev` uses 5. The single-head `v1` model needs none)) plus PME electrostatics/dispersion (`use_pme`, `pme_smearing`, `pme_mesh_spacing`, `use_pme_dispersion`, `pme_dispersion_smearing`, `pme_dispersion_mesh_spacing` — all `None`/off by default; see [PME Electrostatics](#pme-electrostatics-particle-mesh-ewald) below for what each one does). For example, to enable PME on a periodic system:
+`model` is a required keyword selecting which bundled checkpoint to load. The remaining constructor keywords cover general calculator settings (`r_max_lr` (default `12.0`, long-range cutoff for electrostatics/dispersion), `dispersion_energy_cutoff_lr_damping` (default `2.0`, damping cutoff for the TS dispersion damping function), `compute_stress`, `device`, `energy_units_to_eV`, `length_units_to_A`, `default_dtype`, `charges_key`, `key_specification`, `theory_level` (required for the tauri models (`tauri-*`, and the `v2-*` aliases), which have 16 theory-level heads; `so3lr_dev` uses 5. The single-head `v1` model needs none)) plus PME electrostatics/dispersion (`use_pme`, `pme_smearing`, `pme_mesh_spacing`, `use_pme_dispersion`, `pme_dispersion_smearing`, `pme_dispersion_mesh_spacing` — all `None`/off by default; see [PME Electrostatics](#pme-electrostatics-particle-mesh-ewald) below for what each one does). For example, to enable PME on a periodic system:
 
 ```python
 from ase.build import bulk
@@ -92,7 +92,7 @@ atoms.calc = SO3LRCalculator(
 print(atoms.get_potential_energy())
 ```
 
-See [`examples/md/simple_md.py`](examples/md/simple_md.py) for a full MD example driven by `SO3LRCalculator`; it exposes `--so3lr_model {v1,v2-s,v2-m,v2-l}` and `--use_pme` flags directly (e.g. `python examples/md/simple_md.py --so3lr --so3lr_model v2-s --use_pme --device cpu`).
+See [`examples/md/simple_md.py`](examples/md/simple_md.py) for a full MD example driven by `SO3LRCalculator`; it exposes `--so3lr_model` (any keyword from the table above) and `--use_pme` flags directly (e.g. `python examples/md/simple_md.py --so3lr --so3lr_model tauri-s-2606 --use_pme --device cpu`).
 
 ### `load_pretrained_so3lr` — for fine-tuning/scripting
 
@@ -113,7 +113,7 @@ Any extra keyword arguments are merged into the checkpoint's saved `ARCHITECTURE
 
 ```bash
 python examples/finetuning/finetune_pretrained_so3lr.py --model v1
-python examples/finetuning/finetune_pretrained_so3lr.py --model v2-s --use_pme
+python examples/finetuning/finetune_pretrained_so3lr.py --model tauri-s-2606 --use_pme
 ```
 
 To warm-start plain (non-LoRA) training from one of these checkpoints instead of fine-tuning, see the `pretrained_weights` option under [Pre-trained Models](#pre-trained-models) below, and its documented example in [`examples/training/train_settings_example.yaml`](examples/training/train_settings_example.yaml).
@@ -166,6 +166,10 @@ torchkrates-preprocess --input raw.h5 --output preprocessed.h5 --mode preprocess
 | `--stress-key` | Key for stress (default: `REF_stress`) |
 | `--dipole-key` | Key for dipole (default: `REF_dipole`) |
 | `--charges-key` | Key for charges (default: `REF_charges`) |
+| `--hirshfeld-ratios-key` | Key for Hirshfeld (a0) ratios (default: `REF_hirsh_ratios`) |
+| `--c6-ratios-key` | Key for C6 ratios (default: `REF_c6_ratios`; `c6_ratios` is accepted as fallback) |
+| `--total-charge-key` | Key for the total charge in `atoms.info` (default: `total_charge`) |
+| `--total-spin-key` | Key for the total spin in `atoms.info` (default: `total_spin`) |
 | `--description` | Optional dataset description stored in the HDF5 metadata |
 | `--dtype` | Data type: `float32` or `float64` (default: `float64`) |
 | `--validate` | Validate the output file after creation |
@@ -305,6 +309,18 @@ torchkrates-eval --model_path my_checkpoint.pt \
 | `--c6_key` | `REF_c6_ratios` | Key for reference C6 ratios |
 | `--total_charge_key` | `charge` | Key for total charge |
 | `--total_spin_key` | `total_spin` | Key for total spin |
+| `--stress_key` | `REF_stress` | Key for reference stress |
+| `--virials_key` | `REF_virials` | Key for reference virials |
+| `--head_key` | `head` | `atoms.info` key holding each structure's head name (multi-head models) |
+| `--model_type` | `so3lr` | `so3lr` or `so3krates` |
+| `--output_prefix` | `SO3` | Prefix for predicted properties in `.xyz` output (`SO3_energy`, `SO3_forces`, …) |
+| `--fullgraph` / `--no-fullgraph` | `True` on CUDA, else `False` | `fullgraph` argument to `torch.compile` when `--compile` is set |
+| `--return_att` | `False` | Save per-layer attention scores (HDF5 output, group `att_scores`) |
+| `--return_inv_descriptors` | `False` | Save invariant (scalar) per-atom descriptors |
+| `--return_eqv_descriptors` | `False` | Save equivariant (spherical-harmonic) per-atom descriptors |
+| `--return_mean_inv_descriptors` | `False` | Save per-structure means of the invariant descriptors |
+| `--return_mean_eqv_descriptors` | `False` | Save per-structure means of the equivariant descriptors |
+| `--mean_descriptors_only` | `False` | Write only the mean descriptors, to an uncompressed `.npz` next to `--output_file`, and skip energies/forces. Needs one of the two `--return_mean_*` flags |
 
 ---
 
@@ -367,7 +383,11 @@ torchkrates-md-nvalchemi \
 | `--pme-accuracy` | `1e-6` | Target accuracy; sets the derived `--pme-alpha` |
 | `--skip-vel-init` | `False` | Keep the velocities already stored in the structure file instead of (re-)sampling Maxwell-Boltzmann at `--temperature` |
 | `--compile` | `False` | `torch.compile` the inner model; raises on CPU for long-range models (unsupported Inductor lowering) |
+| `--no-compile-fullgraph` | `False` | With `--compile`, allow graph breaks (`fullgraph=False`) instead of the CUDA default `fullgraph=True`; slower to optimise but tolerates constructs Dynamo cannot trace |
 | `--seed` | `42` | Langevin RNG seed (NVT only) |
+| `--friction` | `1e-2` | Langevin friction coefficient [1/fs] (NVT only) |
+| `--thermostat-time` | `100 * dt` | NPT thermostat time constant [fs] (LAMMPS `tdamp` convention) |
+| `--barostat-time` | `1000 * dt` | NPT barostat time constant [fs] (LAMMPS `pdamp` convention) |
 | `--log-file` | `md_log.csv` | Output CSV log path |
 | `--log-freq` | `100` | Log every N steps |
 
@@ -469,6 +489,12 @@ Note there is no `--multispecies` flag here (unlike `torchkrates-eval`); use `--
 | `--c6_key` | `REF_c6_ratios` | Key for reference C6 ratios |
 | `--total_charge_key` | `charge` | Key for total charge |
 | `--total_spin_key` | `total_spin` | Key for total spin |
+| `--stress_key` | `REF_stress` | Key for reference stress |
+| `--virials_key` | `REF_virials` | Key for reference virials |
+| `--head_key` | `head` | `atoms.info` key holding each structure's head name (multi-head models) |
+| `--head_name` | `head` | Head name assigned to the loaded structures |
+| `--log_file` | `test_ensemble.log` | Log file path |
+| `--return_predictions` | `False` | Keep the energy and force predictions in the returned metrics. Parsed as `type=bool`, so any non-empty value (even `False`) turns it on; omit the flag to keep it off |
 
 #### End-to-End Workflow
 
@@ -582,6 +608,8 @@ This writes `hyperparameters.json` and `params.pkl` into the two given directori
 | `--parity_structure` | bundled `aqm_small.xyz` | ASE-readable structure file to check parity on. |
 | `--parity_atol` | `1e-5` | Absolute tolerance for the parity check. |
 | `--parity_rtol` | `1e-4` | Relative tolerance for the parity check. |
+| `--trainable_rbf` | `False` | The model has trainable radial-basis centres and widths; their parameters are converted too. |
+| `--use_defined_shifts` | `False` | `jax2torch` only: take the per-element energy shifts from the JAX config (`data.energy_shifts`). `torch2jax` accepts the flag but ignores it. |
 
 The check behind these flags is `so3krates_torch.tools.model_parity.check_model_parity`. Besides energy and forces it can also compare the stress (`compare_stress=True`, periodic structures only), the partial charges, dipole, Hirshfeld and C6 ratios (`compare_observables=(...)`), and any theory-level head (`theory_level=<int>`; the default is so3lr_dev's level 5). See `src/so3krates_torch/tests/test_v2_parity.py` for the tolerances the test suite uses.
 
@@ -613,6 +641,8 @@ These settings define the SO3LR neural network architecture.
 | `num_radial_basis_fn` | `int` | `32` | Number of radial basis functions used to expand interatomic distances. |
 | `energy_regression_dim` | `int` | `128` | Hidden dimension of the MLP in the atomic energy output head. |
 | `input_convention` | `str` | `"positions"` | Convention for atomic positions in the data. Options: `positions` (Cartesian coordinates). |
+| `layers_behave_like_identity_fn_at_init` | `bool` | `False` | JAX option kept for config compatibility; `true` is not implemented and raises. |
+| `output_is_zero_at_init` | `bool` | `False` | JAX option kept for config compatibility; `true` is not implemented and raises. |
 
 #### Cutoffs and Basis Functions
 
@@ -641,6 +671,9 @@ These settings define the SO3LR neural network architecture.
 | `layer_normalization_2` | `bool` | `False` | Apply layer normalization after the second MLP in each transformer layer. |
 | `residual_mlp_1` | `bool` | `False` | Add a residual connection around the first MLP. |
 | `residual_mlp_2` | `bool` | `False` | Add a residual connection around the second MLP. |
+| `use_rms_norm` | `bool` | `False` | Use RMSNorm without a learnable scale instead of LayerNorm for `layer_normalization_1`/`_2` (SO3LR-tauri). |
+| `qk_norm` | `bool` | `False` | RMS-normalise queries and keys (no parameters) before the attention product (SO3LR-tauri). |
+| `use_residual_scalars` | `bool` | `False` | Before every layer, mix the initial embedding into the invariant features with learnable per-layer scalars (init 1.0 for the features, 0.1 for the embedding) (SO3LR-tauri). |
 | `compute_avg_num_neighbors` | `bool` | `True` | Compute the average number of neighbors from the training data (used for `avg_num_neighbors` normalization). |
 
 #### Embeddings and Energy Output
@@ -660,11 +693,15 @@ These enable the physics-based long-range interactions that distinguish SO3LR fr
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `zbl_repulsion_bool` | `bool` | `True` | Enable the ZBL repulsion potential for short-range nuclear repulsion. |
+| `nhl_repulsion_bool` | `bool` | `False` | Use the NHL short-range repulsion (fixed, tabulated element-pair coefficients) instead of ZBL. Takes precedence over `zbl_repulsion_bool`; a warning is logged if both are `true`. |
 | `electrostatic_energy_bool` | `bool` | `True` | Enable electrostatic interactions via learned partial charges. Requires `r_max_lr` to be set. |
 | `electrostatic_energy_scale` | `float` | `4.0` | Scaling factor for the electrostatic energy contribution. |
 | `dispersion_energy_bool` | `bool` | `True` | Enable van der Waals dispersion interactions via learned Hirshfeld ratios. Requires `r_max_lr`. |
 | `dispersion_energy_scale` | `float` | `1.2` | Scaling factor for the dispersion energy contribution. |
 | `dispersion_energy_cutoff_lr_damping` | `float` | `None` | Damping cutoff (Å) for the TS dispersion damping function. Required when `dispersion_energy_bool: true`. |
+| `c6_ratios_bool` | `bool` | `False` | Add a separate C6-ratio output head, so dispersion uses predicted C6 ratios instead of deriving them from the Hirshfeld (a0) ratios (SO3LR-tauri). Requires `dispersion_energy_bool: true`; needed for `c6_ratios_weight`. |
+| `use_simple_hirshfeld` | `bool` | `False` | Use the simplified Hirshfeld head of the newer JAX `HirshfeldSparse` (SO3LR-tauri) instead of the original attention-based head. Requires `dispersion_energy_bool: true`. |
+| `num_theory_levels` | `int` | `1` | Number of theory levels the energy output predicts (16 for the tauri models). Each structure's level is read from `atoms.info["theory_level"]` (integer `0 … num_theory_levels-1`). |
 | `legacy_dispersion_bool` | `bool` | `True` | Selects the free-atom alpha/C6 reference table used for dispersion (legacy: elements Z=1–102; refitted: Z=1–86). Also used for PME dispersion's pseudo-charges. See [PME Dispersion](#pme-dispersion-particle-mesh-ewald). |
 | `neighborlist_format_lr` | `str` | `"sparse"` | Storage format for the long-range neighbor list. |
 | `use_pme` | `bool` | `False` | Enable PME electrostatics for periodic systems. See [PME Electrostatics](#pme-electrostatics-particle-mesh-ewald). |
@@ -761,9 +798,11 @@ ARCHITECTURE:
 | `lazy_loading` | `bool` | `False` | Enable on-the-fly data loading and preprocessing from raw HDF5 files. Instead of loading all structures into memory upfront, each structure is read and its neighbor list computed on the fly by DataLoader worker processes. Only supported for raw HDF5 files (not XYZ). |
 | `num_workers` | `int` | `4` | Number of DataLoader worker processes for parallel preprocessing. Only used when `lazy_loading: true`. Each worker reads structures from HDF5 and computes neighbor lists concurrently. |
 | `prefetch_factor` | `int` | `2` | Number of batches each worker prefetches ahead of time. With `num_workers=4` and `prefetch_factor=2`, up to 8 batches are prepared in the background while the GPU trains. Only used when `lazy_loading: true`. |
+| `data_preprocessed` | `bool` | `None` | Whether the training file is a preprocessed HDF5. `None` auto-detects; `true` additionally checks the file is HDF5 and that its stored cutoffs match `r_max`/`r_max_lr`. |
+| `config_type_weights` | `dict` | `None` | Loss-weight multiplier per `atoms.info["config_type"]` (structures without one are `Default`), e.g. `{Default: 1.0, md: 0.5}`. Multiplies any per-structure `config_weight`. |
 | `num_neighbor_samples` | `int` | `1000` | Number of structures randomly sampled to estimate the average number of neighbors (used for message normalization). Only used when `lazy_loading: true`. |
 
-For multi-head models, data can be specified per head instead of using `path_to_train_data`:
+For multi-head models, data can be specified per head with the `heads` dict instead of using `path_to_train_data`:
 
 ```yaml
 TRAINING:
