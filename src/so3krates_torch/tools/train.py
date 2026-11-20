@@ -49,6 +49,20 @@ def _fmt_ratio_mae(value) -> str:
     return "n/a" if value is None else f"{value:8.4f}"
 
 
+def clip_gradients_(
+    model: torch.nn.Module,
+    loss_fn: Optional[torch.nn.Module],
+    max_norm: float,
+) -> torch.Tensor:
+    """Clip by the global norm over model and learned loss parameters
+    together, like JAX so3lr's optax clip_by_global_norm over the full
+    params tree (which includes the adaptive robust-loss alpha/scale)."""
+    params = list(model.parameters())
+    if loss_fn is not None:
+        params += list(loss_fn.parameters())
+    return torch.nn.utils.clip_grad_norm_(params, max_norm=max_norm)
+
+
 def allreduce_loss_param_grads_(loss_fn: torch.nn.Module) -> None:
     """Average the gradients of learned loss parameters (adaptive robust
     loss) across DDP ranks. They live outside the DDP-wrapped model, so
@@ -578,9 +592,7 @@ def take_step(
         loss.backward()
         allreduce_loss_param_grads_(loss_fn)
         if max_grad_norm is not None:
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                model.parameters(), max_norm=max_grad_norm
-            )
+            grad_norm = clip_gradients_(model, loss_fn, max_grad_norm)
         else:
             grad_norm = None
 
@@ -665,9 +677,7 @@ def take_step_lbfgs(
         allreduce_loss_param_grads_(loss_fn)
 
         if max_grad_norm is not None:
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                model.parameters(), max_norm=max_grad_norm
-            )
+            grad_norm = clip_gradients_(model, loss_fn, max_grad_norm)
         else:
             grad_norm = None
 

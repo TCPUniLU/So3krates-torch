@@ -66,10 +66,11 @@ class CheckpointBuilder:
     def load_checkpoint(
         state: CheckpointState, checkpoint: Checkpoint, strict: bool
     ) -> None:
-        # Check the loss state first so a mismatch fails before anything
-        # (model, optimizer) is half-restored.
+        # Validate the loss state before restoring anything, and copy the
+        # loss parameters only after model/optimizer loaded successfully.
         loss_params = _loss_params(state.loss_fn)
         saved = checkpoint.get("loss_fn")
+        optimizer_state = checkpoint["optimizer"]
         if loss_params:
             if saved is None or set(saved) != set(loss_params):
                 raise LossStateMismatchError(
@@ -80,17 +81,44 @@ class CheckpointBuilder:
                     "the checkpoint (MISC.restart_latest: false) or with the "
                     "same use_adaptive_robust_loss / loss weights."
                 )
+        elif saved is not None:
+            optimizer_state = _drop_loss_param_group(
+                optimizer_state, state.optimizer
+            )
+            logging.warning(
+                "Checkpoint was trained with the adaptive robust loss but "
+                "this run does not use it: resuming without its learned "
+                "alpha/scale (their optimizer state is dropped)."
+            )
+        state.model.load_state_dict(checkpoint["model"], strict=strict)  # type: ignore
+        state.optimizer.load_state_dict(optimizer_state)
+        if loss_params:
             with torch.no_grad():
                 for name, param in loss_params.items():
                     param.copy_(saved[name])
-        elif saved is not None:
-            logging.warning(
-                "Checkpoint contains adaptive robust loss parameters but "
-                "this run does not use them; ignoring."
-            )
-        state.model.load_state_dict(checkpoint["model"], strict=strict)  # type: ignore
-        state.optimizer.load_state_dict(checkpoint["optimizer"])
         state.lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+
+
+def _drop_loss_param_group(optimizer_state: dict, optimizer) -> dict:
+    """Remove the trailing loss-parameter group (adaptive robust loss)
+    from a saved optimizer state so it fits an optimizer without it."""
+    groups = optimizer_state["param_groups"]
+    if len(groups) != len(optimizer.param_groups) + 1:
+        raise LossStateMismatchError(
+            f"Checkpoint optimizer has {len(groups)} parameter groups; "
+            f"expected {len(optimizer.param_groups)} plus one adaptive "
+            "robust loss group. Restart without the checkpoint "
+            "(MISC.restart_latest: false)."
+        )
+    dropped = set(groups[-1]["params"])
+    return {
+        "state": {
+            k: v
+            for k, v in optimizer_state["state"].items()
+            if k not in dropped
+        },
+        "param_groups": groups[:-1],
+    }
 
 
 @dataclasses.dataclass

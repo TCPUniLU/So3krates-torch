@@ -1350,3 +1350,23 @@ def test_run_training_adaptive_per_graph_smoke(tmp_path, monkeypatch):
     assert "loss=nan" not in log_text.lower()
     ckpts = list((tmp_path / "ckpt").glob("*.pt"))
     assert ckpts and "loss_fn" in torch.load(ckpts[0], weights_only=False)
+
+
+def test_clip_gradients_includes_loss_params():
+    """JAX clips the global norm over the full params tree, including
+    the adaptive robust-loss parameters."""
+    from so3krates_torch.tools.train import clip_gradients_
+
+    model = torch.nn.Linear(1, 1, bias=False)
+    model.weight.grad = torch.ones_like(model.weight)
+    loss_fn = _adaptive_loss()
+    for p in loss_fn.parameters():
+        p.grad = torch.full_like(p, 100.0)
+    norm = clip_gradients_(model, loss_fn, max_norm=1.0)
+    assert norm.item() == pytest.approx((1 + 4 * 100.0**2) ** 0.5)
+    assert model.weight.grad.item() < 0.01  # scaled by the global norm
+    total = torch.sqrt(
+        model.weight.grad.square().sum()
+        + sum(p.grad.square().sum() for p in loss_fn.parameters())
+    )
+    assert total.item() == pytest.approx(1.0, rel=1e-4)

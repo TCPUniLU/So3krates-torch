@@ -113,3 +113,52 @@ def test_partition_spline_shipped():
     )
     with resources.as_file(path) as p, np.load(p) as f:
         assert {"x_scale", "values", "tangents"} <= set(f.files)
+
+
+def test_wheel_ships_license_texts(tmp_path):
+    """Apache-2.0 §4(a): the robust-loss code must ship with its license;
+    the CC BY-NC text for the tauri weights likewise."""
+    import subprocess
+    import sys
+    import zipfile
+    from pathlib import Path
+
+    import shutil
+
+    # Build from a copy so setuptools' build/ and *.egg-info never land
+    # in the working tree (weights skipped: irrelevant to licensing).
+    repo = Path(__file__).resolve().parents[3]
+    src = tmp_path / "src_copy"
+    src.mkdir()
+    for name in ("pyproject.toml", "README.md", "LICENSE.md", "NOTICE.md"):
+        shutil.copy(repo / name, src / name)
+    shutil.copytree(repo / "licenses", src / "licenses")
+    shutil.copytree(
+        repo / "src",
+        src / "src",
+        ignore=shutil.ignore_patterns("*.pt", "__pycache__", "*.egg-info"),
+    )
+    wheels = tmp_path / "wheels"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            "--no-deps",
+            "--no-build-isolation",
+            "-q",
+            "-w",
+            str(wheels),
+            str(src),
+        ],
+        check=True,
+    )
+    (wheel,) = wheels.glob("*.whl")
+    names = zipfile.ZipFile(wheel).namelist()
+    for required in (
+        "LICENSE.ROBUST-LOSS-APACHE-2.0",
+        "LICENSE.CC-BY-NC-4.0",
+        "NOTICE.md",
+    ):
+        assert any(n.endswith(required) for n in names), required
