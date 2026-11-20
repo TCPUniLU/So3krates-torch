@@ -136,9 +136,11 @@ TRAINING:
   # datasets): atoms without a label (NaN, or absent key) are masked out
   # of the ratio losses and metrics, as in JAX so3lr.
   # SO3LR-tauri paper weights (SI Eq. S13): forces 1.0, energy 0.01,
-  # dipole 0.1, a0 ratios 0.1, C6 ratios 0.1. NOTE: torch reduces losses
-  # differently from JAX (flat mean vs per-graph mean), so these are a
-  # starting point, not an equivalent setting.
+  # dipole 0.1, a0 ratios 0.1, C6 ratios 0.1 -- comparable to JAX only
+  # with loss_reduction: per_graph.
+  # loss_reduction: flat  # flat = one mean over all elements (default);
+  #   per_graph = JAX so3lr reduction (per-structure mean, then mean over
+  #   labelled structures; multi-GPU counts are global)
   eval_interval: 1
   num_epochs: 5
   path_to_train_data: ./path/to/train/data

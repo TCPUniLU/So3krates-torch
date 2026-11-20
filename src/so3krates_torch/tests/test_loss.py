@@ -757,3 +757,169 @@ def test_legacy_loss_type_rejects_c6_weight(loss_type):
         setup_loss_function(
             {"TRAINING": {"loss_type": loss_type, "c6_ratios_weight": 0.1}}
         )
+
+
+# ── loss_reduction: per_graph (JAX so3lr parity) ───────────────
+
+
+_ALL_W = {
+    "energy": 0.5,
+    "forces": 2.0,
+    "dipole": 0.3,
+    "hirshfeld_ratios": 0.1,
+    "c6_ratios": 0.2,
+    "charges": 0.4,
+}
+
+
+def test_flat_reduction_unchanged(mock_batch_for_loss):
+    from so3krates_torch.modules.loss import WeightedPropertiesLoss
+
+    batch = mock_batch_for_loss
+    pred = _ratio_pred(batch)
+    default = WeightedPropertiesLoss(_ALL_W)(batch, pred, ddp=False)
+    flat = WeightedPropertiesLoss(_ALL_W, reduction="flat")(
+        batch, pred, ddp=False
+    )
+    assert torch.equal(default, flat)
+
+
+def test_per_graph_forces_equal_weight_per_graph(mock_batch_for_loss):
+    from so3krates_torch.modules.loss import mean_squared_error_forces
+
+    batch = mock_batch_for_loss
+    pred = {"forces": torch.zeros_like(batch.forces)}
+    loss = mean_squared_error_forces(
+        batch, pred, ddp=False, reduction="per_graph"
+    )
+    # per-atom mean of f^2 over xyz: graph 0 atoms 1/3 each -> 1/3;
+    # graph 1: three atoms 4/3, one atom 1 -> (4/3*3 + 1)/4 = 5/4
+    w = (batch.weight * batch.forces_weight).tolist()  # [10, 40]
+    expected = (w[0] * (1 / 3) + w[1] * (5 / 4)) / 2
+    assert loss.item() == pytest.approx(expected, rel=1e-6)
+
+
+def test_per_graph_partial_nan_graph_excluded(mock_batch_for_loss):
+    from so3krates_torch.modules.loss import (
+        weighted_mean_squared_error_c6_ratios,
+    )
+
+    batch = mock_batch_for_loss
+    pred = _ratio_pred(batch)
+    graph0_only = (1.0 * 1.0 * 1.0) / 1  # graph 0: w=1, (2-1)^2 = 1
+    batch.c6_ratios[4] = float("nan")
+    loss = weighted_mean_squared_error_c6_ratios(
+        batch, pred, ddp=False, reduction="per_graph"
+    )
+    assert loss.item() == pytest.approx(graph0_only)
+
+
+def test_per_graph_energy_and_dipole(mock_batch_for_loss):
+    from so3krates_torch.modules.loss import (
+        weighted_mean_squared_error_dipole,
+        weighted_mean_squared_error_energy,
+    )
+
+    batch = mock_batch_for_loss
+    pred = _ratio_pred(batch)  # energy [8, 16] vs ref [10, 20]
+    e = weighted_mean_squared_error_energy(
+        batch, pred, ddp=False, reduction="per_graph"
+    )
+    w = (batch.weight * batch.energy_weight).tolist()  # [1, 3]
+    expected_e = (w[0] * (2 / 3) ** 2 + w[1] * (4 / 4) ** 2) / 2
+    assert e.item() == pytest.approx(expected_e, rel=1e-6)
+
+    d = weighted_mean_squared_error_dipole(
+        batch, pred, ddp=False, reduction="per_graph"
+    )
+    # ref dipoles unit vectors, pred = 0.5*ref -> residual 0.5/N on one
+    # component; weights weight*dipole_weight = [1, 4] per component
+    expected_d = (1 * (0.5 / 3) ** 2 + 4 * (0.5 / 4) ** 2) / 6
+    assert d.item() == pytest.approx(expected_d, rel=1e-6)
+
+
+def test_unknown_reduction_raises():
+    from so3krates_torch.modules.loss import WeightedPropertiesLoss
+
+    with pytest.raises(ValueError, match="reduction"):
+        WeightedPropertiesLoss({"forces": 1.0}, reduction="mean")
+
+
+def _jax_args(batch):
+    import jax.numpy as jnp
+    import numpy as np
+
+    return dict(
+        batch_segments=jnp.asarray(batch.batch.numpy()),
+        graph_mask=jnp.ones(batch.ptr.numel() - 1, dtype=bool),
+        scale=jnp.ones(1),
+    )
+
+
+def test_per_graph_matches_jax(mock_batch_for_loss, jax_so3lr):
+    """forces, c6 (with a partially NaN graph) and energy vs the JAX
+    reference terms, all structure weights 1."""
+    import jax.numpy as jnp
+    from so3krates_torch.modules.loss import (
+        mean_squared_error_forces,
+        weighted_mean_squared_error_c6_ratios,
+        weighted_mean_squared_error_energy,
+    )
+
+    tu = jax_so3lr.training_utils
+    batch = mock_batch_for_loss
+    for key in (
+        "weight",
+        "energy_weight",
+        "forces_weight",
+        "c6_ratios_weight",
+    ):
+        setattr(batch, key, torch.ones(2))
+    torch.manual_seed(0)
+    pred = {
+        "forces": torch.randn(7, 3),
+        "c6_ratios": torch.rand(7),
+        "energy": torch.tensor([9.0, 23.0]),
+    }
+    batch.c6_ratios[5] = float("nan")
+    args = _jax_args(batch)
+
+    def j(t):
+        return jnp.asarray(t.numpy())
+
+    ref_f = tu.node_mse_loss(j(pred["forces"]), j(batch.forces), **args)
+    ref_c6 = tu.node_mse_loss(j(pred["c6_ratios"]), j(batch.c6_ratios), **args)
+    ref_e = tu.graph_mse_loss_per_atom(
+        j(pred["energy"]), j(batch.energy), **args
+    )
+    kw = dict(ddp=False, reduction="per_graph")
+    assert mean_squared_error_forces(batch, pred, **kw).item() == (
+        pytest.approx(float(ref_f.squeeze()), rel=1e-5)
+    )
+    assert weighted_mean_squared_error_c6_ratios(batch, pred, **kw).item() == (
+        pytest.approx(float(ref_c6.squeeze()), rel=1e-5)
+    )
+    assert weighted_mean_squared_error_energy(batch, pred, **kw).item() == (
+        pytest.approx(float(ref_e.squeeze()), rel=1e-5)
+    )
+
+
+def test_legacy_loss_type_rejects_per_graph():
+    from so3krates_torch.tools.training_setup import setup_loss_function
+
+    with pytest.raises(ValueError, match="loss_reduction"):
+        setup_loss_function(
+            {
+                "TRAINING": {
+                    "loss_type": "energy_forces",
+                    "loss_reduction": "per_graph",
+                }
+            }
+        )
+
+
+def test_setup_loss_passes_reduction():
+    from so3krates_torch.tools.training_setup import setup_loss_function
+
+    loss = setup_loss_function({"TRAINING": {"loss_reduction": "per_graph"}})
+    assert loss.reduction == "per_graph"

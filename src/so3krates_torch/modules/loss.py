@@ -3,15 +3,26 @@
 ###########################################################################
 
 import torch
-from typing import Optional, Dict
+from typing import Callable, Dict, Optional
 from torch_geometric.data import Batch
 import torch.distributed as dist
 
+from so3krates_torch.modules.loss_reduction import (
+    is_ddp_enabled,
+    per_graph_node_mean,
+    reduce_graphs,
+    reduce_valid_elements,
+)
+
 TensorDict = Dict[str, torch.Tensor]
 
+# (residual, property name) -> per-element penalty
+Penalty = Callable[[torch.Tensor, str], torch.Tensor]
+REDUCTIONS = ("flat", "per_graph")
 
-def is_ddp_enabled():
-    return dist.is_initialized() and dist.get_world_size() > 1
+
+def squared_penalty(x: torch.Tensor, prop: str) -> torch.Tensor:
+    return torch.square(x)
 
 
 def reduce_loss(
@@ -39,42 +50,136 @@ def reduce_loss(
     return raw_loss.mean()
 
 
-def weighted_mean_squared_error_energy(
-    ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
+def _num_atoms(ref: Batch) -> torch.Tensor:
+    return ref.ptr[1:] - ref.ptr[:-1]
+
+
+def _check_reduction(reduction: str) -> None:
+    if reduction not in REDUCTIONS:
+        raise ValueError(
+            f"Unknown loss reduction '{reduction}'; use one of {REDUCTIONS}."
+        )
+
+
+def _per_graph_atoms(
+    ref: Batch,
+    label: torch.Tensor,
+    pred_value: torch.Tensor,
+    graph_weight: torch.Tensor,
+    penalty: Penalty,
+    prop: str,
+    ddp: Optional[bool],
 ) -> torch.Tensor:
-    # Calculate per-graph number of atoms.
-    num_atoms = ref.ptr[1:] - ref.ptr[:-1]  # shape: [n_graphs]
-    raw_loss = (
-        ref.weight
-        * ref.energy_weight
-        * torch.square((ref["energy"] - pred["energy"]) / num_atoms)
+    """JAX `node_mse_loss`: per-graph mean of per-atom penalties, mean
+    over graphs that carry the label (a graph with any NaN is dropped)."""
+    finite = torch.isfinite(label)
+    diff = torch.where(
+        finite, label - pred_value, torch.zeros_like(pred_value)
+    )
+    per_graph, has_data = per_graph_node_mean(
+        penalty(diff, prop), ref, label, graph_weight
+    )
+    return reduce_graphs(per_graph, has_data, ddp)
+
+
+def _per_graph_per_atom_graph_property(
+    label: torch.Tensor,
+    pred_value: torch.Tensor,
+    num_atoms: torch.Tensor,
+    weight: torch.Tensor,
+    penalty: Penalty,
+    prop: str,
+    ddp: Optional[bool],
+) -> torch.Tensor:
+    """JAX `graph_mse_loss_per_atom`: residual divided by the number of
+    atoms, mean over valid (finite, non-zero weight) elements."""
+    valid = torch.isfinite(label) & (weight != 0)
+    residual = torch.where(
+        valid, (label - pred_value) / num_atoms, torch.zeros_like(pred_value)
+    )
+    return reduce_valid_elements(penalty(residual, prop), valid, weight, ddp)
+
+
+def weighted_mean_squared_error_energy(
+    ref: Batch,
+    pred: TensorDict,
+    ddp: Optional[bool] = None,
+    reduction: str = "flat",
+    penalty: Penalty = squared_penalty,
+) -> torch.Tensor:
+    _check_reduction(reduction)
+    num_atoms = _num_atoms(ref)  # shape: [n_graphs]
+    weight = ref.weight * ref.energy_weight
+    if reduction == "per_graph":
+        return _per_graph_per_atom_graph_property(
+            ref["energy"],
+            pred["energy"],
+            num_atoms,
+            weight,
+            penalty,
+            "energy",
+            ddp,
+        )
+    raw_loss = weight * penalty(
+        (ref["energy"] - pred["energy"]) / num_atoms, "energy"
     )
     return reduce_loss(raw_loss, ddp)
 
 
 def mean_squared_error_forces(
-    ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
+    ref: Batch,
+    pred: TensorDict,
+    ddp: Optional[bool] = None,
+    reduction: str = "flat",
+    penalty: Penalty = squared_penalty,
 ) -> torch.Tensor:
+    _check_reduction(reduction)
+    if reduction == "per_graph":
+        return _per_graph_atoms(
+            ref,
+            ref["forces"],
+            pred["forces"],
+            ref.weight * ref.forces_weight,
+            penalty,
+            "forces",
+            ddp,
+        )
     # Repeat per-graph weights to per-atom level.
     configs_weight = torch.repeat_interleave(
-        ref.weight, ref.ptr[1:] - ref.ptr[:-1]
+        ref.weight, _num_atoms(ref)
     ).unsqueeze(-1)
     configs_forces_weight = torch.repeat_interleave(
-        ref.forces_weight, ref.ptr[1:] - ref.ptr[:-1]
+        ref.forces_weight, _num_atoms(ref)
     ).unsqueeze(-1)
     raw_loss = (
         configs_weight
         * configs_forces_weight
-        * torch.square(ref["forces"] - pred["forces"])
+        * penalty(ref["forces"] - pred["forces"], "forces")
     )
     return reduce_loss(raw_loss, ddp)
 
 
 def weighted_mean_squared_error_dipole(
-    ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
+    ref: Batch,
+    pred: TensorDict,
+    ddp: Optional[bool] = None,
+    reduction: str = "flat",
+    penalty: Penalty = squared_penalty,
 ) -> torch.Tensor:
-    num_atoms = (ref.ptr[1:] - ref.ptr[:-1]).unsqueeze(-1)
-    raw_loss = torch.square((ref["dipole"] - pred["dipole"]) / num_atoms)
+    _check_reduction(reduction)
+    num_atoms = _num_atoms(ref).unsqueeze(-1)
+    if reduction == "per_graph":
+        weight = ref.weight.unsqueeze(-1) * ref.dipole_weight
+        return _per_graph_per_atom_graph_property(
+            ref["dipole"],
+            pred["dipole"],
+            num_atoms,
+            weight,
+            penalty,
+            "dipole",
+            ddp,
+        )
+    raw_loss = penalty((ref["dipole"] - pred["dipole"]) / num_atoms, "dipole")
     return reduce_loss(raw_loss, ddp)
 
 
@@ -119,6 +224,8 @@ def masked_mse_per_atom(
     pred_key: str,
     weight_key: str,
     ddp: Optional[bool] = None,
+    penalty: Penalty = squared_penalty,
+    prop: Optional[str] = None,
 ) -> torch.Tensor:
     """Weighted per-atom MSE that skips atoms without a label.
 
@@ -138,46 +245,83 @@ def masked_mse_per_atom(
     diff = torch.where(
         mask, label - pred[pred_key], torch.zeros_like(pred[pred_key])
     )
-    raw_loss = atom_weight * torch.square(diff)
+    raw_loss = atom_weight * penalty(diff, prop or ref_key)
     return reduce_masked_loss(raw_loss, mask, ddp)
 
 
+def _ratio_term(
+    ref: Batch,
+    pred: TensorDict,
+    key: str,
+    ddp: Optional[bool],
+    reduction: str,
+    penalty: Penalty,
+) -> torch.Tensor:
+    _check_reduction(reduction)
+    weight_key = f"{key}_weight"
+    if reduction == "per_graph":
+        return _per_graph_atoms(
+            ref,
+            ref[key],
+            pred[key],
+            ref.weight * ref[weight_key],
+            penalty,
+            key,
+            ddp,
+        )
+    return masked_mse_per_atom(
+        ref, pred, key, key, weight_key, ddp, penalty=penalty, prop=key
+    )
+
+
 def weighted_mean_squared_error_hirshfeld(
-    ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
+    ref: Batch,
+    pred: TensorDict,
+    ddp: Optional[bool] = None,
+    reduction: str = "flat",
+    penalty: Penalty = squared_penalty,
 ) -> torch.Tensor:
     """Polarizability-ratio loss (`a0_ratios` in JAX/tauri)."""
-    return masked_mse_per_atom(
-        ref,
-        pred,
-        "hirshfeld_ratios",
-        "hirshfeld_ratios",
-        "hirshfeld_ratios_weight",
-        ddp,
-    )
+    return _ratio_term(ref, pred, "hirshfeld_ratios", ddp, reduction, penalty)
 
 
 def weighted_mean_squared_error_c6_ratios(
-    ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
+    ref: Batch,
+    pred: TensorDict,
+    ddp: Optional[bool] = None,
+    reduction: str = "flat",
+    penalty: Penalty = squared_penalty,
 ) -> torch.Tensor:
-    return masked_mse_per_atom(
-        ref, pred, "c6_ratios", "c6_ratios", "c6_ratios_weight", ddp
-    )
+    return _ratio_term(ref, pred, "c6_ratios", ddp, reduction, penalty)
 
 
 def weighted_mean_squared_error_charges(
-    ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
+    ref: Batch,
+    pred: TensorDict,
+    ddp: Optional[bool] = None,
+    reduction: str = "flat",
+    penalty: Penalty = squared_penalty,
 ) -> torch.Tensor:
+    _check_reduction(reduction)
+    if reduction == "per_graph":
+        return _per_graph_atoms(
+            ref,
+            ref["charges"],
+            pred["partial_charges"],
+            ref.weight * ref.charges_weight,
+            penalty,
+            "charges",
+            ddp,
+        )
     # Repeat per-graph weights to per-atom level.
-    configs_weight = torch.repeat_interleave(
-        ref.weight, ref.ptr[1:] - ref.ptr[:-1]
-    )
+    configs_weight = torch.repeat_interleave(ref.weight, _num_atoms(ref))
     configs_charges_weight = torch.repeat_interleave(
-        ref.charges_weight, ref.ptr[1:] - ref.ptr[:-1]
+        ref.charges_weight, _num_atoms(ref)
     )
     raw_loss = (
         configs_weight
         * configs_charges_weight
-        * torch.square(ref["charges"] - pred["partial_charges"])
+        * penalty(ref["charges"] - pred["partial_charges"], "charges")
     )
     return reduce_loss(raw_loss, ddp)
 
@@ -456,8 +600,16 @@ class WeightedPropertiesLoss(torch.nn.Module):
     is stored as a buffer `<name>_weight`. Terms with weight 0 are not
     computed, so their model outputs may be absent."""
 
-    def __init__(self, weights: Dict[str, float]) -> None:
+    def __init__(
+        self,
+        weights: Dict[str, float],
+        reduction: str = "flat",
+        penalty: Optional[Penalty] = None,
+    ) -> None:
         super().__init__()
+        _check_reduction(reduction)
+        self.reduction = reduction
+        self.penalty = penalty or squared_penalty
         unknown = set(weights) - set(_PROPERTY_LOSS_TERMS)
         if unknown:
             raise ValueError(
@@ -489,7 +641,11 @@ class WeightedPropertiesLoss(torch.nn.Module):
                     f"has no '{pred_key}'{hint}."
                 )
             total = total + getattr(self, f"{name}_weight") * term(
-                ref, pred, ddp
+                ref,
+                pred,
+                ddp,
+                reduction=self.reduction,
+                penalty=self.penalty,
             )
         return total
 
@@ -498,4 +654,7 @@ class WeightedPropertiesLoss(torch.nn.Module):
             f"{name}={getattr(self, f'{name}_weight'):.3f}"
             for name in self.properties
         )
-        return f"{self.__class__.__name__}({weights})"
+        return (
+            f"{self.__class__.__name__}({weights}, "
+            f"reduction={self.reduction})"
+        )

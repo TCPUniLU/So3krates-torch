@@ -50,13 +50,20 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
 
     # Check if explicit loss type is specified
     loss_type = loss_config.get("loss_type", "auto")
+    reduction = loss_config.get("loss_reduction", "flat")
 
     if loss_type in ("auto", "properties"):
         # One term per non-zero weight (see WeightedPropertiesLoss).
-        loss_fn = WeightedPropertiesLoss(weights)
+        loss_fn = WeightedPropertiesLoss(weights, reduction=reduction)
         logging.info(f"Selected {loss_fn}")
     else:
         # Explicit loss type specification
+        if reduction != "flat":
+            raise ValueError(
+                f"loss_type '{loss_type}' only supports loss_reduction "
+                f"'flat' (got '{reduction}'). Use loss_type 'auto' or "
+                "'properties'."
+            )
         if weights["c6_ratios"] > 0:
             raise ValueError(
                 f"loss_type '{loss_type}' has no C6 ratio term but "

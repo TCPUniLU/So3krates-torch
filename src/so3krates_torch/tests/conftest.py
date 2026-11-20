@@ -379,3 +379,31 @@ def example_preprocessed_hdf5_full_keyspec(tmp_path):
         z_table=z_table,
     )
     return str(hdf5_path)
+
+
+@pytest.fixture
+def jax_so3lr():
+    """JAX so3lr reference modules from a sibling checkout
+    (`../so3lr` next to this repo); skips if JAX or the checkout is
+    missing. Returns a namespace with `training_utils`, `general`,
+    `distribution`."""
+    import sys
+    import types
+    from pathlib import Path
+
+    pytest.importorskip("jax")
+    root = Path(__file__).resolve().parents[4] / "so3lr"
+    if not (root / "so3lr" / "mlff").is_dir():
+        pytest.skip(f"JAX so3lr checkout not found at {root}")
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    try:
+        from so3lr.mlff.utils import training_utils
+        from so3lr.mlff.utils.robust_loss_jax import distribution, general
+    except ImportError as exc:  # missing optax/jraph/...
+        pytest.skip(f"JAX so3lr not importable: {exc}")
+    return types.SimpleNamespace(
+        training_utils=training_utils,
+        general=general,
+        distribution=distribution,
+    )

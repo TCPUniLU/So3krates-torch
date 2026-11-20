@@ -159,6 +159,10 @@ class TrainingConfig(BaseModel):
     # ARCHITECTURE.c6_ratios_bool=True. `hirshfeld_weight` may also be
     # given as `a0_ratios_weight` (the tauri/JAX name, same quantity).
     c6_ratios_weight: float = 0.0
+    # "flat": mean over all elements in the batch (MACE-style, default);
+    # "per_graph": JAX so3lr reduction (per-structure mean, then mean
+    # over structures carrying the label), DDP-correct.
+    loss_reduction: Literal["flat", "per_graph"] = "flat"
     # Fine-tuning (finetune_choice != naive): keep dispersion heads frozen.
     # `freeze_hirshfeld` may also be given as `freeze_a0_ratios`.
     freeze_hirshfeld: bool = True

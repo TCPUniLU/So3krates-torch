@@ -326,3 +326,10 @@ def test_c6_weight_with_pretrained_model_skips_architecture_check():
     raw["TRAINING"]["pretrained_model"] = "/some/tauri.model"
     cfg = TrainConfig.model_validate(raw)
     assert cfg.TRAINING.c6_ratios_weight == 0.1
+
+
+def test_loss_reduction_config_default_flat():
+    assert _training().loss_reduction == "flat"
+    assert _training(loss_reduction="per_graph").loss_reduction == "per_graph"
+    with pytest.raises(ValidationError):
+        _training(loss_reduction="mean")

@@ -846,7 +846,13 @@ The loss function is automatically determined based on which weights are non-zer
 | `c6_ratios_weight` | `float` | `0.0` | Weight of the per-atom C6 ratios loss term. Requires `ARCHITECTURE.c6_ratios_bool: true` (SO3LR-tauri). |
 | `loss_type` | `str` | `"auto"` | `auto`/`properties`: one weighted term per non-zero weight (`WeightedPropertiesLoss`). Legacy explicit options: `energy_forces`, `energy_forces_dipole`, `energy_forces_hirshfeld`, `energy_forces_dipole_hirshfeld`, `energy_forces_charges`, `energy_forces_charges_hirshfeld`. |
 
-Per-atom ratio labels (Hirshfeld/a0 and C6) may be missing for part of the training data: atoms with a NaN or absent label, or a zero structure weight, are excluded from the ratio losses and validation metrics (numerator and denominator), mirroring the JAX `so3lr` trainer. The SO3LR-tauri paper trains with forces 1.0, energy 0.01, dipole 0.1, a0 ratios 0.1 and C6 ratios 0.1 (SI Eq. S13); because torch currently reduces losses differently from JAX (flat mean instead of per-graph mean), treat these as a starting point rather than an equivalent setting.
+Per-atom ratio labels (Hirshfeld/a0 and C6) may be missing for part of the training data: atoms with a NaN or absent label, or a zero structure weight, are excluded from the ratio losses and validation metrics (numerator and denominator), mirroring the JAX `so3lr` trainer. The SO3LR-tauri paper trains with forces 1.0, energy 0.01, dipole 0.1, a0 ratios 0.1 and C6 ratios 0.1 (SI Eq. S13); these weights transfer to torch only with `loss_reduction: per_graph`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `loss_reduction` | `str` | `"flat"` | `flat`: one mean over every element of the batch, so larger structures weigh more (MACE-style). `per_graph`: JAX `so3lr` reduction — per-atom terms are averaged per structure, then over structures that carry the label (a structure with any missing per-atom label is skipped); energy and dipole are divided by the number of atoms and averaged over labelled structures. Counts are summed across GPUs, so multi-GPU training weighs every structure equally. Only with `loss_type` `auto`/`properties`. |
+
+The JAX trainer's per-target loss `scales` and per-element `atom_loss_weights` are not exposed: JAX training never sets them (all 1), so there is nothing to match.
 
 #### Training Loop
 
