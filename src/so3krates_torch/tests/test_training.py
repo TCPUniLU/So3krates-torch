@@ -1710,3 +1710,41 @@ def test_ignored_validation_warning_logged_once_with_stage_two(caplog):
             )
         )
     assert caplog.text.count("ignored with use_adaptive_robust_loss") == 1
+
+
+@pytest.mark.parametrize("start", [5, 7])
+def test_stage_two_never_starts_warns(caplog, start):
+    with caplog.at_level(logging.WARNING):
+        _setup_loss_functions(
+            _loss_cfg(
+                num_epochs=5,
+                stage_two_start_epoch=start,
+                stage_two_loss_weights={"energy_weight": 0.01},
+            )
+        )
+    assert "stage two never starts" in caplog.text
+    assert f"stage_two_start_epoch={start}" in caplog.text
+    assert "num_epochs=5" in caplog.text
+
+
+def test_stage_two_reachable_no_warning(caplog):
+    with caplog.at_level(logging.WARNING):
+        _setup_loss_functions(
+            _loss_cfg(
+                num_epochs=5,
+                stage_two_start_epoch=4,
+                stage_two_loss_weights={"energy_weight": 0.01},
+            )
+        )
+    assert caplog.text == ""
+
+
+def test_stage_two_check_without_num_epochs(caplog):
+    with caplog.at_level(logging.WARNING):
+        _setup_loss_functions(
+            _loss_cfg(
+                stage_two_start_epoch=4,
+                stage_two_loss_weights={"energy_weight": 0.01},
+            )
+        )
+    assert caplog.text == ""

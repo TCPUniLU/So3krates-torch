@@ -151,10 +151,26 @@ def _check_validation_settings(loss_config: dict) -> None:
         )
 
 
+def _check_stage_two_reachable(loss_config: dict) -> None:
+    """Warn when stage_two_start_epoch lies at or beyond num_epochs (epochs
+    run 0 .. num_epochs-1). A warning, not an error: num_epochs may be
+    raised on a later restart."""
+    start = loss_config.get("stage_two_start_epoch")
+    num_epochs = loss_config.get("num_epochs")
+    if start is None or num_epochs is None or start < num_epochs:
+        return
+    logging.warning(
+        f"stage two never starts: stage_two_start_epoch={start} but "
+        f"num_epochs={num_epochs} (epochs 0..{num_epochs - 1}). Lower "
+        "stage_two_start_epoch or raise num_epochs."
+    )
+
+
 def setup_loss_functions(config: dict) -> LossFunctions:
     """Training and validation losses for both training stages."""
     loss_config = config["TRAINING"]
     _check_validation_settings(loss_config)
+    _check_stage_two_reachable(loss_config)
     stage_two_config = _stage_two_config(config)
     loss_type = loss_config.get("loss_type", "auto")
     if stage_two_config is not None and loss_type not in (

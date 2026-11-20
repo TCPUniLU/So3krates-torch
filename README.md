@@ -881,7 +881,7 @@ Settings that have no effect (any validation setting with the adaptive loss, or 
 | `stage_two_start_epoch` | `int` | `None` | Epoch (≥ 1) from which the stage-two weights apply, to training and validation. At the switch the best-loss, early-stopping and `reduce_on_plateau` trackers reset; the current learning rate is kept. Early stopping during stage one ends the run, as in JAX. |
 | `stage_two_loss_weights` | `dict` | `None` | Weights for stage two, with the same keys as the `*_weight` options (`energy_weight`, `forces_weight`, `dipole_weight`, `hirshfeld_weight`/`a0_ratios_weight`, `c6_ratios_weight`, `charges_weight`). Keys not listed keep their stage-one value. Labels needed by either stage must be in the data. |
 
-Set both or neither; requires `loss_type` `auto`/`properties`. The adaptive robust-loss α/c are shared between the stages. Not combinable with SWA.
+Set both or neither; requires `loss_type` `auto`/`properties`. The adaptive robust-loss α/c are shared between the stages. Not combinable with SWA. A `stage_two_start_epoch` at or beyond `num_epochs` is accepted (you may extend `num_epochs` on a restart) but logged as a warning.
 
 The JAX trainer's per-target loss `scales` and per-element `atom_loss_weights` are not exposed: JAX training never sets them (all 1), so there is nothing to match.
 
