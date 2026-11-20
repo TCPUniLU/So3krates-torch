@@ -21,7 +21,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install black
-        run: pip install black==23.9.1
+        run: pip install black==24.4.2
 
       - name: Check formatting
         run: black --check -l 79 src/
