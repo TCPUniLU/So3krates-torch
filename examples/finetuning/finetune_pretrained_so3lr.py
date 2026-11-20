@@ -1,7 +1,8 @@
 """Example: LoRA-finetune a bundled pretrained SO3LR checkpoint.
 
-Loads one of the four bundled pretrained SO3LR checkpoints
-(``v1``/``v2-s``/``v2-m``/``v2-l``) via ``load_pretrained_so3lr`` --
+Loads one of the bundled pretrained SO3LR checkpoints (``v1``,
+``tauri-{s,m,l}-{2602,2606}``, or the ``v2-{s,m,l}`` aliases of the
+2602 generation) via ``load_pretrained_so3lr`` --
 the same state_dict + settings.yaml loading path used by
 ``SO3LRCalculator`` -- converts it to LoRA format via
 ``setup_finetuning(..., finetune_choice="lora")``, and runs one real
@@ -14,12 +15,12 @@ Examples::
 
     python examples/finetuning/finetune_pretrained_so3lr.py --model v1
     python examples/finetuning/finetune_pretrained_so3lr.py \\
-        --model v2-s --use_pme
+        --model tauri-s-2606 --use_pme
 
 Note on ``--r_max_lr``/``--dispersion_energy_cutoff_lr_damping``: every
 bundled checkpoint has ``dispersion_energy_bool=True`` by default, and
 ``v1``'s checkpoint saves ``r_max_lr=None``/``dispersion_energy_
-cutoff_lr_damping=None`` (v2's checkpoints save a very large
+cutoff_lr_damping=None`` (the tauri checkpoints save a very large
 ``r_max_lr=1000.0``, impractical for a real neighbor list). This
 script always overrides both to sane finite defaults via
 ``architecture_overrides`` -- the same two values ``SO3LRCalculator``
@@ -57,7 +58,7 @@ def build_nacl_structure(seed: int = 7):
 def build_batch(atoms, r_max: float, r_max_lr, theory_level: int = 0):
     """Convert an ``ase.Atoms`` structure into a single-graph SO3LR
     batch. Setting ``atoms.info["theory_level"]`` is required for the
-    v2 checkpoints (``num_theory_levels=16``); it is a harmless no-op
+    tauri checkpoints (``num_theory_levels=16``); it is a harmless no-op
     for v1 (``num_theory_levels=1``)."""
     atoms.info["theory_level"] = theory_level
     config = config_from_atoms(atoms, key_specification=KeySpecification())
@@ -79,7 +80,11 @@ def main():
     parser.add_argument(
         "--model",
         required=True,
-        choices=["v1", "v2-s", "v2-m", "v2-l"],
+        choices=(
+            ["v1"]
+            + [f"tauri-{s}-{g}" for g in ("2602", "2606") for s in "sml"]
+            + [f"v2-{s}" for s in "sml"]
+        ),
         help="Which bundled pretrained SO3LR checkpoint to finetune.",
     )
     parser.add_argument(
