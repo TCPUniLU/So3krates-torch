@@ -35,6 +35,7 @@ def evaluate_model(
     dispersion_energy_cutoff_lr_damping: Optional[float] = None,
     compute_stress: bool = False,
     compute_hirshfeld: bool = False,
+    compute_c6_ratios: bool = False,
     compute_dipole: bool = False,
     compute_partial_charges: bool = False,
     return_att: bool = False,
@@ -145,6 +146,13 @@ def evaluate_model(
         dipoles_list = []
     if compute_hirshfeld:
         hirshfeld_ratios_list = []
+    if compute_c6_ratios:
+        if not getattr(model, "c6_ratios_bool", False):
+            raise ValueError(
+                "compute_c6_ratios=True needs a model with a C6 ratio head "
+                "(c6_ratios_bool=True, SO3LR-tauri)."
+            )
+        c6_ratios_list = []
     if compute_partial_charges:
         partial_charges_list = []
     if return_att:
@@ -233,6 +241,13 @@ def evaluate_model(
             )[:-1]
             hirshfeld_temp_list = [h for h in hirshfeld]
             hirshfeld_ratios_list += hirshfeld_temp_list
+        if compute_c6_ratios:
+            c6 = np.split(
+                torch_tools.to_numpy(output["c6_ratios"]),
+                indices_or_sections=batch.ptr[1:],
+                axis=0,
+            )[:-1]
+            c6_ratios_list += list(c6)
         if compute_partial_charges:
             partial_charges = torch_tools.to_numpy(output["partial_charges"])
             partial_charges = np.split(
@@ -322,6 +337,8 @@ def evaluate_model(
             dipoles = dipoles_list
         if compute_hirshfeld:
             hirshfeld = hirshfeld_ratios_list
+        if compute_c6_ratios:
+            c6_ratios = c6_ratios_list
         if compute_partial_charges:
             partial_charges = partial_charges_list
     else:
@@ -335,6 +352,8 @@ def evaluate_model(
             hirshfeld = np.stack(hirshfeld_ratios_list).reshape(
                 len(energies), -1, 1
             )
+        if compute_c6_ratios:
+            c6_ratios = np.stack(c6_ratios_list).reshape(len(energies), -1, 1)
         if compute_partial_charges:
             partial_charges = np.stack(partial_charges_list).reshape(
                 len(energies), -1, 1
@@ -346,6 +365,7 @@ def evaluate_model(
         "stresses": stresses if compute_stress else None,
         "dipoles": dipoles if compute_dipole else None,
         "hirshfeld_ratios": hirshfeld if compute_hirshfeld else None,
+        "c6_ratios": c6_ratios if compute_c6_ratios else None,
         "partial_charges": (
             partial_charges if compute_partial_charges else None
         ),
@@ -380,6 +400,7 @@ def ensemble_prediction(
     dispersion_energy_cutoff_lr_damping: Optional[float] = None,
     compute_stress: bool = False,
     compute_hirshfeld: bool = False,
+    compute_c6_ratios: bool = False,
     compute_dipole: bool = False,
     compute_partial_charges: bool = False,
     key_spec: Optional[KeySpecification] = None,
@@ -450,6 +471,8 @@ def ensemble_prediction(
         all_stresses = []
     if compute_hirshfeld:
         all_hirshfeld = []
+    if compute_c6_ratios:
+        all_c6_ratios = []
     if compute_dipole:
         all_dipoles = []
     if compute_partial_charges:
@@ -478,6 +501,7 @@ def ensemble_prediction(
             dispersion_energy_cutoff_lr_damping=dispersion_energy_cutoff_lr_damping,
             compute_stress=compute_stress,
             compute_hirshfeld=compute_hirshfeld,
+            compute_c6_ratios=compute_c6_ratios,
             compute_dipole=compute_dipole,
             compute_partial_charges=compute_partial_charges,
             dtype=dtype,
@@ -491,6 +515,8 @@ def ensemble_prediction(
             all_stresses.append(results["stresses"])
         if compute_hirshfeld:
             all_hirshfeld.append(results["hirshfeld_ratios"])
+        if compute_c6_ratios:
+            all_c6_ratios.append(results["c6_ratios"])
         if compute_dipole:
             all_dipoles.append(results["dipoles"])
         if compute_partial_charges:
@@ -517,6 +543,10 @@ def ensemble_prediction(
             all_hirshfeld = np.stack(all_hirshfeld).reshape(
                 (len(models), len(atoms_list), -1)
             )
+        if compute_c6_ratios:
+            all_c6_ratios = np.stack(all_c6_ratios).reshape(
+                (len(models), len(atoms_list), -1)
+            )
         if compute_partial_charges:
             all_partial_charges = np.stack(all_partial_charges).reshape(
                 (len(models), len(atoms_list), -1)
@@ -527,6 +557,7 @@ def ensemble_prediction(
         "forces": all_forces,
         "stresses": all_stresses if compute_stress else None,
         "hirshfeld_ratios": all_hirshfeld if compute_hirshfeld else None,
+        "c6_ratios": all_c6_ratios if compute_c6_ratios else None,
         "dipoles": all_dipoles if compute_dipole else None,
         "partial_charges": (
             all_partial_charges if compute_partial_charges else None
@@ -787,6 +818,8 @@ def test_model(
             predictions["dipole"] = []
         if output_args.get("hirshfeld_ratios", False):
             predictions["hirshfeld_ratios"] = []
+        if output_args.get("c6_ratios", False):
+            predictions["c6_ratios"] = []
 
     num_batches = len(data_loader)
     if log:
@@ -821,6 +854,8 @@ def test_model(
                 predictions["hirshfeld_ratios"].append(
                     output["hirshfeld_ratios"]
                 )
+            if output_args.get("c6_ratios", False):
+                predictions["c6_ratios"].append(output["c6_ratios"])
 
     aux = metrics.compute()
     aux["time"] = time.time() - start_time
@@ -854,6 +889,7 @@ def test_ensemble(
     virials_key: str = "REF_virials",
     dipole_key: str = "REF_dipole",
     hirshfeld_key: str = "REF_hirsh_ratios",
+    c6_key: str = "REF_c6_ratios",
     charges_key: str = "REF_charges",
     total_charge_key: str = "charge",
     total_spin_key: str = "spin",
@@ -925,6 +961,7 @@ def test_ensemble(
             "stress": stress_key,
             "virials": virials_key,
             "hirshfeld_ratios": hirshfeld_key,
+            "c6_ratios": c6_key,
             "charges": charges_key,
         },
     )

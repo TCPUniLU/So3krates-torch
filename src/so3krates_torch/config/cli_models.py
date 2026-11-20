@@ -18,6 +18,7 @@ class EvalArgs(BaseModel):
     compute_dipole: bool = False
     compute_stress: bool = False
     compute_hirshfeld: bool = False
+    compute_c6_ratios: bool = False
     compute_partial_charges: bool = False
     dispersion_energy_cutoff_lr_damping: Optional[float] = None
     energy_key: str = "REF_energy"
@@ -29,6 +30,7 @@ class EvalArgs(BaseModel):
     total_charge_key: str = "charge"
     total_spin_key: str = "total_spin"
     hirshfeld_key: str = "REF_hirsh_ratios"
+    c6_key: str = "REF_c6_ratios"
     head_key: str = "head"
     head: str = "head"
     dtype: Literal["float32", "float64"] = "float32"
@@ -93,6 +95,7 @@ class MetricArgs(BaseModel):
     total_charge_key: str = "charge"
     total_spin_key: str = "total_spin"
     hirshfeld_key: str = "REF_hirsh_ratios"
+    c6_key: str = "REF_c6_ratios"
     multihead_model: bool = False
     multihead_return_mean: bool = False
     head_key: str = "head"

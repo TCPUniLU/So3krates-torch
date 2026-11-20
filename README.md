@@ -295,12 +295,14 @@ torchkrates-eval --model_path my_checkpoint.pt \
 | `--compute_dipole` | `False` | Compute dipole predictions |
 | `--compute_stress` | `False` | Compute stress predictions |
 | `--compute_hirshfeld` | `False` | Compute Hirshfeld ratio predictions |
+| `--compute_c6_ratios` | `False` | Compute C6 ratio predictions (needs a model with `c6_ratios_bool: true`, i.e. SO3LR-tauri) |
 | `--compute_partial_charges` | `False` | Compute partial charge predictions |
 | `--energy_key` | `REF_energy` | Key for reference energies in the dataset |
 | `--forces_key` | `REF_forces` | Key for reference forces |
 | `--dipole_key` | `REF_dipoles` | Key for reference dipoles |
 | `--charges_key` | `REF_charges` | Key for reference partial charges |
 | `--hirshfeld_key` | `REF_hirsh_ratios` | Key for reference Hirshfeld ratios |
+| `--c6_key` | `REF_c6_ratios` | Key for reference C6 ratios |
 | `--total_charge_key` | `charge` | Key for total charge |
 | `--total_spin_key` | `total_spin` | Key for total spin |
 
@@ -451,7 +453,7 @@ Note there is no `--multispecies` flag here (unlike `torchkrates-eval`); use `--
 |------|---------|-------------|
 | `--models` | *required* | Path to a model file or a directory of model files, a bundled pretrained keyword (`v1`, `tauri-*`, `v2-*`), or a `.pt` state_dict checkpoint with a sibling `<stem>_settings.yaml` |
 | `--data` | *required* | Dataset path (must contain reference values) |
-| `--output_args` | `energy forces` | Properties to evaluate. Can include `stress`, `dipole`, `hirshfeld_ratios`, etc. |
+| `--output_args` | `energy forces` | Properties to evaluate. Can include `stress`, `virials`, `dipole`, `hirshfeld_ratios`, `c6_ratios`. |
 | `--batch_size` | `16` | Structures per batch |
 | `--device` | `cpu` | `cuda` or `cpu` |
 | `--save` | `./` | Directory for output files |
@@ -464,6 +466,7 @@ Note there is no `--multispecies` flag here (unlike `torchkrates-eval`); use `--
 | `--dipole_key` | `REF_dipoles` | Key for reference dipoles |
 | `--charges_key` | `REF_charges` | Key for reference partial charges |
 | `--hirshfeld_key` | `REF_hirsh_ratios` | Key for reference Hirshfeld ratios |
+| `--c6_key` | `REF_c6_ratios` | Key for reference C6 ratios |
 | `--total_charge_key` | `charge` | Key for total charge |
 | `--total_spin_key` | `total_spin` | Key for total spin |
 
