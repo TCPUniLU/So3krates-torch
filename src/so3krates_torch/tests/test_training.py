@@ -1120,3 +1120,131 @@ def test_determine_num_elements(example_xyz_with_data):
     n = determine_num_elements(loader)
     # H2O -> H,O; NH3 -> N,H; CH4 -> C,H  ->  {H, O, N, C} = 4 elements
     assert n == 4
+
+
+# ── End-to-end: dispersion ratio labels (a0 + C6), mixed dataset ─
+
+
+def _ratio_label_config(tmp_path):
+    import ase.io
+    import numpy as np
+    import yaml
+    from ase.build import molecule
+
+    rng = np.random.default_rng(0)
+    atoms_list = []
+    for i, name in enumerate(["H2O", "NH3", "CH4", "H2O", "NH3", "CH4"]):
+        atoms = molecule(name)
+        atoms.rattle(0.05, seed=i)
+        atoms.info["REF_energy"] = -10.0 * len(atoms)
+        atoms.arrays["REF_forces"] = rng.normal(size=(len(atoms), 3)) * 0.1
+        if i % 2 == 0:  # half the structures carry dispersion labels
+            atoms.arrays["REF_hirsh_ratios"] = rng.uniform(
+                0.6, 1.0, len(atoms)
+            )
+            atoms.arrays["REF_c6_ratios"] = rng.uniform(0.4, 1.0, len(atoms))
+        atoms_list.append(atoms)
+    data_path = tmp_path / "train.xyz"
+    ase.io.write(data_path, atoms_list)
+
+    example = (
+        Path(__file__).resolve().parents[3]
+        / "examples"
+        / "training"
+        / "train_settings_example.yaml"
+    )
+    raw = yaml.safe_load(example.read_text())
+    raw["GENERAL"].update(
+        checkpoints_dir=str(tmp_path / "ckpt"),
+        model_dir=str(tmp_path / "model"),
+        log_dir=str(tmp_path / "logs"),
+        name_exp="ratio_labels",
+    )
+    raw["ARCHITECTURE"].update(
+        degrees=[1],
+        num_features=8,
+        num_heads=2,
+        num_layers=1,
+        num_radial_basis_fn=4,
+        energy_regression_dim=8,
+        r_max=4.0,
+        r_max_lr=6.0,
+        electrostatic_energy_bool=False,
+        dispersion_energy_bool=True,
+        c6_ratios_bool=True,
+        use_simple_hirshfeld=True,
+        zbl_repulsion_bool=False,
+    )
+    raw["TRAINING"].update(
+        path_to_train_data=str(data_path),
+        # validate on all six so labelled structures are always present
+        path_to_val_data=str(data_path),
+        batch_size=2,
+        valid_batch_size=2,
+        num_epochs=1,
+        energy_weight=0.01,
+        forces_weight=1.0,
+        a0_ratios_weight=0.1,
+        c6_ratios_weight=0.1,
+    )
+    raw["MISC"].update(device="cpu", error_table="PerAtomMAE")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(raw))
+    return config_path
+
+
+def test_train_with_c6_and_a0_labels_mixed_dataset(tmp_path):
+    from so3krates_torch.cli.run_train import setup_config_from_yaml
+    from so3krates_torch.modules.loss import WeightedPropertiesLoss
+    from so3krates_torch.tools.data_setup import setup_data_loaders
+    from so3krates_torch.tools.model_setup import create_model
+    from so3krates_torch.tools.training_setup import setup_loss_function
+
+    torch.set_default_dtype(torch.float64)
+    try:
+        config = setup_config_from_yaml(str(_ratio_label_config(tmp_path)))
+        assert config["TRAINING"]["hirshfeld_weight"] == 0.1
+        model = create_model(config, torch.device("cpu"))
+        train_loader, *_ = setup_data_loaders(config)
+        loss_fn = setup_loss_function(config)
+        assert isinstance(loss_fn, WeightedPropertiesLoss)
+        assert "c6_ratios" in loss_fn.properties
+
+        saw_missing = saw_labelled = False
+        for batch in train_loader:
+            saw_missing |= bool(torch.isnan(batch.c6_ratios).any())
+            saw_labelled |= bool(torch.isfinite(batch.c6_ratios).any())
+            model.zero_grad()
+            out = model(batch.to_dict(), training=True, compute_force=True)
+            loss = loss_fn(ref=batch, pred=out, ddp=False)
+            assert torch.isfinite(loss)
+            loss.backward()
+        assert saw_missing and saw_labelled
+
+        c6_grads = [
+            p.grad
+            for p in model.c6_ratios_output_block.parameters()
+            if p.grad is not None
+        ]
+        assert c6_grads and any(bool((g != 0).any()) for g in c6_grads)
+        assert all(bool(torch.isfinite(g).all()) for g in c6_grads)
+    finally:
+        torch.set_default_dtype(torch.float32)
+
+
+def test_run_training_logs_c6_metrics(tmp_path):
+    from so3krates_torch.cli.run_train import (
+        run_training,
+        setup_config_from_yaml,
+    )
+
+    config = setup_config_from_yaml(str(_ratio_label_config(tmp_path)))
+    try:
+        run_training(config)
+    finally:
+        torch.set_default_dtype(torch.float32)
+    log_text = "".join(
+        p.read_text() for p in (tmp_path / "logs").rglob("*.log")
+    )
+    assert "MAE_c6_ratios=" in log_text
+    assert "loss=nan" not in log_text.lower()

@@ -127,6 +127,18 @@ TRAINING:
   forces_weight: 1000.
   # charges_weight: 0.   # partial charge MSE loss; requires REF_charges per-atom array in training data
   # hirshfeld_weight: 0. # Hirshfeld ratio MSE loss; requires REF_hirsh_ratios per-atom array
+  #   (alias: a0_ratios_weight, the SO3LR-tauri/JAX name for the same
+  #   polarizability-ratio target; fallback label keys: hirshfeld_ratios,
+  #   hirsh_ratios, a0_ratios)
+  # c6_ratios_weight: 0.  # per-atom C6-ratio MSE loss; requires
+  #   ARCHITECTURE.c6_ratios_bool: true and REF_c6_ratios (fallback: c6_ratios)
+  # Dispersion labels may be missing for part of the data (e.g. mixed
+  # datasets): atoms without a label (NaN, or absent key) are masked out
+  # of the ratio losses and metrics, as in JAX so3lr.
+  # SO3LR-tauri paper weights (SI Eq. S13): forces 1.0, energy 0.01,
+  # dipole 0.1, a0 ratios 0.1, C6 ratios 0.1. NOTE: torch reduces losses
+  # differently from JAX (flat mean vs per-graph mean), so these are a
+  # starting point, not an equivalent setting.
   eval_interval: 1
   num_epochs: 5
   path_to_train_data: ./path/to/train/data

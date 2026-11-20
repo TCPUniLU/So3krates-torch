@@ -791,7 +791,8 @@ By default, the trainer reads reference properties using these keys from the ASE
 | Virials | `REF_virials` |
 | Dipole | `dipole` |
 | Charges | `REF_charges` |
-| Hirshfeld ratios | `REF_hirsh_ratios` |
+| Hirshfeld (a0) ratios | `REF_hirsh_ratios` (fallbacks: `hirshfeld_ratios`, `hirsh_ratios`, `a0_ratios`) |
+| C6 ratios | `REF_c6_ratios` (fallback: `c6_ratios`) |
 | Total charge | `total_charge` |
 | Total spin | `total_spin` |
 
@@ -841,8 +842,11 @@ The loss function is automatically determined based on which weights are non-zer
 | `energy_weight` | `float` | `1.0` | Weight of the energy MSE loss term. Energy loss is normalized per atom. |
 | `forces_weight` | `float` | `1000.0` | Weight of the forces MSE loss term. Typically much larger than `energy_weight` since force errors are smaller in magnitude. |
 | `dipole_weight` | `float` | `0.0` | Weight of the dipole loss term. Set > 0 to train dipole predictions (requires dipole labels in training data). |
-| `hirshfeld_weight` | `float` | `0.0` | Weight of the Hirshfeld ratios loss term. Set > 0 to train Hirshfeld volume ratio predictions. |
-| `loss_type` | `str` | `"auto"` | Explicit loss type selection. Options: `auto`, `energy_forces`, `energy_forces_dipole`, `energy_forces_hirshfeld`, `energy_forces_dipole_hirshfeld`. When `auto`, the loss is inferred from which weights are non-zero. |
+| `hirshfeld_weight` | `float` | `0.0` | Weight of the Hirshfeld (polarizability, a0) ratios loss term. Also accepted as `a0_ratios_weight`. |
+| `c6_ratios_weight` | `float` | `0.0` | Weight of the per-atom C6 ratios loss term. Requires `ARCHITECTURE.c6_ratios_bool: true` (SO3LR-tauri). |
+| `loss_type` | `str` | `"auto"` | `auto`/`properties`: one weighted term per non-zero weight (`WeightedPropertiesLoss`). Legacy explicit options: `energy_forces`, `energy_forces_dipole`, `energy_forces_hirshfeld`, `energy_forces_dipole_hirshfeld`, `energy_forces_charges`, `energy_forces_charges_hirshfeld`. |
+
+Per-atom ratio labels (Hirshfeld/a0 and C6) may be missing for part of the training data: atoms with a NaN or absent label, or a zero structure weight, are excluded from the ratio losses and validation metrics (numerator and denominator), mirroring the JAX `so3lr` trainer. The SO3LR-tauri paper trains with forces 1.0, energy 0.01, dipole 0.1, a0 ratios 0.1 and C6 ratios 0.1 (SI Eq. S13); because torch currently reduces losses differently from JAX (flat mean instead of per-graph mean), treat these as a starting point rather than an equivalent setting.
 
 #### Training Loop
 
