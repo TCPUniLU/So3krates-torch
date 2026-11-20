@@ -56,6 +56,7 @@ class PreprocessArgs(BaseModel):
     dipole_key: Optional[str] = None
     charges_key: Optional[str] = None
     hirshfeld_ratios_key: Optional[str] = None
+    c6_ratios_key: Optional[str] = None
     total_charge_key: Optional[str] = None
     total_spin_key: Optional[str] = None
     description: Optional[str] = None

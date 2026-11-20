@@ -207,6 +207,8 @@ def create_keyspec_from_args(args) -> KeySpecification:
         keydict["charges_key"] = args.charges_key
     if args.hirshfeld_ratios_key:
         keydict["hirshfeld_ratios_key"] = args.hirshfeld_ratios_key
+    if args.c6_ratios_key:
+        keydict["c6_ratios_key"] = args.c6_ratios_key
     if args.total_charge_key:
         keydict["total_charge_key"] = args.total_charge_key
     if args.total_spin_key:
@@ -281,6 +283,13 @@ def main():
         type=str,
         default=None,
         help="Key for Hirshfeld ratios (default: REF_hirsh_ratios)",
+    )
+    parser.add_argument(
+        "--c6-ratios-key",
+        type=str,
+        default=None,
+        help="Key for per-atom C6 ratios (default: REF_c6_ratios; "
+        "'c6_ratios' is accepted as fallback)",
     )
     parser.add_argument(
         "--total-charge-key",

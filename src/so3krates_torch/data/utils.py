@@ -11,7 +11,16 @@
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 import ase.data
 import ase.io
@@ -68,7 +77,12 @@ def update_keyspec_from_kwargs(
         "polarizability_key",
         "total_spin_key",
     ]
-    arrays = ["forces_key", "charges_key", "hirshfeld_ratios_key"]
+    arrays = [
+        "forces_key",
+        "charges_key",
+        "hirshfeld_ratios_key",
+        "c6_ratios_key",
+    ]
     info_keys = {}
     arrays_keys = {}
     for key in infos:
@@ -79,6 +93,30 @@ def update_keyspec_from_kwargs(
             arrays_keys[key[:-4]] = keydict[key]
     keyspec.update(info_keys=info_keys, arrays_keys=arrays_keys)
     return keyspec
+
+
+# Alternative atoms.arrays keys for per-atom dispersion ratio labels,
+# tried in order when the configured key is absent. Mirrors the JAX
+# so3lr loader (`dataloader_sparse_ase.py`): the polarizability ratio
+# has been stored as 'hirshfeld_ratios', 'hirsh_ratios' and (tauri)
+# 'a0_ratios'; JAX stores C6 ratios as 'c6_ratios'.
+RATIO_LABEL_FALLBACKS = {
+    "hirshfeld_ratios": ("hirshfeld_ratios", "hirsh_ratios", "a0_ratios"),
+    "c6_ratios": ("c6_ratios",),
+}
+
+
+def resolve_arrays_key(
+    name: str, atoms_key: str, available: Iterable[str]
+) -> Optional[str]:
+    """Return the key under which property `name` is stored, trying
+    the configured `atoms_key` first and then the fallbacks in
+    `RATIO_LABEL_FALLBACKS`; None if none is available."""
+    available = set(available)
+    for key in (atoms_key, *RATIO_LABEL_FALLBACKS.get(name, ())):
+        if key in available:
+            return key
+    return None
 
 
 @dataclass
@@ -190,8 +228,11 @@ def config_from_atoms(
             property_weights[name] = 0.0
 
     for name, atoms_key in key_specification.arrays_keys.items():
-        properties[name] = atoms.arrays.get(atoms_key, None)
-        if not atoms_key in atoms.arrays:
+        found_key = resolve_arrays_key(name, atoms_key, atoms.arrays.keys())
+        properties[name] = (
+            atoms.arrays[found_key] if found_key is not None else None
+        )
+        if found_key is None:
             property_weights[name] = 0.0
 
     # Use per-structure head from atoms.info if available,

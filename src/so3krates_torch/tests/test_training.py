@@ -612,6 +612,7 @@ def test_get_loss_property_weights_defaults():
         "dipole": 0.0,
         "hirshfeld_ratios": 3.0,
         "charges": 0.0,
+        "c6_ratios": 0.0,
     }
 
 
