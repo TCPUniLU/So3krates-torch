@@ -159,6 +159,8 @@ def test_wheel_ships_license_texts(tmp_path):
     for required in (
         "LICENSE.ROBUST-LOSS-APACHE-2.0",
         "LICENSE.CC-BY-NC-4.0",
+        "LICENSE.MACE-MIT",
+        "LICENSE.PYG-MIT",
         "NOTICE.md",
     ):
         assert any(n.endswith(required) for n in names), required

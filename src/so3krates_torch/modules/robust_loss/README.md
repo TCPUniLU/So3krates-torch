@@ -10,7 +10,7 @@ Function* (Barron, 2019):
 Unlike the rest of so3krates-torch (MIT), these files remain under the Apache
 License 2.0, reproduced in
 [`licenses/LICENSE.ROBUST-LOSS-APACHE-2.0`](../../../../licenses/LICENSE.ROBUST-LOSS-APACHE-2.0)
-and listed in [`NOTICE.md`](../../../../NOTICE.md). The sources keep the
+and listed in [`NOTICE.md`](../../../../NOTICE.md), which gives the full provenance. The sources keep the
 upstream notice, *Copyright 2024 The Google Research Authors*; they are
 modified copies (numerical backend replaced with PyTorch).
 
