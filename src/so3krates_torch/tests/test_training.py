@@ -1774,3 +1774,18 @@ def test_alpha_warning_no_suggestion_for_legacy_loss_type(caplog):
         )
     assert "robust_loss_alpha_validation has no effect" in caplog.text
     assert "Set use_robust_loss_validation" not in caplog.text
+
+
+def test_train_module_imports_without_pandas():
+    # pandas belongs to the optional [vis] extra; training must not need it
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; sys.modules['pandas'] = None; "
+        "import so3krates_torch.tools.train"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr

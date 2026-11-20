@@ -11,7 +11,15 @@ import dataclasses
 import logging
 import time
 from contextlib import nullcontext
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Union,
+)
 
 import numpy as np
 import torch
@@ -23,8 +31,6 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch_ema import ExponentialMovingAverage
 
-from so3krates_torch.cli.visualise_train import TrainingPlotter
-
 from so3krates_torch.modules.loss import robust_param_metrics
 from so3krates_torch.tools import torch_geometric
 from so3krates_torch.tools.checkpoint import CheckpointHandler, CheckpointState
@@ -34,6 +40,9 @@ from so3krates_torch.tools.utils import (
 )
 from so3krates_torch.tools.eval import ModelEval
 from so3krates_torch.tools.finetune import preserve_grad_state
+
+if TYPE_CHECKING:  # pandas/matplotlib are optional ([vis] extra)
+    from so3krates_torch.cli.visualise_train import TrainingPlotter
 
 
 @dataclasses.dataclass
@@ -262,7 +271,7 @@ def train(
     log_wandb: bool = False,
     distributed: bool = False,
     save_all_checkpoints: bool = False,
-    plotter: TrainingPlotter = None,
+    plotter: Optional["TrainingPlotter"] = None,
     distributed_model: Optional[DistributedDataParallel] = None,
     train_sampler: Optional[DistributedSampler] = None,
     rank: Optional[int] = 0,
