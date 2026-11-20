@@ -79,6 +79,7 @@ so3krates_torch = [
     "pretrained/so3lr/tauri/*.yaml",
 ]
 "so3krates_torch.blocks" = ["cgmatrix.npz"]
+"so3krates_torch.modules.robust_loss" = ["data/*.npz", "README.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["src/so3krates_torch/tests"]
