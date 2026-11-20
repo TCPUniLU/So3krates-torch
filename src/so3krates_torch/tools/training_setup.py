@@ -57,6 +57,12 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
         logging.info(f"Selected {loss_fn}")
     else:
         # Explicit loss type specification
+        if weights["c6_ratios"] > 0:
+            raise ValueError(
+                f"loss_type '{loss_type}' has no C6 ratio term but "
+                "c6_ratios_weight > 0. Use loss_type 'auto' or "
+                "'properties'."
+            )
         if loss_type == "energy_forces":
             loss_fn = WeightedEnergyForcesLoss(
                 energy_weight=energy_w, forces_weight=forces_w

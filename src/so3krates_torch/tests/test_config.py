@@ -315,3 +315,14 @@ def test_c6_weight_requires_c6_head():
     raw["ARCHITECTURE"]["c6_ratios_bool"] = True
     cfg = TrainConfig.model_validate(raw)
     assert cfg.TRAINING.c6_ratios_weight == 0.1
+
+
+def test_c6_weight_with_pretrained_model_skips_architecture_check():
+    """With pretrained_model the architecture comes from the pickled
+    model, so ARCHITECTURE.c6_ratios_bool must not be required."""
+    raw = _example_raw()
+    raw["ARCHITECTURE"]["c6_ratios_bool"] = False
+    raw["TRAINING"]["c6_ratios_weight"] = 0.1
+    raw["TRAINING"]["pretrained_model"] = "/some/tauri.model"
+    cfg = TrainConfig.model_validate(raw)
+    assert cfg.TRAINING.c6_ratios_weight == 0.1

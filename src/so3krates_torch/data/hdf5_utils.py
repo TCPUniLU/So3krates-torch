@@ -60,6 +60,7 @@ from so3krates_torch.data.utils import (
     Configuration,
     Configurations,
     KeySpecification,
+    RATIO_LABEL_FALLBACKS,
     resolve_arrays_key,
     config_from_atoms,
     compute_average_E0s,
@@ -184,6 +185,23 @@ def _remap_ase_reserved_keys(
                 atoms.info["stress"] = None
 
 
+def _normalize_ratio_label_keys(
+    batch: List[ase.Atoms], key_spec: KeySpecification
+) -> None:
+    """Copy ratio labels stored under a fallback key (see
+    RATIO_LABEL_FALLBACKS) to the configured key, so a file mixing
+    e.g. 'hirsh_ratios' and 'a0_ratios' keeps one column. Mutates
+    batch in-place, like `_remap_ase_reserved_keys`."""
+    for name in RATIO_LABEL_FALLBACKS:
+        configured = key_spec.arrays_keys.get(name)
+        if configured is None:
+            continue
+        for atoms in batch:
+            found = resolve_arrays_key(name, configured, atoms.arrays.keys())
+            if found is not None and found != configured:
+                atoms.arrays[configured] = atoms.arrays[found]
+
+
 def _detect_prop_meta(
     batch: List[ase.Atoms],
     key_spec: KeySpecification,
@@ -210,14 +228,10 @@ def _detect_prop_meta(
                 meta[key] = (False, item_shape, np.float64)
                 break
 
-    # Arrays keys — per-atom (ratio labels may live under a fallback
-    # key, see RATIO_LABEL_FALLBACKS; store whichever key is used)
-    for prop_name, configured_key in key_spec.arrays_keys.items():
+    # Arrays keys — per-atom
+    for _prop_name, key in key_spec.arrays_keys.items():
         for a in batch:
-            key = resolve_arrays_key(
-                prop_name, configured_key, a.arrays.keys()
-            )
-            if key is not None and a.arrays[key] is not None:
+            if key in a.arrays and a.arrays[key] is not None:
                 val = np.asarray(a.arrays[key], dtype=np.float64)
                 # (n_atoms,) → item_shape ()
                 # (n_atoms, 3) → item_shape (3,)
@@ -350,9 +364,14 @@ def _stream_atoms_to_hdf5_v2(
         # --- Remap ASE-reserved keys (energy/forces/stress) ---
         _remap_ase_reserved_keys(batch, key_spec)
 
-        # --- Detect property shapes from first batch ---
+        _normalize_ratio_label_keys(batch, key_spec)
+
+        # --- Detect property shapes; a property first seen in a later
+        # batch gets its column then, back-filled with NaN (= missing) ---
         if prop_meta is None:
-            prop_meta = _detect_prop_meta(batch, key_spec)
+            prop_meta = {}
+        for key, meta in _detect_prop_meta(batch, key_spec).items():
+            prop_meta.setdefault(key, meta)
 
         prop_arrays = _collect_batch_arrays(batch, prop_meta, batch_n_atoms)
 
@@ -434,22 +453,29 @@ def _stream_atoms_to_hdf5_v2(
                     chunks=(c,),
                 )
 
-            for key, (is_per_atom, item_shape, dtype) in prop_meta.items():
-                grp_path = (
-                    "properties/arrays" if is_per_atom else "properties/info"
-                )
-                grp = f.require_group(grp_path)
-                # (c,) + () = (c,);  (c,) + (3,) = (c, 3)
-                ds_chunks = (c,) + item_shape
-                grp.create_dataset(
-                    key,
-                    shape=(0,) + item_shape,
-                    maxshape=(None,) + item_shape,
-                    dtype=dtype,
-                    chunks=ds_chunks,
-                )
-
             datasets_created = True
+
+        for key, (is_per_atom, item_shape, dtype) in prop_meta.items():
+            grp_path = (
+                "properties/arrays" if is_per_atom else "properties/info"
+            )
+            grp = f.require_group(grp_path)
+            if key in grp:
+                continue
+            # (c,) + () = (c,);  (c,) + (3,) = (c, 3)
+            ds_chunks = (c,) + item_shape
+            ds = grp.create_dataset(
+                key,
+                shape=(0,) + item_shape,
+                maxshape=(None,) + item_shape,
+                dtype=dtype,
+                chunks=ds_chunks,
+            )
+            n_prev = total_atoms if is_per_atom else total_configs
+            if n_prev:
+                _append_dataset(
+                    ds, np.full((n_prev,) + item_shape, np.nan, dtype=dtype)
+                )
 
         # --- Append batch to datasets ---
         _append_dataset(f["n_atoms"], batch_n_atoms)
@@ -1340,8 +1366,12 @@ def raise_if_preprocessed_properties_missing(
     all carry the same properties, and would otherwise crash later
     with a confusing error instead of failing fast here."""
     missing = [name for name, (count, total) in presence.items() if count == 0]
+    # Ratio labels are masked per atom in the loss, so partial coverage
+    # (mixed datasets) is expected there; only "missing" applies.
     inconsistent = [
-        name for name, (count, total) in presence.items() if 0 < count < total
+        name
+        for name, (count, total) in presence.items()
+        if 0 < count < total and name not in RATIO_LABEL_FALLBACKS
     ]
     if not missing and not inconsistent:
         return

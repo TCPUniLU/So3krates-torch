@@ -43,6 +43,11 @@ class SWAContainer:
     loss_fn: torch.nn.Module
 
 
+def _fmt_ratio_mae(value) -> str:
+    """Ratio metrics are absent when no validation atom is labelled."""
+    return "n/a" if value is None else f"{value:8.4f}"
+
+
 def valid_err_log(
     valid_loss,
     eval_metrics,
@@ -133,17 +138,21 @@ def valid_err_log(
     elif log_errors == "EnergyForceHirshfeldMAE":
         error_e = eval_metrics["mae_e_per_atom"] * 1e3
         error_f = eval_metrics["mae_f"] * 1e3
-        error_hirshfeld_ratios = eval_metrics["mae_hirshfeld_ratios"]
+        error_hirshfeld_ratios = _fmt_ratio_mae(
+            eval_metrics.get("mae_hirshfeld_ratios")
+        )
         logging.info(
-            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_hirshfeld_ratios={error_hirshfeld_ratios:8.4f}",
+            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_hirshfeld_ratios={error_hirshfeld_ratios}",
         )
     elif log_errors == "EnergyForceDipoleHirshfeldMAE":
         error_e = eval_metrics["mae_e_per_atom"] * 1e3
         error_f = eval_metrics["mae_f"] * 1e3
         error_dipole = eval_metrics["mae_dipole"] * 1e3
-        error_hirshfeld_ratios = eval_metrics["mae_hirshfeld_ratios"]
+        error_hirshfeld_ratios = _fmt_ratio_mae(
+            eval_metrics.get("mae_hirshfeld_ratios")
+        )
         logging.info(
-            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_dipole={error_dipole:8.2f} mDebye, MAE_hirshfeld_ratios={error_hirshfeld_ratios:8.4f}",
+            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_dipole={error_dipole:8.2f} mDebye, MAE_hirshfeld_ratios={error_hirshfeld_ratios}",
         )
     elif log_errors == "EnergyForceChargesMAE":
         error_e = eval_metrics["mae_e_per_atom"] * 1e3
@@ -156,9 +165,11 @@ def valid_err_log(
         error_e = eval_metrics["mae_e_per_atom"] * 1e3
         error_f = eval_metrics["mae_f"] * 1e3
         error_charges = eval_metrics["mae_charges"]
-        error_hirshfeld_ratios = eval_metrics["mae_hirshfeld_ratios"]
+        error_hirshfeld_ratios = _fmt_ratio_mae(
+            eval_metrics.get("mae_hirshfeld_ratios")
+        )
         logging.info(
-            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_charges={error_charges:8.4f} e, MAE_hirshfeld_ratios={error_hirshfeld_ratios:8.4f}",
+            f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_charges={error_charges:8.4f} e, MAE_hirshfeld_ratios={error_hirshfeld_ratios}",
         )
 
     if eval_metrics.get("mae_c6_ratios") is not None:

@@ -131,3 +131,65 @@ def test_raw_hdf5_presence_sees_fallback_key(tmp_path):
         path, KeySpecification.from_defaults(), ["c6_ratios"]
     )
     assert presence["c6_ratios"] is True
+
+
+def test_preprocessed_presence_accepts_partial_ratio_labels():
+    from so3krates_torch.data.hdf5_utils import (
+        raise_if_preprocessed_properties_missing,
+    )
+
+    # partially labelled ratio targets are masked in the loss -> allowed
+    raise_if_preprocessed_properties_missing(
+        {"c6_ratios": (2, 4), "hirshfeld_ratios": (1, 4)}, "x.h5"
+    )
+    # absent everywhere is still an error
+    with pytest.raises(ValueError, match="c6_ratios"):
+        raise_if_preprocessed_properties_missing({"c6_ratios": (0, 4)}, "x.h5")
+    # other properties keep the strict consistency check
+    with pytest.raises(ValueError, match="charges"):
+        raise_if_preprocessed_properties_missing({"charges": (2, 4)}, "x.h5")
+
+
+def _labelled_water(i, key=None):
+    atoms = _water()
+    if key is not None:
+        atoms.arrays[key] = np.full(3, 0.5 + 0.1 * i)
+    return atoms
+
+
+def test_raw_hdf5_keeps_labels_first_seen_after_first_batch(tmp_path):
+    from so3krates_torch.data.hdf5_utils import load_atoms_from_hdf5
+
+    atoms_list = [_labelled_water(i) for i in range(3)] + [
+        _labelled_water(i, "REF_c6_ratios") for i in range(3, 6)
+    ]
+    path = str(tmp_path / "raw.h5")
+    save_atoms_to_hdf5(
+        atoms_list,
+        path,
+        key_specification=KeySpecification.from_defaults(),
+        batch_size=2,
+    )
+    loaded = load_atoms_from_hdf5(path)
+    assert all("REF_c6_ratios" not in a.arrays for a in loaded[:3])
+    for i, a in enumerate(loaded[3:], start=3):
+        assert np.allclose(a.arrays["REF_c6_ratios"], 0.5 + 0.1 * i)
+
+
+def test_raw_hdf5_mixed_fallback_keys_all_survive(tmp_path):
+    from so3krates_torch.data.hdf5_utils import load_atoms_from_hdf5
+
+    atoms_list = [
+        _labelled_water(0, "hirsh_ratios"),
+        _labelled_water(1, "a0_ratios"),
+        _labelled_water(2),
+    ]
+    keyspec = KeySpecification.from_defaults()
+    path = str(tmp_path / "raw.h5")
+    save_atoms_to_hdf5(atoms_list, path, key_specification=keyspec)
+    configs = [
+        config_from_atoms(a, keyspec) for a in load_atoms_from_hdf5(path)
+    ]
+    assert np.allclose(configs[0].properties["hirshfeld_ratios"], 0.5)
+    assert np.allclose(configs[1].properties["hirshfeld_ratios"], 0.6)
+    assert configs[2].properties["hirshfeld_ratios"] is None

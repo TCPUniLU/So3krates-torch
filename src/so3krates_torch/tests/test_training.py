@@ -1232,13 +1232,15 @@ def test_train_with_c6_and_a0_labels_mixed_dataset(tmp_path):
         torch.set_default_dtype(torch.float32)
 
 
-def test_run_training_logs_c6_metrics(tmp_path):
+def test_run_training_logs_c6_metrics(tmp_path, monkeypatch):
     from so3krates_torch.cli.run_train import (
         run_training,
         setup_config_from_yaml,
     )
 
     config = setup_config_from_yaml(str(_ratio_label_config(tmp_path)))
+    # run_training saves '<name_exp>.model' relative to the cwd
+    monkeypatch.chdir(tmp_path)
     try:
         run_training(config)
     finally:
@@ -1248,3 +1250,4 @@ def test_run_training_logs_c6_metrics(tmp_path):
     )
     assert "MAE_c6_ratios=" in log_text
     assert "loss=nan" not in log_text.lower()
+    assert (tmp_path / "ratio_labels.model").exists()

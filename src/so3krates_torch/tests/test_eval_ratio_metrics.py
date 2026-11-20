@@ -76,3 +76,28 @@ def test_valid_err_log_reports_c6(caplog):
             epoch=3,
         )
     assert "MAE_c6_ratios=  0.0123" in caplog.text
+
+
+def test_valid_err_log_hirshfeld_table_without_hirshfeld_metric(caplog):
+    """Validation set without Hirshfeld labels: metric key is absent;
+    the Hirshfeld error tables must not crash."""
+    from so3krates_torch.tools.train import valid_err_log
+
+    class _Logger:
+        def log(self, _):
+            pass
+
+    base = {
+        "mae_e_per_atom": 0.001,
+        "mae_f": 0.01,
+        "mae_dipole": 0.01,
+        "mae_charges": 0.01,
+    }
+    with caplog.at_level(logging.INFO):
+        for table in (
+            "EnergyForceHirshfeldMAE",
+            "EnergyForceDipoleHirshfeldMAE",
+            "EnergyForceChargesHirshfeldMAE",
+        ):
+            valid_err_log(0.1, dict(base), _Logger(), table, epoch=1)
+    assert caplog.text.count("MAE_hirshfeld_ratios=n/a") == 3

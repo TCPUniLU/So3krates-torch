@@ -739,3 +739,21 @@ def test_setup_loss_auto_returns_properties_loss():
         {"TRAINING": {"loss_type": "properties", "c6_ratios_weight": 0.1}}
     )
     assert isinstance(explicit, WeightedPropertiesLoss)
+
+
+@pytest.mark.parametrize(
+    "loss_type",
+    [
+        "energy_forces",
+        "energy_forces_hirshfeld",
+        "energy_forces_dipole_hirshfeld",
+        "energy_forces_charges_hirshfeld",
+    ],
+)
+def test_legacy_loss_type_rejects_c6_weight(loss_type):
+    from so3krates_torch.tools.training_setup import setup_loss_function
+
+    with pytest.raises(ValueError, match="c6_ratios_weight"):
+        setup_loss_function(
+            {"TRAINING": {"loss_type": loss_type, "c6_ratios_weight": 0.1}}
+        )

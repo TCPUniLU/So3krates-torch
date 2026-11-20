@@ -290,8 +290,12 @@ class TrainConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_c6_ratios_loss(self):
-        if self.TRAINING.c6_ratios_weight > 0 and not getattr(
-            self.ARCHITECTURE, "c6_ratios_bool", False
+        # With pretrained_model the architecture is the pickled model's;
+        # WeightedPropertiesLoss raises if that model has no C6 head.
+        if (
+            self.TRAINING.c6_ratios_weight > 0
+            and self.TRAINING.pretrained_model is None
+            and not getattr(self.ARCHITECTURE, "c6_ratios_bool", False)
         ):
             raise ValueError(
                 "TRAINING.c6_ratios_weight > 0 requires "
