@@ -887,7 +887,8 @@ When loading a pre-trained model, `finetune_choice` controls which parameters re
 | `freeze_embedding` | `bool` | `True` | Freeze the atomic embedding layers during fine-tuning. |
 | `freeze_zbl` | `bool` | `True` | Freeze ZBL repulsion parameters. |
 | `freeze_partial_charges` | `bool` | `True` | Freeze the partial charges output head. |
-| `freeze_hirshfeld` | `bool` | `True` | Freeze the Hirshfeld ratios output head. |
+| `freeze_hirshfeld` | `bool` | `True` | Freeze the Hirshfeld ratios output head (in SO3LR-tauri this is the polarizability/a0 ratio head). Also accepted as `freeze_a0_ratios`. |
+| `freeze_c6_ratios` | `bool` | `True` | Freeze the C6 ratio output head (SO3LR-tauri, `c6_ratios_bool: true`). A warning is logged if a ratio loss weight is > 0 while its head is frozen. |
 | `freeze_shifts` | `bool` | `False` | Freeze learned atomic energy shifts. |
 | `freeze_scales` | `bool` | `False` | Freeze learned atomic energy scales. |
 

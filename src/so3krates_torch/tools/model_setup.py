@@ -452,14 +452,39 @@ def handle_finetuning(
     num_elements: int,
     device_name: str,
 ) -> None:
+    training = config["TRAINING"]
+    # `freeze_a0_ratios` is the SO3LR-tauri name for the same head
+    # (hirshfeld_output_block predicts polarizability/a0 ratios there).
+    freeze_hirshfeld = training.get(
+        "freeze_hirshfeld", training.get("freeze_a0_ratios", True)
+    )
+    freeze_c6_ratios = training.get("freeze_c6_ratios", True)
+    finetune_choice = training.get("finetune_choice", None)
+    if finetune_choice != "naive":
+        for head, frozen, weight_key in (
+            (
+                "polarizability (a0/Hirshfeld)",
+                freeze_hirshfeld,
+                "hirshfeld_weight",
+            ),
+            ("C6 ratio", freeze_c6_ratios, "c6_ratios_weight"),
+        ):
+            if frozen and training.get(weight_key, 0.0) > 0:
+                logging.warning(
+                    f"{weight_key} > 0 but the {head} head is frozen; its "
+                    "loss only adapts the shared representation. Set "
+                    "freeze_hirshfeld/freeze_a0_ratios or freeze_c6_ratios "
+                    "to false to train the head itself."
+                )
     return setup_finetuning(
         model=model,
-        finetune_choice=config["TRAINING"].get("finetune_choice", None),
+        finetune_choice=finetune_choice,
         device_name=device_name,
         num_elements=num_elements,
         freeze_embedding=config["TRAINING"].get("freeze_embedding", True),
         freeze_zbl=config["TRAINING"].get("freeze_zbl", True),
-        freeze_hirshfeld=config["TRAINING"].get("freeze_hirshfeld", True),
+        freeze_hirshfeld=freeze_hirshfeld,
+        freeze_c6_ratios=freeze_c6_ratios,
         freeze_partial_charges=config["TRAINING"].get(
             "freeze_partial_charges", True
         ),

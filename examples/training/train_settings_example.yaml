@@ -162,6 +162,17 @@ TRAINING:
   #   Mutually exclusive with `pretrained_model` (a pickled whole-model
   #   `.model` file) below -- use one or the other.
   # pretrained_model: /path/to/model.model  # complete pickled model object
+  # --- Fine-tuning (finetune_choice: naive | last_layer | last_layer+mlp |
+  #     qkv | qkv+mlp | mlp | lora | lora+mlp | dora | vera) ---
+  # finetune_choice: lora
+  # Heads kept frozen unless set to false (ignored for naive):
+  # freeze_hirshfeld: true     # polarizability/a0 head (alias: freeze_a0_ratios)
+  # freeze_c6_ratios: true     # C6 ratio head (SO3LR-tauri, c6_ratios_bool: true)
+  # freeze_partial_charges: true
+  # freeze_zbl: true
+  # freeze_embedding: true
+  # freeze_shifts: false
+  # freeze_scales: false
   # For LoRA/DoRA/VeRA fine-tuning of a bundled pretrained checkpoint
   # instead of plain warm-started training, see
   # examples/finetuning/finetune_pretrained_so3lr.py.

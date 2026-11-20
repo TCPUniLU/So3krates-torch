@@ -159,6 +159,10 @@ class TrainingConfig(BaseModel):
     # ARCHITECTURE.c6_ratios_bool=True. `hirshfeld_weight` may also be
     # given as `a0_ratios_weight` (the tauri/JAX name, same quantity).
     c6_ratios_weight: float = 0.0
+    # Fine-tuning (finetune_choice != naive): keep dispersion heads frozen.
+    # `freeze_hirshfeld` may also be given as `freeze_a0_ratios`.
+    freeze_hirshfeld: bool = True
+    freeze_c6_ratios: bool = True
     eval_interval: int = 1
     valid_ratio: float = 0.1
     clip_grad: float = 10.0
@@ -191,17 +195,23 @@ class TrainingConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def resolve_a0_ratios_alias(cls, data: Any) -> Any:
-        if not isinstance(data, dict) or "a0_ratios_weight" not in data:
+        if not isinstance(data, dict):
             return data
         data = dict(data)
-        a0 = data.pop("a0_ratios_weight")
-        if "hirshfeld_weight" in data and data["hirshfeld_weight"] != a0:
-            raise ValueError(
-                "Both 'hirshfeld_weight' and its alias 'a0_ratios_weight' "
-                f"are set with different values ({data['hirshfeld_weight']}"
-                f" vs {a0}). Set only one."
-            )
-        data["hirshfeld_weight"] = a0
+        for alias, name in (
+            ("a0_ratios_weight", "hirshfeld_weight"),
+            ("freeze_a0_ratios", "freeze_hirshfeld"),
+        ):
+            if alias not in data:
+                continue
+            value = data.pop(alias)
+            if name in data and data[name] != value:
+                raise ValueError(
+                    f"Both '{name}' and its alias '{alias}' are set with "
+                    f"different values ({data[name]} vs {value}). Set only "
+                    "one."
+                )
+            data[name] = value
         return data
 
     @model_validator(mode="after")
