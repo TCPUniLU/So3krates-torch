@@ -100,6 +100,18 @@ def reduce_masked_loss(
     return loss_sum * scale / torch.clamp(count, min=1.0)
 
 
+def ratio_label_mask(
+    ref: Batch, label_key: str, weight_key: str
+) -> torch.Tensor:
+    """Per-atom bool mask of usable labels: finite label and non-zero
+    structure weight (`weight * <weight_key>`)."""
+    num_atoms = ref.ptr[1:] - ref.ptr[:-1]
+    atom_weight = torch.repeat_interleave(
+        ref.weight * ref[weight_key], num_atoms
+    )
+    return torch.isfinite(ref[label_key]) & (atom_weight != 0)
+
+
 def masked_mse_per_atom(
     ref: Batch,
     pred: TensorDict,
@@ -122,7 +134,7 @@ def masked_mse_per_atom(
         ref.weight * ref[weight_key], num_atoms
     )
     label = ref[ref_key]
-    mask = torch.isfinite(label) & (atom_weight != 0)
+    mask = ratio_label_mask(ref, ref_key, weight_key)
     diff = torch.where(
         mask, label - pred[pred_key], torch.zeros_like(pred[pred_key])
     )

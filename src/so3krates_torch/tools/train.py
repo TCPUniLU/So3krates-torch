@@ -161,6 +161,12 @@ def valid_err_log(
             f"{initial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, MAE_E_per_atom={error_e:8.2f} meV, MAE_F={error_f:8.2f} meV / A, MAE_charges={error_charges:8.4f} e, MAE_hirshfeld_ratios={error_hirshfeld_ratios:8.4f}",
         )
 
+    if eval_metrics.get("mae_c6_ratios") is not None:
+        logging.info(
+            f"{initial_phrase}: head: {valid_loader_name}, "
+            f"MAE_c6_ratios={eval_metrics['mae_c6_ratios']:8.4f}"
+        )
+
 
 def train(
     model: torch.nn.Module,

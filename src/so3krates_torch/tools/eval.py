@@ -7,6 +7,7 @@ from ase.io import read
 from typing import Tuple, List, Union, Optional
 from so3krates_torch.data.utils import KeySpecification
 from so3krates_torch.tools import torch_geometric, torch_tools
+from so3krates_torch.modules.loss import ratio_label_mask
 from so3krates_torch.tools.torch_tools import to_numpy
 from so3krates_torch.tools.utils import (
     MetricsLogger,
@@ -592,6 +593,13 @@ class ModelEval(Metric):
         )
 
         self.add_state(
+            "c6_ratios_computed",
+            default=torch.tensor(0.0),
+            dist_reduce_fx="sum",
+        )
+        self.add_state("delta_c6_ratios", default=[], dist_reduce_fx="cat")
+
+        self.add_state(
             "charges_computed",
             default=torch.tensor(0.0),
             dist_reduce_fx="sum",
@@ -634,14 +642,24 @@ class ModelEval(Metric):
             self.dipoles.append(batch.dipole)
             self.delta_dipoles.append(batch.dipole - output["dipole"])
 
-        if (
-            output.get("hirshfeld_ratios") is not None
-            and batch.hirshfeld_ratios is not None
+        # Ratio labels: only atoms with a usable label (finite, non-zero
+        # structure weight) count, matching the masked training loss.
+        for key, weight_key in (
+            ("hirshfeld_ratios", "hirshfeld_ratios_weight"),
+            ("c6_ratios", "c6_ratios_weight"),
         ):
-            self.hirshfeld_ratios_computed += 1.0
-            self.hirshfeld_ratios.append(batch.hirshfeld_ratios)
-            self.delta_hirshfeld_ratios.append(
-                batch.hirshfeld_ratios - output["hirshfeld_ratios"]
+            if output.get(key) is None or getattr(batch, key, None) is None:
+                continue
+            mask = ratio_label_mask(batch, key, weight_key)
+            if not bool(mask.any()):
+                continue
+            setattr(
+                self, f"{key}_computed", getattr(self, f"{key}_computed") + 1.0
+            )
+            if key == "hirshfeld_ratios":
+                self.hirshfeld_ratios.append(batch.hirshfeld_ratios[mask])
+            getattr(self, f"delta_{key}").append(
+                batch[key][mask] - output[key][mask]
             )
 
         if (
@@ -709,6 +727,12 @@ class ModelEval(Metric):
             aux["mae_hirshfeld_ratios"] = compute_mae(delta_hirshfeld_ratios)
             aux["rmse_hirshfeld_ratios"] = compute_rmse(delta_hirshfeld_ratios)
             aux["q95_hirshfeld_ratios"] = compute_q95(delta_hirshfeld_ratios)
+
+        if self.c6_ratios_computed:
+            delta_c6_ratios = self.convert(self.delta_c6_ratios)
+            aux["mae_c6_ratios"] = compute_mae(delta_c6_ratios)
+            aux["rmse_c6_ratios"] = compute_rmse(delta_c6_ratios)
+            aux["q95_c6_ratios"] = compute_q95(delta_c6_ratios)
 
         if self.charges_computed:
             delta_charges = self.convert(self.delta_charges)
