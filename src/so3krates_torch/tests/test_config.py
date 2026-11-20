@@ -262,3 +262,56 @@ def test_preprocess_validate_alias():
         }
     )
     assert cfg.validate_output is True
+
+
+# ── Dispersion-label loss weights (c6_ratios / a0_ratios) ──────
+
+
+def _example_raw():
+    return yaml.safe_load(_EXAMPLE_YAML.read_text())
+
+
+def _training(**kw):
+    section = _example_raw()["TRAINING"]
+    section.pop("hirshfeld_weight", None)
+    section.update(kw)
+    return TrainingConfig(**section)
+
+
+def test_c6_weight_default_zero_and_in_property_weights():
+    from so3krates_torch.tools.training_setup import (
+        get_loss_property_weights,
+    )
+
+    assert get_loss_property_weights({"TRAINING": {}})["c6_ratios"] == 0.0
+    weights = get_loss_property_weights(
+        {"TRAINING": {"c6_ratios_weight": 0.1}}
+    )
+    assert weights["c6_ratios"] == 0.1
+    dumped = _training().model_dump()
+    assert dumped["c6_ratios_weight"] == 0.0
+
+
+def test_a0_ratios_weight_alias():
+    cfg = _training(a0_ratios_weight=0.1)
+    assert cfg.hirshfeld_weight == 0.1
+    assert "a0_ratios_weight" not in cfg.model_dump()
+    # same value under both names is accepted
+    assert (
+        _training(a0_ratios_weight=0.1, hirshfeld_weight=0.1).hirshfeld_weight
+        == 0.1
+    )
+    with pytest.raises(ValidationError, match="a0_ratios_weight"):
+        _training(a0_ratios_weight=0.1, hirshfeld_weight=0.2)
+
+
+def test_c6_weight_requires_c6_head():
+    raw = _example_raw()
+    raw["ARCHITECTURE"]["dispersion_energy_bool"] = True
+    raw["ARCHITECTURE"]["c6_ratios_bool"] = False
+    raw["TRAINING"]["c6_ratios_weight"] = 0.1
+    with pytest.raises(ValidationError, match="c6_ratios_bool"):
+        TrainConfig.model_validate(raw)
+    raw["ARCHITECTURE"]["c6_ratios_bool"] = True
+    cfg = TrainConfig.model_validate(raw)
+    assert cfg.TRAINING.c6_ratios_weight == 0.1

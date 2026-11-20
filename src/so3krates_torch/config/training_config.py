@@ -9,9 +9,9 @@ class GeneralConfig(BaseModel):
     checkpoints_dir: str = "./checkpoints"
     model_dir: str = "./model"
     log_dir: str = "./logs"
-    default_dtype: Literal[
-        "float32", "float64", "float16", "bfloat16"
-    ] = "float64"
+    default_dtype: Literal["float32", "float64", "float16", "bfloat16"] = (
+        "float64"
+    )
     seed: int = 100
     # inference-only: stress is computed during evaluation but has no
     # loss weight and is never used as a training target
@@ -155,6 +155,10 @@ class TrainingConfig(BaseModel):
     forces_weight: float = 1000.0
     dipole_weight: float = 0.0
     hirshfeld_weight: float = 0.0
+    # Per-atom C6-ratio label (paper Eq. S13, JAX `c6_ratios`); needs
+    # ARCHITECTURE.c6_ratios_bool=True. `hirshfeld_weight` may also be
+    # given as `a0_ratios_weight` (the tauri/JAX name, same quantity).
+    c6_ratios_weight: float = 0.0
     eval_interval: int = 1
     valid_ratio: float = 0.1
     clip_grad: float = 10.0
@@ -183,6 +187,22 @@ class TrainingConfig(BaseModel):
     replay_resample_per_epoch: bool = False
     # Per-config-type loss weight multipliers
     config_type_weights: Optional[Dict[str, float]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_a0_ratios_alias(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or "a0_ratios_weight" not in data:
+            return data
+        data = dict(data)
+        a0 = data.pop("a0_ratios_weight")
+        if "hirshfeld_weight" in data and data["hirshfeld_weight"] != a0:
+            raise ValueError(
+                "Both 'hirshfeld_weight' and its alias 'a0_ratios_weight' "
+                f"are set with different values ({data['hirshfeld_weight']}"
+                f" vs {a0}). Set only one."
+            )
+        data["hirshfeld_weight"] = a0
+        return data
 
     @model_validator(mode="after")
     def validate_pretrained(self):
@@ -257,3 +277,15 @@ class TrainConfig(BaseModel):
     ARCHITECTURE: ArchitectureConfig
     TRAINING: TrainingConfig
     MISC: MiscConfig = MiscConfig()
+
+    @model_validator(mode="after")
+    def validate_c6_ratios_loss(self):
+        if self.TRAINING.c6_ratios_weight > 0 and not getattr(
+            self.ARCHITECTURE, "c6_ratios_bool", False
+        ):
+            raise ValueError(
+                "TRAINING.c6_ratios_weight > 0 requires "
+                "ARCHITECTURE.c6_ratios_bool=True (the model needs a C6 "
+                "ratio head to supervise)."
+            )
+        return self

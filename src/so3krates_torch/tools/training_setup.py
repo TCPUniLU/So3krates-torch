@@ -27,7 +27,10 @@ def get_loss_property_weights(config: dict) -> Dict[str, float]:
         "energy": loss_config.get("energy_weight", 1.0),
         "forces": loss_config.get("forces_weight", 1000.0),
         "dipole": loss_config.get("dipole_weight", 0.0),
-        "hirshfeld_ratios": loss_config.get("hirshfeld_weight", 0.0),
+        "hirshfeld_ratios": loss_config.get(
+            "hirshfeld_weight", loss_config.get("a0_ratios_weight", 0.0)
+        ),
+        "c6_ratios": loss_config.get("c6_ratios_weight", 0.0),
         "charges": loss_config.get("charges_weight", 0.0),
     }
 
