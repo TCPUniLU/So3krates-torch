@@ -1370,3 +1370,162 @@ def test_clip_gradients_includes_loss_params():
         + sum(p.grad.square().sum() for p in loss_fn.parameters())
     )
     assert total.item() == pytest.approx(1.0, rel=1e-4)
+
+
+# ── setup_loss_functions: validation robust + two-stage ────────
+
+
+def _loss_cfg(**training):
+    return {
+        "TRAINING": {"energy_weight": 0.001, "forces_weight": 1.0, **training}
+    }
+
+
+def test_setup_loss_functions_defaults_share_train_loss():
+    from so3krates_torch.tools.training_setup import setup_loss_functions
+
+    fns = setup_loss_functions(_loss_cfg())
+    assert fns.valid is fns.train
+    assert fns.stage_two is None
+
+
+def test_validation_robust_overrides():
+    from so3krates_torch.tools.training_setup import setup_loss_functions
+
+    fns = setup_loss_functions(
+        _loss_cfg(use_robust_loss=True, use_robust_loss_validation=False)
+    )
+    assert fns.train.robust == "fixed" and fns.valid.robust == "none"
+    fns = setup_loss_functions(
+        _loss_cfg(
+            use_robust_loss_validation=True, robust_loss_alpha_validation=0.5
+        )
+    )
+    assert fns.train.robust == "none"
+    assert fns.valid.robust == "fixed" and fns.valid.robust_alpha == 0.5
+
+
+def test_adaptive_validation_uses_training_loss():
+    from so3krates_torch.tools.training_setup import setup_loss_functions
+
+    fns = setup_loss_functions(
+        _loss_cfg(
+            use_adaptive_robust_loss=True, use_robust_loss_validation=False
+        )
+    )
+    assert fns.valid is fns.train
+
+
+def test_stage_two_weights_inherit_and_override():
+    from so3krates_torch.tools.training_setup import setup_loss_functions
+
+    fns = setup_loss_functions(
+        _loss_cfg(
+            stage_two_start_epoch=4,
+            stage_two_loss_weights={"energy_weight": 0.01},
+        )
+    )
+    s2 = fns.stage_two
+    assert s2.start_epoch == 4
+    assert s2.loss_fn.energy_weight.item() == pytest.approx(0.01)
+    assert s2.loss_fn.forces_weight.item() == pytest.approx(1.0)
+    assert fns.train.energy_weight.item() == pytest.approx(0.001)
+    assert s2.valid_loss_fn is s2.loss_fn
+
+
+def test_stage_two_shares_adaptive_params():
+    from so3krates_torch.tools.training_setup import setup_loss_functions
+
+    fns = setup_loss_functions(
+        _loss_cfg(
+            use_adaptive_robust_loss=True,
+            stage_two_start_epoch=2,
+            stage_two_loss_weights={"dipole_weight": 0.1},
+        )
+    )
+    assert fns.stage_two.loss_fn.adaptive is fns.train.adaptive
+    assert set(fns.train.adaptive.alpha_raw.keys()) == {
+        "energy",
+        "forces",
+        "dipole",
+    }
+    names = {n for n, _ in fns.train.named_parameters()}
+    assert names == {n for n, _ in fns.stage_two.loss_fn.named_parameters()}
+
+
+def test_legacy_loss_type_rejects_stage_two():
+    from so3krates_torch.tools.training_setup import setup_loss_functions
+
+    with pytest.raises(ValueError, match="stage_two"):
+        setup_loss_functions(
+            _loss_cfg(
+                loss_type="energy_forces",
+                stage_two_start_epoch=2,
+                stage_two_loss_weights={"energy_weight": 0.01},
+            )
+        )
+
+
+def test_required_loss_properties_include_stage_two():
+    from so3krates_torch.tools.training_setup import (
+        get_required_loss_properties,
+    )
+
+    required = get_required_loss_properties(
+        _loss_cfg(
+            stage_two_start_epoch=2,
+            stage_two_loss_weights={"c6_ratios_weight": 0.1},
+        )
+    )
+    assert set(required) == {"energy", "forces", "c6_ratios"}
+
+
+def test_reset_plateau_scheduler_keeps_lr():
+    from so3krates_torch.tools.train import reset_plateau_scheduler_
+
+    model = torch.nn.Linear(1, 1)
+    opt = torch.optim.Adam(model.parameters(), lr=1.0)
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        opt, patience=0, factor=0.5
+    )
+    sched.step(1.0)
+    sched.step(2.0)  # no improvement -> lr halved
+    assert opt.param_groups[0]["lr"] == 0.5
+    sched.step(3.0)
+    reset_plateau_scheduler_(sched)
+    assert sched.best == sched.mode_worse
+    assert sched.num_bad_epochs == 0 and sched.cooldown_counter == 0
+    assert opt.param_groups[0]["lr"] == 0.25  # reduction kept
+    reset_plateau_scheduler_(
+        torch.optim.lr_scheduler.ExponentialLR(opt, 0.9)
+    )  # no-op for other schedulers
+
+
+def test_run_training_two_stage_switch(tmp_path, monkeypatch):
+    import yaml
+    from so3krates_torch.cli.run_train import (
+        run_training,
+        setup_config_from_yaml,
+    )
+
+    config_path = _ratio_label_config(tmp_path)
+    raw = yaml.safe_load(config_path.read_text())
+    raw["TRAINING"].update(
+        num_epochs=3,
+        stage_two_start_epoch=1,
+        stage_two_loss_weights={"energy_weight": 1.0},
+    )
+    config_path.write_text(yaml.dump(raw))
+    config = setup_config_from_yaml(str(config_path))
+    monkeypatch.chdir(tmp_path)
+    try:
+        run_training(config)
+    finally:
+        torch.set_default_dtype(torch.float32)
+    log_text = (tmp_path / "logs" / "ratio_labels.log").read_text()
+    debug_text = (tmp_path / "logs" / "ratio_labels_debug.log").read_text()
+    assert log_text.count("switching to the stage-two loss at epoch 1") == 1
+    assert "loss=nan" not in log_text.lower()
+    # best-loss tracker reset: the first stage-two epoch is checkpointed
+    # even though its (re-weighted) loss is higher than stage one's
+    assert "ratio_labels_epoch-1.pt" in debug_text

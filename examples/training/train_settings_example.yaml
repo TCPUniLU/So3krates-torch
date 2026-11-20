@@ -149,6 +149,14 @@ TRAINING:
   #                                   #   loss can be negative)
   # adaptive_robust_loss_init_alpha: 1.0
   # adaptive_robust_loss_init_scale: 1.0
+  # use_robust_loss_validation: null  # null = same as use_robust_loss
+  # robust_loss_alpha_validation: null  # null = same as robust_loss_alpha
+  # Two-stage loss weights (JAX stage_two_*): from stage_two_start_epoch on,
+  # train and validate with these weights (unlisted keys keep stage one's);
+  # best-loss / early-stopping / plateau trackers reset at the switch.
+  # stage_two_start_epoch: 100
+  # stage_two_loss_weights:
+  #   energy_weight: 0.01
   eval_interval: 1
   num_epochs: 5
   path_to_train_data: ./path/to/train/data

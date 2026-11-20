@@ -27,7 +27,7 @@ from so3krates_torch.tools.data_setup import (
     setup_data_loaders,
 )
 from so3krates_torch.tools.training_setup import (
-    setup_loss_function,
+    setup_loss_functions,
     setup_optimizer_and_scheduler,
     setup_training_tools,
     load_checkpoint_if_exists,
@@ -201,7 +201,10 @@ def run_training(config: dict) -> None:
         ddp_model = wrap_model_ddp(model, local_rank)
 
     # Setup loss function
-    loss_fn = setup_loss_function(config).to(device)
+    loss_fns = setup_loss_functions(config)
+    for module in loss_fns.modules():
+        module.to(device)
+    loss_fn = loss_fns.train
 
     # Setup optimizer and scheduler
     optimizer, lr_scheduler = setup_optimizer_and_scheduler(
@@ -271,6 +274,8 @@ def run_training(config: dict) -> None:
     train(
         model=model,
         loss_fn=loss_fn,
+        valid_loss_fn=loss_fns.valid,
+        stage_two=loss_fns.stage_two,
         train_loader=train_loader,
         valid_loaders=valid_loaders,
         optimizer=optimizer,

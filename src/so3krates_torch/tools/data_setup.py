@@ -31,7 +31,9 @@ from so3krates_torch.data.hdf5_utils import (
 )
 from so3krates_torch.data.lazy_dataset import LazyAtomicDataset
 from so3krates_torch.tools.default_keys import DefaultKeys
-from so3krates_torch.tools.training_setup import get_loss_property_weights
+from so3krates_torch.tools.training_setup import (
+    get_required_loss_properties,
+)
 from so3krates_torch.tools.utils import (
     AtomicNumberTable,
     compute_avg_num_neighbors,
@@ -539,8 +541,7 @@ def _setup_multihead_data_loaders(
     r_max = config["ARCHITECTURE"].get("r_max", None)
     r_max_lr = config["ARCHITECTURE"].get("r_max_lr", None)
 
-    loss_weights = get_loss_property_weights(config)
-    required_properties = [name for name, w in loss_weights.items() if w > 0]
+    required_properties = get_required_loss_properties(config)
 
     heads = config["TRAINING"]["heads"]
     train_configs = []
@@ -715,8 +716,7 @@ def _setup_singlehead_data_loaders(
     valid_batch_size = config["TRAINING"]["valid_batch_size"]
     valid_loader: Optional[DataLoader] = None
 
-    loss_weights = get_loss_property_weights(config)
-    required_properties = [name for name, w in loss_weights.items() if w > 0]
+    required_properties = get_required_loss_properties(config)
 
     (
         train_atomic_data,

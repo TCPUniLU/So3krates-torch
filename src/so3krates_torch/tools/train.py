@@ -49,6 +49,16 @@ def _fmt_ratio_mae(value) -> str:
     return "n/a" if value is None else f"{value:8.4f}"
 
 
+def reset_plateau_scheduler_(lr_scheduler) -> None:
+    """Reset ReduceLROnPlateau's best/bad-epoch/cooldown trackers while
+    keeping the current learning rate (JAX two-stage switch). No-op for
+    other schedulers."""
+    if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+        lr_scheduler.best = lr_scheduler.mode_worse
+        lr_scheduler.num_bad_epochs = 0
+        lr_scheduler.cooldown_counter = 0
+
+
 def clip_gradients_(
     model: torch.nn.Module,
     loss_fn: Optional[torch.nn.Module],
@@ -260,7 +270,18 @@ def train(
     early_stopping_min_delta: float = 0.0,
     early_stopping_warmup: int = 0,
     replay_builder=None,
+    valid_loss_fn: Optional[torch.nn.Module] = None,
+    stage_two=None,
 ):
+    """`valid_loss_fn` (default: `loss_fn`) scores validation.
+    `stage_two` (training_setup.StageTwoLoss) swaps both losses at
+    `stage_two.start_epoch` and resets the best-loss, early-stopping and
+    plateau trackers (JAX so3lr two-stage loss reweighting)."""
+    if valid_loss_fn is None:
+        valid_loss_fn = loss_fn
+    if stage_two is not None and swa is not None:
+        raise ValueError("stage_two and SWA stage two cannot be combined.")
+    stage_two_active = False
     lowest_loss = np.inf
     valid_loss = np.inf
     patience_counter = 0
@@ -282,12 +303,20 @@ def train(
     logging.info("Started training, reporting errors on validation set")
     logging.info("Loss metrics on validation set")
     epoch = start_epoch
+    if stage_two is not None and epoch >= stage_two.start_epoch:
+        loss_fn = stage_two.loss_fn
+        valid_loss_fn = stage_two.valid_loss_fn
+        stage_two_active = True
+        logging.info(
+            f"Two-stage loss reweighting: resuming in stage two at epoch "
+            f"{epoch}."
+        )
 
     # log validation loss before _any_ training
     for valid_loader_name, valid_loader in valid_loaders.items():
         valid_loss_head, eval_metrics = evaluate(
             model=model,
-            loss_fn=loss_fn,
+            loss_fn=valid_loss_fn,
             data_loader=valid_loader,
             output_args=output_args,
             device=device,
@@ -333,6 +362,25 @@ def train(
             swa.model.update_parameters(model)
             if epoch > start_epoch:
                 swa.scheduler.step()
+
+        # Two-stage loss reweighting (after this epoch's scheduler step,
+        # which still uses the stage-one validation loss).
+        if (
+            stage_two is not None
+            and not stage_two_active
+            and epoch >= stage_two.start_epoch
+        ):
+            logging.info(
+                f"Two-stage loss reweighting: switching to the stage-two "
+                f"loss at epoch {epoch}; resetting best-loss, early-stopping "
+                f"and plateau trackers."
+            )
+            loss_fn = stage_two.loss_fn
+            valid_loss_fn = stage_two.valid_loss_fn
+            lowest_loss = np.inf
+            patience_counter = 0
+            reset_plateau_scheduler_(lr_scheduler)
+            stage_two_active = True
 
         # Rebuild DataLoader with fresh replay data if needed
         if replay_builder is not None:
@@ -381,7 +429,7 @@ def train(
                 for valid_loader_name, valid_loader in valid_loaders.items():
                     valid_loss_head, eval_metrics = evaluate(
                         model=model_to_evaluate,
-                        loss_fn=loss_fn,
+                        loss_fn=valid_loss_fn,
                         data_loader=valid_loader,
                         output_args=output_args,
                         device=device,

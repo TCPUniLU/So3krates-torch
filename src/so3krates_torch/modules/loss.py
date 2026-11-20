@@ -668,6 +668,7 @@ class WeightedPropertiesLoss(torch.nn.Module):
         robust_alpha: float = 1.0,
         adaptive_init_alpha: float = 1.0,
         adaptive_init_scale: float = 1.0,
+        adaptive: Optional["AdaptiveRobustParams"] = None,
     ) -> None:
         super().__init__()
         _check_reduction(reduction)
@@ -693,9 +694,18 @@ class WeightedPropertiesLoss(torch.nn.Module):
         ]
         self.adaptive = None
         if robust == "adaptive":
-            self.adaptive = AdaptiveRobustParams(
-                self.properties, adaptive_init_alpha, adaptive_init_scale
-            )
+            if adaptive is None:
+                adaptive = AdaptiveRobustParams(
+                    self.properties, adaptive_init_alpha, adaptive_init_scale
+                )
+            missing = set(self.properties) - set(adaptive.alpha_raw.keys())
+            if missing:
+                raise ValueError(
+                    "Shared adaptive robust-loss parameters lack "
+                    f"{sorted(missing)}."
+                )
+            # May be shared with another loss (two-stage training).
+            self.adaptive = adaptive
             self.penalty = self.adaptive.penalty
         elif robust == "fixed":
             self.robust_alpha = float(robust_alpha)

@@ -1,5 +1,6 @@
 import logging
-from typing import Dict, Optional
+import dataclasses
+from typing import Dict, List, Optional
 
 import torch
 
@@ -11,6 +12,7 @@ from so3krates_torch.modules.loss import (
     WeightedEnergyForcesChargesLoss,
     WeightedEnergyForcesChargesHirshfeldLoss,
     WeightedPropertiesLoss,
+    AdaptiveRobustParams,
 )
 from so3krates_torch.tools.checkpoint import (
     CheckpointHandler,
@@ -37,7 +39,135 @@ def get_loss_property_weights(config: dict) -> Dict[str, float]:
     }
 
 
-def setup_loss_function(config: dict) -> torch.nn.Module:
+def _stage_two_config(config: dict) -> Optional[dict]:
+    """Config with the stage-two weights merged over the stage-one ones
+    (unlisted keys keep their stage-one value); None without stage two."""
+    loss_config = config["TRAINING"]
+    overrides = loss_config.get("stage_two_loss_weights")
+    if loss_config.get("stage_two_start_epoch") is None or overrides is None:
+        return None
+    overrides = dict(overrides)
+    if "a0_ratios_weight" in overrides:
+        overrides["hirshfeld_weight"] = overrides.pop("a0_ratios_weight")
+    return {**config, "TRAINING": {**loss_config, **overrides}}
+
+
+def get_required_loss_properties(config: dict) -> List[str]:
+    """Properties with a non-zero loss weight in either training stage,
+    i.e. the labels the training data must provide."""
+    configs = [config]
+    stage_two = _stage_two_config(config)
+    if stage_two is not None:
+        configs.append(stage_two)
+    required = []
+    for cfg in configs:
+        for name, weight in get_loss_property_weights(cfg).items():
+            if weight > 0 and name not in required:
+                required.append(name)
+    return required
+
+
+@dataclasses.dataclass
+class StageTwoLoss:
+    start_epoch: int
+    loss_fn: torch.nn.Module
+    valid_loss_fn: torch.nn.Module
+
+
+@dataclasses.dataclass
+class LossFunctions:
+    train: torch.nn.Module
+    valid: torch.nn.Module
+    stage_two: Optional[StageTwoLoss] = None
+
+    def modules(self) -> List[torch.nn.Module]:
+        mods = [self.train, self.valid]
+        if self.stage_two is not None:
+            mods += [self.stage_two.loss_fn, self.stage_two.valid_loss_fn]
+        return mods
+
+
+def _validation_loss(
+    config: dict,
+    train_loss: torch.nn.Module,
+    adaptive: Optional[AdaptiveRobustParams],
+) -> torch.nn.Module:
+    """JAX make_val_fn: the adaptive loss validates with the training
+    loss; otherwise use_robust_loss_validation / _alpha_validation
+    (default: the training settings) pick the validation penalty."""
+    loss_config = config["TRAINING"]
+    if loss_config.get("use_adaptive_robust_loss", False):
+        return train_loss
+    use_fixed = loss_config.get("use_robust_loss", False)
+    alpha = loss_config.get("robust_loss_alpha", 1.0)
+    val_fixed = loss_config.get("use_robust_loss_validation")
+    val_alpha = loss_config.get("robust_loss_alpha_validation")
+    val_fixed = use_fixed if val_fixed is None else val_fixed
+    val_alpha = alpha if val_alpha is None else val_alpha
+    if val_fixed == use_fixed and (not val_fixed or val_alpha == alpha):
+        return train_loss
+    val_config = {
+        **config,
+        "TRAINING": {
+            **loss_config,
+            "use_robust_loss": val_fixed,
+            "robust_loss_alpha": val_alpha,
+        },
+    }
+    logging.info("Validation loss uses its own robust-loss settings:")
+    return setup_loss_function(val_config, adaptive=adaptive)
+
+
+def setup_loss_functions(config: dict) -> LossFunctions:
+    """Training and validation losses for both training stages."""
+    loss_config = config["TRAINING"]
+    stage_two_config = _stage_two_config(config)
+    loss_type = loss_config.get("loss_type", "auto")
+    if stage_two_config is not None and loss_type not in (
+        "auto",
+        "properties",
+    ):
+        raise ValueError(
+            f"loss_type '{loss_type}' does not support stage_two_loss_weights"
+            " / stage_two_start_epoch. Use loss_type 'auto' or 'properties'."
+        )
+
+    shared = None
+    if (
+        loss_config.get("use_adaptive_robust_loss", False)
+        and stage_two_config is not None
+    ):
+        # One set of alpha/scale for both stages, covering every property
+        # weighted in either (stored by name, unlike JAX's positional).
+        shared = AdaptiveRobustParams(
+            get_required_loss_properties(config),
+            loss_config.get("adaptive_robust_loss_init_alpha", 1.0),
+            loss_config.get("adaptive_robust_loss_init_scale", 1.0),
+        )
+
+    train = setup_loss_function(config, adaptive=shared)
+    fns = LossFunctions(
+        train=train, valid=_validation_loss(config, train, shared)
+    )
+    if stage_two_config is not None:
+        logging.info(
+            "Two-stage loss weights: stage two starts at epoch "
+            f"{loss_config['stage_two_start_epoch']}:"
+        )
+        train_two = setup_loss_function(stage_two_config, adaptive=shared)
+        fns.stage_two = StageTwoLoss(
+            start_epoch=int(loss_config["stage_two_start_epoch"]),
+            loss_fn=train_two,
+            valid_loss_fn=_validation_loss(
+                stage_two_config, train_two, shared
+            ),
+        )
+    return fns
+
+
+def setup_loss_function(
+    config: dict, adaptive: Optional[AdaptiveRobustParams] = None
+) -> torch.nn.Module:
     """Setup loss function based on configuration."""
     loss_config = config["TRAINING"]
 
@@ -74,6 +204,7 @@ def setup_loss_function(config: dict) -> torch.nn.Module:
             adaptive_init_scale=loss_config.get(
                 "adaptive_robust_loss_init_scale", 1.0
             ),
+            adaptive=adaptive,
         )
         logging.info(f"Selected {loss_fn}")
     else:

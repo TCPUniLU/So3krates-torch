@@ -138,6 +138,17 @@ class ArchitectureConfig(BaseModel):
         return self
 
 
+STAGE_TWO_WEIGHT_KEYS = (
+    "energy_weight",
+    "forces_weight",
+    "dipole_weight",
+    "hirshfeld_weight",
+    "a0_ratios_weight",
+    "c6_ratios_weight",
+    "charges_weight",
+)
+
+
 class TrainingConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
     batch_size: int
@@ -171,6 +182,17 @@ class TrainingConfig(BaseModel):
     use_adaptive_robust_loss: bool = False
     adaptive_robust_loss_init_alpha: float = 1.0
     adaptive_robust_loss_init_scale: float = 1.0
+    # Validation robust loss (JAX use_robust_loss_validation /
+    # robust_loss_alpha_validation); None = same as training. Ignored with
+    # the adaptive loss, whose validation always uses the training loss.
+    use_robust_loss_validation: Optional[bool] = None
+    robust_loss_alpha_validation: Optional[float] = None
+    # Two-stage loss weights (JAX stage_two_*): from this epoch on, train
+    # and validate with stage_two_loss_weights (keys as the *_weight
+    # options above; unlisted ones keep their stage-one value). Best-loss,
+    # early-stopping and plateau trackers reset at the switch.
+    stage_two_start_epoch: Optional[int] = None
+    stage_two_loss_weights: Optional[Dict[str, float]] = None
     # Fine-tuning (finetune_choice != naive): keep dispersion heads frozen.
     # `freeze_hirshfeld` may also be given as `freeze_a0_ratios`.
     freeze_hirshfeld: bool = True
@@ -225,6 +247,37 @@ class TrainingConfig(BaseModel):
                 )
             data[name] = value
         return data
+
+    @model_validator(mode="after")
+    def validate_stage_two(self):
+        start = self.stage_two_start_epoch
+        weights = self.stage_two_loss_weights
+        if (start is None) != (weights is None):
+            raise ValueError(
+                "Set both 'stage_two_start_epoch' and "
+                "'stage_two_loss_weights', or neither."
+            )
+        if start is None:
+            return self
+        if start < 1:
+            raise ValueError("stage_two_start_epoch must be >= 1.")
+        unknown = set(weights) - set(STAGE_TWO_WEIGHT_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Unknown stage_two_loss_weights keys {sorted(unknown)}; "
+                f"use {sorted(STAGE_TWO_WEIGHT_KEYS)}."
+            )
+        if "a0_ratios_weight" in weights:
+            weights = dict(weights)
+            a0 = weights.pop("a0_ratios_weight")
+            if weights.get("hirshfeld_weight", a0) != a0:
+                raise ValueError(
+                    "stage_two_loss_weights sets both 'hirshfeld_weight' "
+                    "and its alias 'a0_ratios_weight' to different values."
+                )
+            weights["hirshfeld_weight"] = a0
+            self.stage_two_loss_weights = weights
+        return self
 
     @model_validator(mode="after")
     def validate_robust_loss(self):
@@ -313,13 +366,16 @@ class TrainConfig(BaseModel):
     def validate_c6_ratios_loss(self):
         # With pretrained_model the architecture is the pickled model's;
         # WeightedPropertiesLoss raises if that model has no C6 head.
+        stage_two_c6 = (self.TRAINING.stage_two_loss_weights or {}).get(
+            "c6_ratios_weight", 0.0
+        )
         if (
-            self.TRAINING.c6_ratios_weight > 0
+            max(self.TRAINING.c6_ratios_weight, stage_two_c6) > 0
             and self.TRAINING.pretrained_model is None
             and not getattr(self.ARCHITECTURE, "c6_ratios_bool", False)
         ):
             raise ValueError(
-                "TRAINING.c6_ratios_weight > 0 requires "
+                "TRAINING.c6_ratios_weight > 0 (either stage) requires "
                 "ARCHITECTURE.c6_ratios_bool=True (the model needs a C6 "
                 "ratio head to supervise)."
             )

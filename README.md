@@ -867,6 +867,20 @@ Per-atom ratio labels (Hirshfeld/a0 and C6) may be missing for part of the train
 
 The two robust options are mutually exclusive and require `loss_type` `auto`/`properties`. To reproduce the JAX `so3lr` loss, combine `use_adaptive_robust_loss: true` with `loss_reduction: per_graph`.
 
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `use_robust_loss_validation` | `bool` | same as `use_robust_loss` | Use the fixed robust loss for the validation loss (which picks the best checkpoint and drives early stopping). Ignored with the adaptive loss: validation then always uses the training loss, as in JAX. |
+| `robust_loss_alpha_validation` | `float` | same as `robust_loss_alpha` | α of the fixed robust validation loss. |
+
+**Two-stage loss weights.** As in the JAX trainer (and the SO3LR-tauri paper, which raises the energy weight from 0.001 to 0.01), the loss weights can change during training:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `stage_two_start_epoch` | `int` | `None` | Epoch (≥ 1) from which the stage-two weights apply, to training and validation. At the switch the best-loss, early-stopping and `reduce_on_plateau` trackers reset; the current learning rate is kept. Early stopping during stage one ends the run, as in JAX. |
+| `stage_two_loss_weights` | `dict` | `None` | Weights for stage two, with the same keys as the `*_weight` options (`energy_weight`, `forces_weight`, `dipole_weight`, `hirshfeld_weight`/`a0_ratios_weight`, `c6_ratios_weight`, `charges_weight`). Keys not listed keep their stage-one value. Labels needed by either stage must be in the data. |
+
+Set both or neither; requires `loss_type` `auto`/`properties`. The adaptive robust-loss α/c are shared between the stages. Not combinable with SWA.
+
 The JAX trainer's per-target loss `scales` and per-element `atom_loss_weights` are not exposed: JAX training never sets them (all 1), so there is nothing to match.
 
 #### Training Loop
