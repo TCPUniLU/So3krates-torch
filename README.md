@@ -1117,7 +1117,7 @@ Also consider citing MACE, as this software heavily leans on or uses its code:
 
 If you have questions you can reach me at: tobias.henkes@uni.lu
 
-For bugs or feature requests, please use [GitHub Issues](https://github.com/tohenkes/So3krates-torch/issues).
+For bugs or feature requests, please use [GitHub Issues](https://github.com/TCPUniLU/So3krates-torch/issues).
 
 ## License
 
