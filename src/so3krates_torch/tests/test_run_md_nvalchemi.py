@@ -1331,3 +1331,56 @@ def test_head_spread_scalars_values():
     nan_col = cols["force_std_max_eV_A"](ctx)
     assert torch.isnan(nan_col).all()
     assert nan_col.dtype == torch.float64  # same dtype as the other branch
+
+
+def test_cli_multihead_native_pme_several_structures(monkeypatch, tmp_path):
+    """Multi-head model, two structures in one batch, NVAlchemi PME: one row
+    per structure, the energy spread per structure (not pooled over the
+    batch) and a NaN force column (energy-only model step)."""
+    a1 = _nacl_crystal()  # 8 atoms
+    a2 = _nacl_crystal() * (1, 1, 2)  # 16 atoms: a clearly different spread
+    a2.rattle(0.03, seed=5)
+
+    def run(name, frames, *extra):
+        run_dir = tmp_path / name
+        run_dir.mkdir()
+        # _run_cli builds a freshly initialised model: same seed, same
+        # weights in all three runs.
+        torch.manual_seed(0)
+        log = _run_cli(
+            monkeypatch,
+            run_dir,
+            frames,
+            "--ensemble",
+            "npt",
+            *_NATIVE_PME,
+            *extra,
+            output_heads=3,
+        )
+        return _read_csv_rows(log)
+
+    def step0_std(rows, graph):
+        (row,) = [
+            r
+            for r in rows
+            if float(r["step"]) == 0 and int(float(r["graph_idx"])) == graph
+        ]
+        return float(row["energy_std_eV"])
+
+    rows = run("batch", [a1, a2], "--index", ":")
+    ref_a1 = step0_std(run("a1", [a1]), 0)
+    ref_a2 = step0_std(run("a2", [a2]), 0)
+
+    graphs_per_step = {}
+    for row in rows:
+        graphs_per_step.setdefault(row["step"], set()).add(
+            int(float(row["graph_idx"]))
+        )
+        assert np.isnan(float(row["force_std_max_eV_A"]))
+        assert np.isfinite(float(row["pressure_bar"]))
+        assert np.isfinite(float(row["energy_std_eV"]))
+    assert all(g == {0, 1} for g in graphs_per_step.values())
+
+    assert abs(ref_a1 - ref_a2) > 1e-3  # the pair can detect pooling
+    assert step0_std(rows, 0) == pytest.approx(ref_a1, abs=1e-6)
+    assert step0_std(rows, 1) == pytest.approx(ref_a2, abs=1e-6)
