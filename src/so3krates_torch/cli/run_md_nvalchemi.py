@@ -908,7 +908,10 @@ def _head_spread_scalars(wrapper: NVAlchemiSO3LR) -> dict:
         forces = wrapper.head_results["forces_comm"]  # [H, N, 3] or None
         if forces is None:
             return torch.full(
-                (batch.num_graphs,), float("nan"), device=batch.device
+                (batch.num_graphs,),
+                float("nan"),
+                dtype=wrapper.head_results["energy_var"].dtype,
+                device=batch.device,
             )
         dev = forces - forces.mean(dim=0, keepdim=True)
         per_atom = dev.pow(2).sum(dim=-1).mean(dim=0).sqrt()  # [N] eV/Å

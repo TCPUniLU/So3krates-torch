@@ -199,7 +199,10 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
     (detached): ``energies`` ``[B, H]``, ``energy_var`` ``[B]``,
     ``forces_comm`` ``[H, N, 3]`` (``None`` without forces) and
     ``stress_var`` ``[B, 3, 3]`` (``None`` without stress).  It is
-    ``None`` for single-head models.
+    ``None`` for single-head models.  Wrapping **mutates** the model: it
+    sets ``select_heads=False`` and ``return_mean=False`` on it, so a
+    model still being trained with per-head selection must be copied
+    first.  Compiled (``torch.compile``) multi-head models are refused.
 
     *Dtype.*  Inputs are cast to the dtype of the wrapped model's
     parameters at call time, so ``wrapper.to(dtype)`` (or converting the
@@ -240,6 +243,13 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
 
         # Multi-output-head models: keep every head's output (as
         # MultiHeadSO3LRCalculator does) and reduce to the mean in forward.
+        if isinstance(getattr(model, "_orig_mod", None), MultiHeadSO3LR):
+            # torch.compile returns an OptimizedModule, which the
+            # isinstance check below would not recognise.
+            raise ValueError(
+                "torch.compile is not supported for multi-output-head "
+                "models (MultiHeadSO3LR); wrap the uncompiled model."
+            )
         self.is_multihead: bool = isinstance(model, MultiHeadSO3LR)
         self.num_output_heads: int | None = None
         self.head_results: dict[str, torch.Tensor | None] | None = None

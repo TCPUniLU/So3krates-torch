@@ -1591,3 +1591,12 @@ def test_multihead_native_pme_pipeline():
     assert hr["forces_comm"] is None  # energy-only step: no per-head forces
     assert hr["energy_var"].shape == (1,)
     assert hr["energy_var"][0] > 0
+
+
+def test_multihead_compiled_model_is_refused():
+    """A torch.compile'd MultiHeadSO3LR is an OptimizedModule, not a
+    MultiHeadSO3LR: without unwrapping it would pass per-head tensors to
+    NVAlchemi. Compiling multi-head models is unsupported, so refuse."""
+    compiled = torch.compile(_make_multihead())
+    with pytest.raises(ValueError, match="compile"):
+        NVAlchemiSO3LR(compiled)

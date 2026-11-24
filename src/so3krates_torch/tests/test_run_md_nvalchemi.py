@@ -1328,4 +1328,6 @@ def test_head_spread_scalars_values():
     assert cols["force_std_max_eV_A"](ctx).tolist() == [3.0, 1.0]
 
     wrapper.head_results["forces_comm"] = None
-    assert torch.isnan(cols["force_std_max_eV_A"](ctx)).all()
+    nan_col = cols["force_std_max_eV_A"](ctx)
+    assert torch.isnan(nan_col).all()
+    assert nan_col.dtype == torch.float64  # same dtype as the other branch
