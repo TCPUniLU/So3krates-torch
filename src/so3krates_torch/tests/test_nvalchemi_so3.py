@@ -1550,3 +1550,44 @@ def test_single_head_has_no_head_results():
     assert wrapper.is_multihead is False
     assert wrapper.num_output_heads is None
     assert wrapper.head_results is None
+
+
+def test_find_so3lr_wrapper_bare_and_pipeline():
+    from so3krates_torch.calculator.nvalchemi_so3 import (
+        build_nvalchemi_pme_model,
+        find_so3lr_wrapper,
+    )
+
+    bare = NVAlchemiSO3LR(_make_so3lr())
+    assert find_so3lr_wrapper(bare) is bare
+
+    model = _make_so3lr(electrostatics_bool=True)
+    pipe = build_nvalchemi_pme_model(model, alpha=0.6)
+    found = find_so3lr_wrapper(pipe)
+    assert isinstance(found, NVAlchemiSO3LR)
+    assert found.model is model
+
+    with pytest.raises(ValueError, match="NVAlchemiSO3LR"):
+        find_so3lr_wrapper(torch.nn.Linear(1, 1))
+
+
+def test_multihead_native_pme_pipeline():
+    from so3krates_torch.calculator.nvalchemi_so3 import (
+        build_nvalchemi_pme_model,
+        find_so3lr_wrapper,
+        set_active_outputs,
+    )
+
+    model = _make_multihead(electrostatic_energy_bool=True)
+    pipe = build_nvalchemi_pme_model(model, alpha=0.6)
+    set_active_outputs(pipe, {"energy", "forces", "stress"})
+
+    out, _ = _pipeline_eval(pipe, _rocksalt())
+
+    assert out["energy"].shape == (1, 1)
+    assert torch.isfinite(out["forces"]).all()
+    assert torch.isfinite(out["stress"]).all()
+    hr = find_so3lr_wrapper(pipe).head_results
+    assert hr["forces_comm"] is None  # energy-only step: no per-head forces
+    assert hr["energy_var"].shape == (1,)
+    assert hr["energy_var"][0] > 0

@@ -549,6 +549,25 @@ def set_active_outputs(model: nn.Module, outputs) -> None:
     )
 
 
+def find_so3lr_wrapper(model: nn.Module) -> NVAlchemiSO3LR:
+    """Return the :class:`NVAlchemiSO3LR` inside ``model``.
+
+    ``model`` is either the wrapper itself or the ``PipelineModelWrapper``
+    from :func:`build_nvalchemi_pme_model`, whose short-range step holds
+    it.  Used to read :attr:`NVAlchemiSO3LR.head_results` during MD.
+    """
+    if isinstance(model, NVAlchemiSO3LR):
+        return model
+    for group in getattr(model, "groups", ()):
+        for step in group.steps:
+            if isinstance(step.model, NVAlchemiSO3LR):
+                return step.model
+    raise ValueError(
+        f"no NVAlchemiSO3LR found in {type(model).__name__}; expected the "
+        "wrapper or a pipeline from build_nvalchemi_pme_model()."
+    )
+
+
 # Standard Coulomb constant in eV·Å/e² — matches the model's `ke`
 # (so3krates_torch.blocks.physical_potentials).
 _KE_EV_ANG = 14.399645351950548
