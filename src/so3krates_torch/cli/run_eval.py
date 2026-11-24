@@ -362,8 +362,8 @@ def main():
         "--compile",
         action="store_true",
         default=False,
-        help="Compile the model with torch.compile (dynamic=True) "
-        "before evaluation.",
+        help="EXPERIMENTAL. Compile the model with torch.compile "
+        "(dynamic=True) before evaluation.",
     )
     argparser.add_argument(
         "--fullgraph",

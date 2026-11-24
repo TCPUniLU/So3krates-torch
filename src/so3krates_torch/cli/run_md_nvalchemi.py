@@ -308,13 +308,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--compile",
         action="store_true",
-        help="Compile the inner model with torch.compile(dynamic=True). "
-        "Adds ~30-60 s first-step overhead, then typically 2-4× speedup "
-        "for large systems. On CUDA the model is compiled with "
-        "fullgraph=True (no graph breaks allowed; compilation fails "
-        "loudly if one occurs). On CPU, long-range SO3LR models are "
-        "refused (Inductor CPU backend crash). NVAlchemi-native PME "
-        "(--electrostatics nvalchemi) runs outside the compiled module.",
+        help="EXPERIMENTAL. Compile the inner model with "
+        "torch.compile(dynamic=True). Adds ~30-60 s first-step "
+        "overhead; a speedup over eager has not been measured yet. On "
+        "CUDA the model is compiled with fullgraph=True, which "
+        "currently fails with PyTorch 2.15 (use --no-compile-fullgraph). "
+        "On CPU, long-range SO3LR models are refused (Inductor CPU "
+        "backend crash). NVAlchemi-native PME (--electrostatics "
+        "nvalchemi) runs outside the compiled module.",
     )
     p.add_argument(
         "--no-compile-fullgraph",

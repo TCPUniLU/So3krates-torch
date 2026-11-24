@@ -8,7 +8,8 @@ Implementation of the So3krates + SO3LR model in pytorch.
 
 1. activate your environment
 2. `pip install so3krates-torch`
-3. (Optional) PME electrostatics support: `pip install "so3krates-torch[pme]"` (installs `torch-pme>=0.4`)
+3. (Optional) PME electrostatics/dispersion support: `pip install "so3krates-torch[pme]"` (installs `torch-pme>=0.5`)
+4. (Optional) GPU-native MD with NVAlchemi: `pip install "so3krates-torch[nvalchemi]"` (Python ≥ 3.11)
 
 **From source (development):**
 
@@ -18,17 +19,27 @@ Implementation of the So3krates + SO3LR model in pytorch.
 4. `pip install -r requirements.txt`
 5. `pip install .`
 6. (Optional) PME electrostatics/dispersion support: `pip install ".[pme]"` (installs `torch-pme>=0.5`)
+7. (Optional) GPU-native MD with NVAlchemi: `pip install ".[nvalchemi]"` (Python ≥ 3.11)
+
+Upgrading from 0.2.x? See the breaking changes in [CHANGELOG.md](CHANGELOG.md).
 
 #### Implemented features:
-1. ASE calculator for MD (including pre-trained SO3LR — see [Pretrained SO3LR Models](#pretrained-so3lr-models-ase-calculator) below)
-2. Inference over ase readable datasets: `torchkrates-eval`
-3. Error metrics over ase readable datasets: `torchkrates-metric`
-4. Transforming pyTorch and JAX parameter formates: `torchkrates-jax2torch` or `torchkrates-torch2jax` (for these you need to install jax, flax, and the `so3lr_dev` package (this repo's JAX v2 reference implementation))
-5. Training: `torchkrates-train --config config.yaml` (see example)
-6. Data preprocessing: `torchkrates-preprocess`
-7. HDF5 file merging: `torchkrates-merge`
-8. LAMMPS model export: `torchkrates-create-lammps-model`
-9. PME parameter tuning: `torchkrates-tune-pme`
+1. ASE calculator for MD (including pre-trained SO3LR v1 and SO3LR tauri — see [Pretrained SO3LR Models](#pretrained-so3lr-models-ase-calculator) below)
+2. GPU-native batched MD (NVT/NPT) with NVAlchemi: `torchkrates-md-nvalchemi` (see [below](#torchkrates-md-nvalchemi--gpu-native-md-with-nvalchemi))
+3. Inference over ase readable datasets: `torchkrates-eval`
+4. Error metrics over ase readable datasets: `torchkrates-metric`
+5. Transforming pyTorch and JAX parameter formates: `torchkrates-jax2torch` or `torchkrates-torch2jax`, with a built-in JAX↔PyTorch parity check (for these you need to install jax, flax, and the `so3lr_dev` package (this repo's JAX v2 reference implementation))
+6. Training: `torchkrates-train --config config.yaml` (see example), including:
+   - multi-theory-level (multi-fidelity) training (`num_theory_levels`)
+   - multi-head fine-tuning with data replay (`convert_to_multihead`, `replay_*`)
+   - the SO3LR-tauri loss: fixed or adaptive robust loss, per-structure loss reduction, two-stage loss weights, Hirshfeld (a0) and C6 ratio losses
+   - LoRA/DoRA/VeRA fine-tuning
+7. SO3LR physics: ZBL or NHL repulsion, electrostatics, dispersion (Hirshfeld or C6 ratios), optional PME for electrostatics and dispersion
+8. Data preprocessing: `torchkrates-preprocess`
+9. HDF5 file merging: `torchkrates-merge`
+10. LAMMPS model export: `torchkrates-create-lammps-model`
+11. PME parameter tuning (electrostatics and dispersion): `torchkrates-tune-pme`
+12. *Experimental:* `torch.compile` for inference and MD (`--compile`; see [Experimental: torch.compile](#experimental-torchcompile))
 
 
 > [!IMPORTANT]
@@ -60,6 +71,9 @@ Each `<stem>.pt` is a plain `torch.save`d `state_dict` (**not** a pickled whole-
 | `v2-s`, `v2-m`, `v2-l` | same files as `tauri-{s,m,l}-2602` | older names, kept as aliases of the 2602 generation |
 
 The tauri checkpoints were converted with `torchkrates-jax2torch --so3lr_dev_checkpoint {s,m,l} --so3lr_dev_generation {2602,2606}`; the converter's JAX↔Torch parity check passes for all six (energy within 6e-6 eV, force differences below 1e-5 eV/Å on its bundled example structure).
+
+> [!WARNING]
+> **License of the bundled weights.** The SO3LR tauri weights (`tauri-*` and the `v2-*` aliases) are licensed under [CC BY-NC 4.0](licenses/LICENSE.CC-BY-NC-4.0): non-commercial use only, with attribution. Models fine-tuned from them are adaptations and fall under the same license. The original SO3LR weights (`v1`) and the code are MIT. See [NOTICE.md](NOTICE.md) for details.
 
 ### `SO3LRCalculator` — ASE calculator
 
@@ -290,6 +304,8 @@ torchkrates-eval --model_path my_checkpoint.pt \
 
 `--multispecies` is needed whenever the dataset's structures don't all share the same number of atoms (as above) — see the flag table below.
 
+Models with several theory levels (the tauri models and the `v2-*` aliases) need an integer `theory_level` in each structure's `atoms.info` (so3lr_dev's default level is `5`). `torchkrates-eval` and `torchkrates-metric` have no flag to set it for the whole dataset yet.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--model_path` | *required* | Path to a single `.model` file, a directory of `.model` files (use with `--ensemble_size N` for ensemble inference), a bundled pretrained keyword (`v1`, `tauri-*`, `v2-*`), or a `.pt` state_dict checkpoint with a sibling `<stem>_settings.yaml` |
@@ -319,6 +335,7 @@ torchkrates-eval --model_path my_checkpoint.pt \
 | `--head_key` | `head` | `atoms.info` key holding each structure's head name (multi-head models) |
 | `--model_type` | `so3lr` | `so3lr` or `so3krates` |
 | `--output_prefix` | `SO3` | Prefix for predicted properties in `.xyz` output (`SO3_energy`, `SO3_forces`, …) |
+| `--compile` | `False` | *Experimental.* `torch.compile` the model before evaluation (see [Experimental: torch.compile](#experimental-torchcompile)) |
 | `--fullgraph` / `--no-fullgraph` | `True` on CUDA, else `False` | `fullgraph` argument to `torch.compile` when `--compile` is set |
 | `--return_att` | `False` | Save per-layer attention scores (HDF5 output, group `att_scores`) |
 | `--return_inv_descriptors` | `False` | Save invariant (scalar) per-atom descriptors |
@@ -387,8 +404,8 @@ torchkrates-md-nvalchemi \
 | `--pme-spline-order` | `4` | B-spline order for `--electrostatics nvalchemi` |
 | `--pme-accuracy` | `1e-6` | Target accuracy; sets the derived `--pme-alpha` |
 | `--skip-vel-init` | `False` | Keep the velocities already stored in the structure file instead of (re-)sampling Maxwell-Boltzmann at `--temperature` |
-| `--compile` | `False` | `torch.compile` the inner model; raises on CPU for long-range models (unsupported Inductor lowering) |
-| `--no-compile-fullgraph` | `False` | With `--compile`, allow graph breaks (`fullgraph=False`) instead of the CUDA default `fullgraph=True`; slower to optimise but tolerates constructs Dynamo cannot trace |
+| `--compile` | `False` | *Experimental.* `torch.compile` the inner model; raises on CPU for long-range models (unsupported Inductor lowering). See [Experimental: torch.compile](#experimental-torchcompile) |
+| `--no-compile-fullgraph` | `False` | With `--compile`, allow graph breaks (`fullgraph=False`) instead of the CUDA default `fullgraph=True`; slower to optimise but tolerates constructs Dynamo cannot trace. Currently needed on CUDA with PyTorch 2.15 |
 | `--seed` | `42` | Langevin RNG seed (NVT only) |
 | `--friction` | `1e-2` | Langevin friction coefficient [1/fs] (NVT only) |
 | `--thermostat-time` | `100 * dt` | NPT thermostat time constant [fs] (LAMMPS `tdamp` convention) |
@@ -624,6 +641,17 @@ This writes `hyperparameters.json` and `params.pkl` into the two given directori
 | `--use_defined_shifts` | `False` | `jax2torch` only: take the per-element energy shifts from the JAX config (`data.energy_shifts`). `torch2jax` accepts the flag but ignores it. |
 
 The check behind these flags is `so3krates_torch.tools.model_parity.check_model_parity`. Besides energy and forces it can also compare the stress (`compare_stress=True`, periodic structures only), the partial charges, dipole, Hirshfeld and C6 ratios (`compare_observables=(...)`), and any theory-level head (`theory_level=<int>`; the default is so3lr_dev's level 5). See `src/so3krates_torch/tests/test_v2_parity.py` for the tolerances the test suite uses.
+
+---
+
+## Experimental: torch.compile
+
+`torchkrates-eval --compile` and `torchkrates-md-nvalchemi --compile` wrap the model in `torch.compile(dynamic=True)`. This is **experimental and not recommended for production runs yet**; use the eager default.
+
+- **No measured speedup.** Compilation adds roughly 30–60 s to the first step, and a steady-state speedup over eager on GPU has not been measured yet.
+- **`fullgraph=True` (the CUDA default) fails with PyTorch 2.15**, for forces alone (NVT) and with stress (NPT). Dynamo rejects `torch.autograd.grad` inside the compiled region and the strain tensor created there. Pass `--no-compile-fullgraph` (MD) or `--no-fullgraph` (eval) to allow graph breaks; that path matched eager energies, forces and stress in a CPU check with the `aot_eager` backend.
+- **CPU:** long-range SO3LR models are refused, because PyTorch's Inductor CPU backend crashes on the ZBL/electrostatics/dispersion scatter operations. Short-range-only models compile on CPU.
+- **NVAlchemi PME** (`--electrostatics nvalchemi`) runs outside the compiled module.
 
 ---
 
@@ -1126,4 +1154,11 @@ For bugs or feature requests, please use [GitHub Issues](https://github.com/tohe
 
 ## License
 
-The code is published and distributed under the [MIT License](MIT.md).
+The code is published and distributed under the [MIT License](LICENSE.md), except for the robust loss module (`modules/robust_loss/`, Apache-2.0).
+
+The bundled pretrained weights have their own licenses:
+
+- **SO3LR tauri** (`pretrained/so3lr/tauri/`, keywords `tauri-*` and `v2-*`): [CC BY-NC 4.0](licenses/LICENSE.CC-BY-NC-4.0), non-commercial use only. Models fine-tuned from these weights fall under the same license.
+- **Original SO3LR** (`pretrained/so3lr/v1/`, keyword `v1`): MIT.
+
+Parts of the code are adapted from MACE and PyTorch Geometric (both MIT). [NOTICE.md](NOTICE.md) has the full attribution; the license texts are in [`licenses/`](licenses/) and ship with the package.
