@@ -391,6 +391,13 @@ torchkrates-md-nvalchemi \
 | `--log-file` | `md_log.csv` | Output CSV log path |
 | `--log-freq` | `100` | Log every N steps |
 
+**Multi-head models.** A model with several independent energy output heads (`MultiHeadSO3LR`, from `convert_to_multihead`, saved by training as a pickled `.model`) runs on the mean over heads of energy, forces and stress, the same as `MultiHeadSO3LRCalculator`. The CSV log then has two extra columns with the spread over heads, a measure of the model's uncertainty:
+
+- `energy_std_eV`: standard deviation of the per-head energies [eV];
+- `force_std_max_eV_A`: per atom, the root-mean-square deviation of the head forces from their mean; the largest value in each structure [eV/Å]. It is `nan` with `--electrostatics nvalchemi`, where the model only returns energies and the forces come from the summed pipeline energy.
+
+Computing forces for every head costs one batched backward pass per head, as in the ASE calculator. `--compile` is refused for these models. In Python, `find_so3lr_wrapper(model).head_results` (from `so3krates_torch.calculator.nvalchemi_so3`) holds the per-head values of the last evaluation: `energies`, `energy_var`, `forces_comm` and `stress_var`, named as in the ASE calculator's results. Multi-theory-level models such as tauri are a different mechanism and use `--theory-level`.
+
 **Running a bundled pre-trained model.** `--model` takes a bundled keyword (`v1`, `tauri-{s,m,l}-{2602,2606}`, see [Pretrained SO3LR Models](#pretrained-so3lr-models-ase-calculator)), a `<stem>.pt` state_dict with a sibling `<stem>_settings.yaml`, or a pickled `.model`. The long-range cutoff defaults to 12.0 Å and the dispersion damping to 2.0 Å when the model stores none, the same values `SO3LRCalculator` uses, so NPT on a periodic cell needs no extra flags:
 
 ```bash

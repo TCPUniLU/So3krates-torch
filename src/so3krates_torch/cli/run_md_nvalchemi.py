@@ -27,6 +27,9 @@ CSV log columns:
     step, graph_idx, status, energy (eV), fmax (eV/Å), temperature (K),
     elapsed_s (s), s_per_step (s); plus volume_A3 (Å³) and density_g_cm3
     (g/cm³) for periodic structures, and pressure_bar (bar) for NPT.
+    Multi-output-head models (MultiHeadSO3LR) run on the mean over heads
+    and add energy_std_eV (eV) and force_std_max_eV_A (eV/Å), the spread
+    over heads.
 
 Total charge and spin are read from ``atoms.info["charge"]`` and
 ``atoms.info["total_spin"]`` (the keys ``TorchkratesCalculator`` uses).
@@ -55,8 +58,10 @@ try:
     from so3krates_torch.calculator.nvalchemi_so3 import (
         NVAlchemiSO3LR,
         build_nvalchemi_pme_model,
+        find_so3lr_wrapper,
         set_active_outputs,
     )
+    from so3krates_torch.modules.models import MultiHeadSO3LR
 except ImportError as _err:  # e.g. Python 3.10: the extra installs nothing
     _NVALCHEMI_IMPORT_ERROR: ImportError | None = _err
 else:
@@ -548,6 +553,17 @@ def load_model(
     """
     raw = _load_raw_model(path, device, architecture_overrides)
 
+    if isinstance(raw, MultiHeadSO3LR):
+        if compile_model:
+            raise ValueError(
+                "--compile is not supported for multi-output-head models "
+                "(MultiHeadSO3LR); run without --compile."
+            )
+        print(
+            f"  Multi-head model: {raw.num_output_heads} output heads; "
+            "MD runs on the head mean."
+        )
+
     block = getattr(raw, "atomic_energy_output_block", None)
     n_levels = getattr(block, "num_theory_levels", 1)
     if n_levels > 1:
@@ -874,6 +890,45 @@ class _PrintHook:
             print(row, flush=True)
 
 
+def _head_spread_scalars(wrapper: NVAlchemiSO3LR) -> dict:
+    """CSV columns for the spread over output heads (multi-head models).
+
+    Read from ``wrapper.head_results`` of the last model evaluation:
+
+    - ``energy_std_eV``: standard deviation of the per-head energies.
+    - ``force_std_max_eV_A``: per atom, ``sqrt(mean_h |F_h - F_mean|^2)``;
+      the largest value in each graph.  NaN when no per-head forces exist.
+    """
+
+    def _energy_std(ctx):
+        return wrapper.head_results["energy_var"].sqrt()  # [B] eV
+
+    def _force_std_max(ctx):
+        batch = ctx.batch
+        forces = wrapper.head_results["forces_comm"]  # [H, N, 3] or None
+        if forces is None:
+            return torch.full(
+                (batch.num_graphs,), float("nan"), device=batch.device
+            )
+        dev = forces - forces.mean(dim=0, keepdim=True)
+        per_atom = dev.pow(2).sum(dim=-1).mean(dim=0).sqrt()  # [N] eV/Å
+        out = torch.zeros(
+            batch.num_graphs, dtype=per_atom.dtype, device=per_atom.device
+        )
+        return out.scatter_reduce(
+            0,
+            batch.batch_idx.long(),
+            per_atom,
+            reduce="amax",
+            include_self=False,
+        )  # [B]
+
+    return {
+        "energy_std_eV": _energy_std,
+        "force_std_max_eV_A": _force_std_max,
+    }
+
+
 def _make_hooks(
     model: BaseModelMixin,
     log_file: str,
@@ -882,6 +937,7 @@ def _make_hooks(
     ensemble: str,
     start_time_ref: list[float],
     has_cell: bool = True,
+    head_source: NVAlchemiSO3LR | None = None,
 ) -> list:
     """Neighbor, CSV-logging and stdout hooks.
 
@@ -889,6 +945,12 @@ def _make_hooks(
     registered when the batch has a cell (periodic input), and
     ``pressure_bar`` only for NPT (NVT does not compute stress); a
     non-periodic ``Batch`` has no ``cell`` attribute at all.
+
+    When ``head_source`` wraps a multi-output-head model, the per-graph
+    spread over heads of the last evaluation is logged too:
+    ``energy_std_eV`` and ``force_std_max_eV_A`` (the largest per-atom
+    force spread; NaN when the model step computed no per-head forces,
+    as in the native-PME pipeline).
     """
 
     def _volume(ctx):
@@ -924,6 +986,8 @@ def _make_hooks(
         custom_scalars["density_g_cm3"] = _density
     if ensemble == "npt":
         custom_scalars["pressure_bar"] = _pressure
+    if head_source is not None and head_source.is_multihead:
+        custom_scalars.update(_head_spread_scalars(head_source))
     custom_scalars["elapsed_s"] = _elapsed
     custom_scalars["s_per_step"] = _s_per_step
 
@@ -1065,6 +1129,7 @@ def main() -> None:
         args.ensemble,
         start_time_ref,
         has_cell=getattr(batch, "cell", None) is not None,
+        head_source=find_so3lr_wrapper(model),
     )
 
     # dt, friction, barostat_time, thermostat_time are all in fs
