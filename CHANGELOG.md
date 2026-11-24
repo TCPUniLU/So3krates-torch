@@ -28,6 +28,18 @@
   Energies of PME models therefore differ from 0.2.x and now match so3lr_dev.
   `PMEElectrostaticInteraction` now returns the k-space term only; the
   real-space residual is part of `ElectrostaticInteraction`.
+- **Legacy dispersion tables now match official SO3LR.** With
+  `legacy_dispersion_bool: true` (the default for v1 and other non-tauri
+  models), the free-atom alpha and C6 tables are now the official SO3LR values,
+  stored as float64:
+  - the actinides Pa–No (Z = 91–102) get different C6 values; the old values,
+    from the `mlff` package, were 20–50 % larger;
+  - all other elements change only by the former float32 rounding (about 1e-7
+    relative).
+
+  `ALPHAS` and `C6_COEF` are gone from `blocks.physical_potentials`; the tables
+  are `alphas_legacy` and `C6_coef_legacy` in `blocks.dispersion_ref_data`.
+  The NLH repulsion tables are now loaded from `blocks/nhl_tables.npz`.
 - **`pip install .[pme]` requires `torch-pme>=0.5`** (was `>=0.4`).
 - **Training stops when a loss needs a property the data lacks.** If a loss
   weight is set (e.g. `hirshfeld_weight`) but the property's key is missing
