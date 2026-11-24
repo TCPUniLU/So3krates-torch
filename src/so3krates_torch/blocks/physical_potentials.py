@@ -6,6 +6,7 @@ import math
 from so3krates_torch.tools.gather import gather_rows
 import numpy as np
 from so3krates_torch.tools.scatter import scatter_sum
+from so3krates_torch.blocks import dispersion_ref_data
 from so3krates_torch.blocks.dispersion_ref_data import NHL_AA, NHL_BB
 
 # NOTE: so3krates_torch.blocks.pme_mesh imports torch-pme (an optional
@@ -17,223 +18,6 @@ from so3krates_torch.blocks.dispersion_ref_data import NHL_AA, NHL_BB
 BOHR = 0.5291772105638411  # Bohr radius in Angstrom
 HARTREE = 27.211386245988  # Hartree in eV
 FINE_STRUCTURE = 0.0072973525693  # fine structure constant
-
-# Reference data for dispersion calculations (from mlff dispersion_ref_data)
-ALPHAS = torch.tensor(
-    [
-        4.5,
-        1.38,
-        164.2,
-        38.0,
-        21.0,
-        12.0,
-        7.4,
-        5.4,
-        3.8,
-        2.67,
-        162.7,
-        71.0,
-        60.0,
-        37.0,
-        25.0,
-        19.6,
-        15.0,
-        11.1,
-        292.9,
-        160.0,
-        120.0,
-        98.0,
-        84.0,
-        78.0,
-        63.0,
-        56.0,
-        50.0,
-        48.0,
-        42.0,
-        40.0,
-        60.0,
-        41.0,
-        29.0,
-        25.0,
-        20.0,
-        16.8,
-        319.2,
-        199.0,
-        126.74,
-        119.97,
-        101.6,
-        88.42,
-        80.08,
-        65.89,
-        56.1,
-        23.68,
-        50.6,
-        39.7,
-        70.22,
-        55.95,
-        43.67,
-        37.65,
-        35.0,
-        27.3,
-        399.9,
-        275.0,
-        213.7,
-        204.7,
-        215.8,
-        208.4,
-        200.2,
-        192.1,
-        184.2,
-        158.3,
-        169.5,
-        164.64,
-        156.3,
-        150.2,
-        144.3,
-        138.9,
-        137.2,
-        99.52,
-        82.53,
-        71.04,
-        63.04,
-        55.06,
-        42.51,
-        39.68,
-        36.5,
-        33.9,
-        69.92,
-        61.8,
-        49.02,
-        45.01,
-        38.93,
-        33.54,
-        317.8,
-        246.2,
-        203.3,
-        217.0,
-        154.4,
-        127.8,
-        150.5,
-        132.2,
-        131.2,
-        143.6,
-        125.3,
-        121.5,
-        117.5,
-        113.4,
-        109.4,
-        105.4,
-    ],
-    dtype=torch.float32,
-)
-
-C6_COEF = torch.tensor(
-    [
-        6.50000e00,
-        1.46000e00,
-        1.38700e03,
-        2.14000e02,
-        9.95000e01,
-        4.66000e01,
-        2.42000e01,
-        1.56000e01,
-        9.52000e00,
-        6.38000e00,
-        1.55600e03,
-        6.27000e02,
-        5.28000e02,
-        3.05000e02,
-        1.85000e02,
-        1.34000e02,
-        9.46000e01,
-        6.43000e01,
-        3.89700e03,
-        2.22100e03,
-        1.38300e03,
-        1.04400e03,
-        8.32000e02,
-        6.02000e02,
-        5.52000e02,
-        4.82000e02,
-        4.08000e02,
-        3.73000e02,
-        2.53000e02,
-        2.84000e02,
-        4.98000e02,
-        3.54000e02,
-        2.46000e02,
-        2.10000e02,
-        1.62000e02,
-        1.29600e02,
-        4.69100e03,
-        3.17000e03,
-        1.96858e03,
-        1.67791e03,
-        1.26361e03,
-        1.02873e03,
-        1.39087e03,
-        6.09750e02,
-        4.69000e02,
-        1.57500e02,
-        3.39000e02,
-        4.52000e02,
-        7.07050e02,
-        5.87420e02,
-        4.59320e02,
-        3.96000e02,
-        3.85000e02,
-        2.85900e02,
-        6.84600e03,
-        5.72700e03,
-        3.88450e03,
-        3.70833e03,
-        3.91184e03,
-        3.90875e03,
-        3.84768e03,
-        3.70869e03,
-        3.51171e03,
-        2.78153e03,
-        3.12441e03,
-        2.98429e03,
-        2.83995e03,
-        2.72412e03,
-        2.57678e03,
-        2.38753e03,
-        2.37180e03,
-        1.27480e03,
-        1.01992e03,
-        8.47930e02,
-        7.10200e02,
-        5.96670e02,
-        3.59100e02,
-        3.47100e02,
-        2.98000e02,
-        3.92000e02,
-        7.17440e02,
-        6.97000e02,
-        5.71000e02,
-        5.30920e02,
-        4.57530e02,
-        3.90630e02,
-        4.22444e03,
-        4.85132e03,
-        3.60441e03,
-        4.04754e03,
-        2.87677e03,
-        2.37589e03,
-        3.10212e03,
-        2.82047e03,
-        2.79400e03,
-        3.15095e03,
-        2.75600e03,
-        2.70257e03,
-        2.62659e03,
-        2.54862e03,
-        2.46869e03,
-        2.38680e03,
-    ],
-    dtype=torch.float32,
-)
 
 
 def softplus_inverse(x):
@@ -268,25 +52,23 @@ def _dispersion_tables(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Free-atom alpha/C6 reference tables (indexed by Z-1).
 
-    Returns the legacy (JAX v1) module-level ``ALPHAS``/``C6_COEF`` tables
-    when ``legacy_dispersion_bool`` is True, otherwise the refitted tables
-    from ``dispersion_ref_data`` (so3lr-s/m/l). Both tables share the
-    identical Z-1 indexing convention and units. Returned tables are the
-    raw (undtyped/undeviced) tensors — callers apply
-    ``.to(device=..., dtype=...)`` themselves, as ``mixing_rules`` already
-    does for the legacy case.
+    Returns the legacy tables (``alphas_legacy``/``C6_coef_legacy``, v1
+    SO3LR) when ``legacy_dispersion_bool`` is True, otherwise the refitted
+    tables (``alphas``/``C6_coef``, SO3LR tauri). Both come from
+    ``dispersion_ref_data`` (official SO3LR values) and share the Z-1
+    indexing and units. They are returned as float64 CPU tensors, the exact
+    stored values; callers apply ``.to(device=..., dtype=...)``, as
+    ``mixing_rules`` does.
     """
     if legacy_dispersion_bool:
-        return ALPHAS, C6_COEF
-
-    from so3krates_torch.blocks.dispersion_ref_data import (
-        alphas as _ALPHAS_REFITTED,
-        C6_coef as _C6_COEF_REFITTED,
-    )
-
+        alphas, c6 = dispersion_ref_data.alphas_legacy, (
+            dispersion_ref_data.C6_coef_legacy
+        )
+    else:
+        alphas, c6 = dispersion_ref_data.alphas, dispersion_ref_data.C6_coef
     return (
-        torch.tensor(_ALPHAS_REFITTED, dtype=torch.get_default_dtype()),
-        torch.tensor(_C6_COEF_REFITTED, dtype=torch.get_default_dtype()),
+        torch.tensor(alphas, dtype=torch.float64),
+        torch.tensor(c6, dtype=torch.float64),
     )
 
 
