@@ -157,3 +157,104 @@ def test_checkpoint_handler_full_cycle(minimal_state, tmp_path):
         minimal_state.model.parameters(), new_state.model.parameters()
     ):
         assert torch.allclose(p_orig, p_new)
+
+
+# ---------------------------------------------------------------------------
+# Loss-module state (adaptive robust loss parameters)
+# ---------------------------------------------------------------------------
+
+
+def _adaptive_state():
+    from so3krates_torch.modules.loss import WeightedPropertiesLoss
+
+    model = nn.Linear(10, 5)
+    loss_fn = WeightedPropertiesLoss(
+        {"energy": 1.0, "forces": 1.0}, robust="adaptive"
+    )
+    optimizer = torch.optim.Adam(
+        [
+            {"params": list(model.parameters())},
+            {"params": list(loss_fn.parameters())},
+        ],
+        lr=0.001,
+    )
+    sched = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
+    return CheckpointState(model, optimizer, sched, loss_fn=loss_fn)
+
+
+def test_checkpoint_roundtrip_loss_state():
+    state = _adaptive_state()
+    with torch.no_grad():
+        state.loss_fn.adaptive.alpha_raw["forces"].fill_(0.7)
+    ckpt = CheckpointBuilder.create_checkpoint(state)
+    assert set(ckpt["loss_fn"]) == {
+        n for n, _ in state.loss_fn.named_parameters()
+    }
+    new = _adaptive_state()
+    CheckpointBuilder.load_checkpoint(new, ckpt, strict=True)
+    assert new.loss_fn.adaptive.alpha_raw["forces"].item() == (
+        pytest.approx(0.7)
+    )
+
+
+def test_checkpoint_without_loss_params_has_no_loss_key(minimal_state):
+    assert "loss_fn" not in CheckpointBuilder.create_checkpoint(minimal_state)
+
+
+def test_restart_without_loss_state_raises_clearly(minimal_state, tmp_path):
+    from so3krates_torch.tools.checkpoint import LossStateMismatchError
+    from so3krates_torch.tools.training_setup import (
+        load_checkpoint_if_exists,
+    )
+
+    handler = CheckpointHandler(directory=str(tmp_path), tag="run")
+    handler.save(minimal_state, epochs=3)  # checkpoint without loss state
+    state = _adaptive_state()
+    with pytest.raises(LossStateMismatchError, match="use_adaptive_robust"):
+        load_checkpoint_if_exists(
+            model=state.model,
+            optimizer=state.optimizer,
+            lr_scheduler=state.lr_scheduler,
+            checkpoint_handler=handler,
+            ema=None,
+            device=torch.device("cpu"),
+            config={"MISC": {}},
+            loss_fn=state.loss_fn,
+        )
+
+
+def test_resume_adaptive_checkpoint_without_adaptive_loss(caplog):
+    """Train adaptive, resume with plain L2: drop the checkpoint's extra
+    optimizer group and keep going instead of silently restarting."""
+    import logging
+
+    state = _adaptive_state()
+    state.model(torch.ones(1, 10)).sum().backward()
+    for p in state.loss_fn.parameters():
+        p.grad = torch.ones_like(p)
+    state.optimizer.step()
+    ckpt = CheckpointBuilder.create_checkpoint(state)
+
+    model = nn.Linear(10, 5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    sched = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
+    plain = CheckpointState(model, optimizer, sched)
+    with caplog.at_level(logging.WARNING):
+        CheckpointBuilder.load_checkpoint(plain, ckpt, strict=True)
+    assert "adaptive robust loss" in caplog.text
+    assert len(optimizer.state) == 2  # weight + bias restored
+    for p_old, p_new in zip(state.model.parameters(), model.parameters()):
+        assert torch.allclose(p_old, p_new)
+
+
+def test_loss_params_untouched_when_model_load_fails():
+    state = _adaptive_state()
+    with torch.no_grad():
+        state.loss_fn.adaptive.alpha_raw["forces"].fill_(0.7)
+    ckpt = CheckpointBuilder.create_checkpoint(state)
+    ckpt["model"] = {"bogus": torch.zeros(1)}
+    new = _adaptive_state()
+    before = new.loss_fn.adaptive.alpha_raw["forces"].item()
+    with pytest.raises(RuntimeError):
+        CheckpointBuilder.load_checkpoint(new, ckpt, strict=True)
+    assert new.loss_fn.adaptive.alpha_raw["forces"].item() == before

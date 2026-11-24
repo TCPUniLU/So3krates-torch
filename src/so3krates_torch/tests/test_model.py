@@ -5,20 +5,119 @@ from so3krates_torch.calculator.so3 import SO3LRCalculator
 
 
 def test_so3lr_calculator_prediction():
-    """Test SO3LR pre-trained model loading and prediction via ASE."""
+    """Test SO3LR pre-trained model loading and prediction via ASE.
+
+    Uses the bundled "v1" checkpoint (``pretrained/so3lr/v1/``, loaded
+    via ``load_pretrained_so3lr`` -- state_dict + settings.yaml, not a
+    pickled model). Reference values captured fresh from this exact
+    checkpoint/structure, not carried over from the old pickled
+    ``so3lr.model`` artifact (which has since been removed).
+    """
     model = SO3LRCalculator(
+        model="v1",
         default_dtype="float64",
     )
     mol = molecule("H2O")
     model.calculate(mol)
     results = model.results
-    ref_energy = -495.8705186908738
+    ref_energy = -5.01616383247536
     ref_forces = np.array(
         [
-            [0.0, -1.0547118733938987e-15, -0.14374645878607717],
-            [0.0, -0.2923033736335291, 0.071873229393038196],
-            [0.0, 0.29230337363353009, 0.071873229393039084],
+            [0.0, 1.48318857e-15, -0.14374645878607717],
+            [0.0, -0.292303374, 0.0718732294],
+            [0.0, 0.292303374, 0.0718732294],
         ]
     )
     assert np.allclose(results["forces"], ref_forces, rtol=1e-4)
     assert np.isclose(results["energy"], ref_energy, rtol=1e-4)
+
+
+def test_so3lr_calculator_requires_theory_level_for_multihead_model():
+    """v2 checkpoints have 16 theory-level heads; silently picking one
+    would give energies that differ from so3lr_dev (which uses 5)."""
+    import pytest
+
+    with pytest.raises(ValueError, match="theory_level") as excinfo:
+        SO3LRCalculator(model="v2-s")
+    assert "5" in str(excinfo.value)
+    assert "so3lr_dev" in str(excinfo.value)
+
+    for level in (0, 5):
+        calc = SO3LRCalculator(model="v2-s", theory_level=level)
+        assert calc.theory_level == level
+
+
+def test_so3lr_calculator_single_head_model_needs_no_theory_level():
+    calc = SO3LRCalculator(model="v1")
+    assert calc.theory_level == 0
+
+
+def test_so3lr_calculator_rejects_out_of_range_theory_level():
+    import pytest
+
+    for level in (16, -1):
+        with pytest.raises(ValueError, match="theory_level"):
+            SO3LRCalculator(model="v2-s", theory_level=level)
+    # v1 has a single head: only level 0 exists
+    with pytest.raises(ValueError, match="theory_level"):
+        SO3LRCalculator(model="v1", theory_level=5)
+    assert SO3LRCalculator(model="v1", theory_level=0).theory_level == 0
+
+
+def test_so3lr_calculator_warns_for_shared_untrained_theory_levels():
+    """Only levels 0, 4 and 5 of the bundled v2 models are trained; the
+    other 13 heads share identical parameters and return one value."""
+    import warnings
+
+    import pytest
+
+    with pytest.warns(UserWarning, match="theory_level=6"):
+        SO3LRCalculator(model="v2-s", theory_level=6)
+    for level in (0, 4, 5):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            SO3LRCalculator(model="v2-s", theory_level=level)
+
+
+def test_package_works_without_the_optional_torch_pme():
+    """torch-pme is an optional extra: importing the models and building a
+    model without PME must not need it; only use_pme=True does."""
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    import so3krates_torch
+
+    src_dir = os.path.dirname(os.path.dirname(so3krates_torch.__file__))
+    code = textwrap.dedent(
+        """
+        import sys
+        sys.modules["torchpme"] = None  # makes `import torchpme` fail
+
+        from so3krates_torch.modules.models import SO3LR
+
+        kwargs = dict(
+            r_max=4.5, r_max_lr=6.0, num_radial_basis_fn=8, degrees=[1, 2],
+            num_features=16, num_heads=2, num_layers=1, num_elements=118,
+            avg_num_neighbors=10.0, energy_regression_dim=16,
+            dispersion_energy_bool=True,
+            dispersion_energy_cutoff_lr_damping=1.0,
+        )
+        SO3LR(**kwargs)
+        try:
+            SO3LR(use_pme=True, pme_smearing=1.0, pme_mesh_spacing=0.5,
+                  **kwargs)
+        except ImportError:
+            print("PME_NEEDS_TORCHPME")
+        """
+    )
+    env = dict(os.environ, PYTHONPATH=src_dir)
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr[-800:]
+    assert "PME_NEEDS_TORCHPME" in result.stdout

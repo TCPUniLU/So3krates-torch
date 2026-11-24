@@ -177,11 +177,19 @@ class LAMMPS_MLIAP_SO3(MLIAPUnified):
         self.num_species = len(self.element_types)
         self.num_elements = model.num_elements
         self.use_lr = self.model.use_lr
-        if getattr(model, "use_pme", False):
+        pme_terms = [
+            name
+            for name, flag in (
+                ("electrostatics (use_pme=True)", "use_pme"),
+                ("dispersion (use_pme_dispersion=True)", "use_pme_dispersion"),
+            )
+            if getattr(model, flag, False)
+        ]
+        if pme_terms:
             raise RuntimeError(
-                "This model uses PME electrostatics (use_pme=True), which is "
-                "not supported in LAMMPS mode. The LAMMPS path passes zero "
-                "positions and cell to the model, so PME would produce "
+                f"This model uses PME {' and PME '.join(pme_terms)}, which "
+                "is not supported in LAMMPS mode. The LAMMPS path passes "
+                "zero positions and cell to the model, so PME would produce "
                 "wrong results. Use the ASE calculator for PME models."
             )
         if self.use_lr:

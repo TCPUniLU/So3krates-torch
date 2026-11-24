@@ -19,7 +19,7 @@ from so3krates_torch.tools.model_setup import (
     _setup_model_for_training,
     set_avg_num_neighbors_in_model,
     set_atomic_energy_shifts_in_model,
-    process_config_atomic_energies,
+    resolve_atomic_energy_shifts,
     set_dtype_model,
     handle_finetuning,
 )
@@ -27,7 +27,8 @@ from so3krates_torch.tools.data_setup import (
     setup_data_loaders,
 )
 from so3krates_torch.tools.training_setup import (
-    setup_loss_function,
+    check_loss_outputs,
+    setup_loss_functions,
     setup_optimizer_and_scheduler,
     setup_training_tools,
     load_checkpoint_if_exists,
@@ -179,31 +180,12 @@ def run_training(config: dict) -> None:
                 "pretrained model for fine-tuning."
             )
             avg_num_neighbors = model.avg_num_neighbors
-        atomic_energy_shifts = model.atomic_energy_output_block.energy_shifts
-        if config["TRAINING"].get("force_use_average_shifts", False):
-            atomic_energy_shifts = average_atomic_energy_shifts
-            logging.info(
-                "Forcing use of average atomic energy shifts "
-                "computed from training data for training."
-            )
     else:
         model.avg_num_neighbors = avg_num_neighbors
-        atomic_shifts_config = config["ARCHITECTURE"].get(
-            "atomic_energy_shifts", None
-        )
-        if atomic_shifts_config is not None:
-            atomic_energy_shifts = process_config_atomic_energies(
-                atomic_shifts_config
-            )
-            logging.info(
-                "Using provided atomic energy shifts for " "training."
-            )
-        else:
-            atomic_energy_shifts = average_atomic_energy_shifts
-            logging.info(
-                "Using average atomic energy shifts computed "
-                "from training data for training."
-            )
+
+    atomic_energy_shifts = resolve_atomic_energy_shifts(
+        config, model, warm_start, average_atomic_energy_shifts
+    )
 
     # Setup finetuning if specified
     if config["TRAINING"].get("finetune_choice", None):
@@ -220,10 +202,15 @@ def run_training(config: dict) -> None:
         ddp_model = wrap_model_ddp(model, local_rank)
 
     # Setup loss function
-    loss_fn = setup_loss_function(config)
+    loss_fns = setup_loss_functions(config)
+    for module in loss_fns.modules():
+        module.to(device)
+    loss_fn = loss_fns.train
 
     # Setup optimizer and scheduler
-    optimizer, lr_scheduler = setup_optimizer_and_scheduler(model, config)
+    optimizer, lr_scheduler = setup_optimizer_and_scheduler(
+        model, config, loss_fn=loss_fn
+    )
 
     # Setup training tools
     logger, checkpoint_handler, ema = setup_training_tools(config, model)
@@ -235,6 +222,7 @@ def run_training(config: dict) -> None:
     # fine-tuning run must still reload the training checkpoint.
     # load_checkpoint_if_exists() handles the "no checkpoint found"
     # case gracefully (returns 0), so removing the guard is safe.
+    resume_state = {}
     start_epoch = load_checkpoint_if_exists(
         model=model,
         optimizer=optimizer,
@@ -243,6 +231,8 @@ def run_training(config: dict) -> None:
         ema=ema,
         device=device,
         config=config,
+        loss_fn=loss_fn,
+        resume_state=resume_state,
     )
 
     if rank == 0:
@@ -254,6 +244,10 @@ def run_training(config: dict) -> None:
                     f"Training data contains NaN/Inf"
                     f" in '{_key}'. Check your dataset."
                 )
+
+    # Every loss (both stages, train and validation) must find its model
+    # outputs; check now rather than at the stage-two switch.
+    check_loss_outputs(model, loss_fns, next(iter(train_loader)).to(device))
 
     logging.info("Model, data loaders, and training components initialized")
     if start_epoch > 0:
@@ -287,6 +281,9 @@ def run_training(config: dict) -> None:
     train(
         model=model,
         loss_fn=loss_fn,
+        valid_loss_fn=loss_fns.valid,
+        stage_two=loss_fns.stage_two,
+        resumed_stage_two_active=resume_state.get("stage_two_active"),
         train_loader=train_loader,
         valid_loaders=valid_loaders,
         optimizer=optimizer,

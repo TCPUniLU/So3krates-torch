@@ -1,3 +1,28 @@
+"""``torchkrates-eval``: run a model over an ASE-readable dataset.
+
+``--model_path`` accepts (see ``run_evaluation`` below for details):
+  - a bundled pretrained keyword: ``v1``, ``v2-s``, ``v2-m``, ``v2-l``.
+  - a converted checkpoint: a ``<stem>.pt`` state_dict with a sibling
+    ``<stem>_settings.yaml`` (e.g. produced by ``torchkrates-jax2torch
+    --save_state_dict_path my_checkpoint.pt``, which also writes
+    ``my_checkpoint_settings.yaml``).
+  - a single pickled ``.model`` file, or a directory of them (original
+    behavior, produced by ``torchkrates-train``).
+
+Example invocations::
+
+    torchkrates-eval --model_path v1 --data_path my_data.xyz \\
+        --device cpu --dtype float32 --r_max_lr 12.0 \\
+        --dispersion_energy_cutoff_lr_damping 2.0 \\
+        --output_file results_v1.h5
+
+    torchkrates-eval --model_path my_checkpoint.pt \\
+        --data_path my_data.xyz --device cpu --dtype float32 \\
+        --output_file results_my_checkpoint.h5
+
+``torchkrates-metric --models ...`` accepts the same two new forms.
+"""
+
 import argparse
 import logging
 from typing import Optional
@@ -12,6 +37,12 @@ from so3krates_torch.tools.load_descriptors import (
 )
 from ase.io import read
 import torch
+from so3krates_torch.calculator.so3 import (
+    _PRETRAINED_SO3LR_MODELS,
+    _build_so3lr_from_settings_and_state_dict,
+    load_pretrained_so3lr,
+    settings_path_for_checkpoint,
+)
 from so3krates_torch.data.utils import KeySpecification
 from pathlib import Path
 import os
@@ -29,6 +60,7 @@ def run_evaluation(
     compute_dipole: bool = False,
     compute_stress: bool = False,
     compute_hirshfeld: bool = False,
+    compute_c6_ratios: bool = False,
     compute_partial_charges: bool = False,
     dispersion_energy_cutoff_lr_damping: Optional[float] = None,
     energy_key: str = "REF_energy",
@@ -40,6 +72,7 @@ def run_evaluation(
     total_charge_key: str = "charge",
     total_spin_key: str = "total_spin",
     hirshfeld_key: str = "REF_hirsh_ratios",
+    c6_key: str = "REF_c6_ratios",
     head_key: str = "head",
     dtype: str = "float32",
     return_att: bool = False,
@@ -47,10 +80,23 @@ def run_evaluation(
     return_eqv_descriptors: bool = False,
     return_mean_inv_descriptors: bool = False,
     return_mean_eqv_descriptors: bool = False,
+    compile: bool = False,
+    fullgraph: Optional[bool] = None,
 ):
-    """Load models from `model_path` (single .model or directory of .model),
-    read data from `data_path`, run evaluation or ensemble prediction and
-    return (result, is_ensemble).
+    """Load models from `model_path`, read data from `data_path`, run
+    evaluation or ensemble prediction and return (result, is_ensemble).
+
+    `model_path` accepts:
+      - one of the 4 bundled pretrained keywords (``"v1"``, ``"v2-s"``,
+        ``"v2-m"``, ``"v2-l"``) -- loaded via ``load_pretrained_so3lr``.
+      - a path ending in ``.pt`` -- a raw ``state_dict`` checkpoint with
+        a sibling ``<stem>_settings.yaml`` (same convention as the
+        bundled checkpoints), constructed+loaded via the same shared
+        helper as ``load_pretrained_so3lr``.
+      - a single ``.model`` file (a pickled whole-model object, as
+        produced by training) -- unchanged original behavior.
+      - a directory -- globbed for ``*.model`` files and loaded as an
+        ensemble -- unchanged original behavior.
 
     This function mirrors the original inline logic but uses explicit
     function arguments instead of relying on an argparse Namespace.
@@ -64,19 +110,35 @@ def run_evaluation(
     else:
         raise ValueError(f"Unsupported dtype: {dtype}")
 
-    # check if path ends with .model or is dir
-    if model_path.endswith(".model"):
-        model_paths = [model_path]
-    else:
-        model_paths = list(Path(model_path).glob("*.model"))
+    torch_dtype = torch.float32 if dtype == "float32" else torch.float64
 
-    models = []
-    for mp in model_paths:
-        model = torch.load(mp, map_location=device, weights_only=False).to(
-            torch.float32 if dtype == "float32" else torch.float64
+    if model_path in _PRETRAINED_SO3LR_MODELS:
+        model = load_pretrained_so3lr(model_path, device=device).to(
+            torch_dtype
         )
         model.return_mean = False
-        models.append(model)
+        models = [model]
+    elif model_path.endswith(".pt"):
+        settings_path = settings_path_for_checkpoint(model_path)
+        model = _build_so3lr_from_settings_and_state_dict(
+            settings_path, model_path, device=device
+        ).to(torch_dtype)
+        model.return_mean = False
+        models = [model]
+    else:
+        # check if path ends with .model or is dir
+        if model_path.endswith(".model"):
+            model_paths = [model_path]
+        else:
+            model_paths = list(Path(model_path).glob("*.model"))
+
+        models = []
+        for mp in model_paths:
+            model = torch.load(mp, map_location=device, weights_only=False).to(
+                torch_dtype
+            )
+            model.return_mean = False
+            models.append(model)
     logging.info("Loaded %d model(s) from %s", len(models), model_path)
 
     data_suffix = Path(data_path).suffix.lower()
@@ -104,6 +166,7 @@ def run_evaluation(
             "stress": stress_key,
             "virials": virials_key,
             "hirshfeld_ratios": hirshfeld_key,
+            "c6_ratios": c6_key,
             "charges": charges_key,
         },
     )
@@ -125,6 +188,7 @@ def run_evaluation(
             compute_stress=compute_stress,
             compute_dipole=compute_dipole,
             compute_hirshfeld=compute_hirshfeld,
+            compute_c6_ratios=compute_c6_ratios,
             compute_partial_charges=compute_partial_charges,
             return_att=return_att,
             return_inv_descriptors=return_inv_descriptors,
@@ -132,6 +196,8 @@ def run_evaluation(
             return_mean_inv_descriptors=return_mean_inv_descriptors,
             return_mean_eqv_descriptors=return_mean_eqv_descriptors,
             key_spec=keyspec,
+            compile=compile,
+            fullgraph=fullgraph,
         )
     else:
         result = ensemble_prediction(
@@ -147,8 +213,11 @@ def run_evaluation(
             compute_stress=compute_stress,
             compute_dipole=compute_dipole,
             compute_hirshfeld=compute_hirshfeld,
+            compute_c6_ratios=compute_c6_ratios,
             compute_partial_charges=compute_partial_charges,
             key_spec=keyspec,
+            compile=compile,
+            fullgraph=fullgraph,
         )
 
     logging.info("Evaluation complete.")
@@ -184,6 +253,12 @@ def main():
     )
     argparser.add_argument(
         "--compute_hirshfeld", action="store_true", default=False
+    )
+    argparser.add_argument(
+        "--compute_c6_ratios",
+        action="store_true",
+        default=False,
+        help="Export per-atom C6-ratio predictions (SO3LR-tauri models)",
     )
     argparser.add_argument(
         "--compute_partial_charges", action="store_true", default=False
@@ -226,6 +301,12 @@ def main():
         type=str,
         help="Hirshfeld key",
         default="REF_hirsh_ratios",
+    )
+    argparser.add_argument(
+        "--c6_key",
+        type=str,
+        help="C6-ratio key",
+        default="REF_c6_ratios",
     )
     argparser.add_argument(
         "--head_key", type=str, help="Head key", default="head"
@@ -277,6 +358,23 @@ def main():
         help="Prefix for predicted property names in XYZ output "
         "(default: 'SO3', giving SO3_energy, SO3_forces, …)",
     )
+    argparser.add_argument(
+        "--compile",
+        action="store_true",
+        default=False,
+        help="EXPERIMENTAL. Compile the model with torch.compile "
+        "(dynamic=True) before evaluation.",
+    )
+    argparser.add_argument(
+        "--fullgraph",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Passed to torch.compile when --compile is set. Defaults "
+        "to True on CUDA devices and False otherwise (CPU compilation "
+        "of the long-range terms currently crashes Inductor's C++ "
+        "backend regardless of fullgraph). Use --no-fullgraph/"
+        "--fullgraph to force one way or the other.",
+    )
     args = argparser.parse_args()
     validated = EvalArgs.model_validate(vars(args))
     # turn all args into variables
@@ -292,6 +390,7 @@ def main():
     compute_dipole = validated.compute_dipole
     compute_stress = validated.compute_stress
     compute_hirshfeld = validated.compute_hirshfeld
+    compute_c6_ratios = validated.compute_c6_ratios
     compute_partial_charges = validated.compute_partial_charges
     dispersion_energy_cutoff_lr_damping = (
         validated.dispersion_energy_cutoff_lr_damping
@@ -305,6 +404,7 @@ def main():
     total_charge_key = validated.total_charge_key
     total_spin_key = validated.total_spin_key
     hirshfeld_key = validated.hirshfeld_key
+    c6_key = validated.c6_key
     head_key = validated.head_key
     dtype = validated.dtype
     return_att = validated.return_att
@@ -314,6 +414,8 @@ def main():
     return_mean_eqv_descriptors = validated.return_mean_eqv_descriptors
     mean_descriptors_only = validated.mean_descriptors_only
     output_prefix = validated.output_prefix
+    compile_model = validated.compile
+    fullgraph = validated.fullgraph
 
     result, is_ensemble = run_evaluation(
         model_path=model_path,
@@ -327,6 +429,7 @@ def main():
         compute_stress=compute_stress,
         compute_dipole=compute_dipole,
         compute_hirshfeld=compute_hirshfeld,
+        compute_c6_ratios=compute_c6_ratios,
         compute_partial_charges=compute_partial_charges,
         dispersion_energy_cutoff_lr_damping=dispersion_energy_cutoff_lr_damping,
         energy_key=energy_key,
@@ -338,6 +441,7 @@ def main():
         total_charge_key=total_charge_key,
         total_spin_key=total_spin_key,
         hirshfeld_key=hirshfeld_key,
+        c6_key=c6_key,
         head_key=head_key,
         dtype=dtype,
         return_att=return_att,
@@ -345,6 +449,8 @@ def main():
         return_eqv_descriptors=return_eqv_descriptors,
         return_mean_inv_descriptors=return_mean_inv_descriptors,
         return_mean_eqv_descriptors=return_mean_eqv_descriptors,
+        compile=compile_model,
+        fullgraph=fullgraph,
     )
     extension = os.path.splitext(output_file)[1].lower()
     if mean_descriptors_only:

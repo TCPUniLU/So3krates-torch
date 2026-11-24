@@ -36,16 +36,81 @@ ARCHITECTURE:
   use_charge_embed: true
   use_spin_embed: true
   zbl_repulsion_bool: true
+  # --- v2 (so3lr_dev) architecture options ---
+  # use_rms_norm: false
+  #   Use parameter-free RMSNorm instead of LayerNorm wherever
+  #   layer_normalization_1/2 is enabled -- matches so3lr_dev's v2
+  #   architecture (all three shipped so3lr-s/-m/-l checkpoints set this).
+  #
+  # qk_norm: false
+  #   RMS-normalize attention queries/keys (never values) after the qk
+  #   non-linearity, in every attention block including LoRA/DoRA/VeRA
+  #   variants. Also a v2-only option.
+  #
+  # use_residual_scalars: false
+  #   Add two learnable per-layer scalars (resid_lambdas/x0_lambdas) mixing
+  #   each layer's invariant features with the initial embedding before
+  #   every transformer layer. Also a v2-only option.
+  #
+  # --- Alternative / extended physics options ---
+  # nhl_repulsion_bool: false
+  #   Use the NHL fixed-table pair repulsion instead of the learnable ZBL
+  #   potential. NHL has no trainable parameters (pair-specific Zi/Zj lookup
+  #   tables). Mutually exclusive with zbl_repulsion_bool; when both are true,
+  #   NHL takes precedence.
+  #
+  # c6_ratios_bool: false
+  #   Add a second dispersion output head predicting per-atom C6 scaling ratios
+  #   independently of Hirshfeld ratios. Requires dispersion_energy_bool: true.
+  #   When false (default), C6 scales as hirshfeld_ratio^2 (original SO3LR).
+  #
+  # use_simple_hirshfeld: false
+  #   Use the simplified Hirshfeld head (scalar embedding + optional MLP + abs)
+  #   instead of the original attention-based head. Requires
+  #   dispersion_energy_bool: true. Use when fine-tuning a JAX checkpoint
+  #   trained with the new HirshfeldSparse architecture.
+  #
+  # num_theory_levels: 1
+  #   Number of distinct theory levels in the training data. Any N >= 1.
+  #   Examples: 2 (PBE + PBE0), 3 (PBE + PBE0 + CCSD(T)).
+  #   Each training structure must have atoms.info["theory_level"] = <int 0..N-1>.
+  #   The model learns a shared representation but N independent sets of
+  #   output weights, shifts, and scales (one per level).
+  #   At inference: SO3LRCalculator(theory_level=<int>) selects the level.
+  #   Default: 1 (standard single-theory SO3LR, no theory_level field required).
   neighborlist_format_lr: sparse
-  use_pme: false  # true = PME electrostatics for periodic systems (requires torch-pme)
+  use_pme: false  # true = torch-pme electrostatics for periodic systems (requires torch-pme)
   # pme_smearing: 1.2       # Ewald splitting (Å); default = r_max / 5
   # pme_mesh_spacing: 0.6   # FFT grid spacing (Å); default = smearing / 2
   # Run: torchkrates-tune-pme --data train.xyz --r_max 6.0 to tune smearing/mesh_spacing.
+  # NOTE: this is torch-pme (training + inference). It is a DIFFERENT PME than
+  # NVAlchemi's MD-time PME (torchkrates-md-nvalchemi --electrostatics nvalchemi),
+  # which uses an Ewald split `--pme-alpha` [1/Å] instead of `pme_smearing` [Å].
+  # Train with use_pme: true if you intend to run MD with --electrostatics nvalchemi;
+  # otherwise the default damped electrostatics pairs with --electrostatics model.
   # Combined mode: use_pme: true + dispersion_energy_bool: true gives PME electrostatics
   # + real-space vdW-QDO dispersion (C6+C8+C10). r_max_lr and
   # dispersion_energy_cutoff_lr_damping are still required for dispersion.
   # Dispersion converges as 1/r_max_lr^3; real-space is accurate without PME.
+  # use_pme_dispersion: false  # true = PME (k-space) dispersion for periodic systems (requires torch-pme)
+  # pme_dispersion_smearing: 2.4       # Ewald splitting (Å); default = r_max_lr / 5
+  # pme_dispersion_mesh_spacing: 1.2   # FFT grid spacing (Å); default = smearing / 2
+  # legacy_dispersion_bool: true  # true = legacy (JAX v1) alpha/C6 reference table;
+  #   false = refitted table required by so3lr-s/m/l checkpoints.
+  # PME dispersion adds a k-space correction on top of the existing real-space
+  # C6 residual + C8/C10 terms — r_max_lr and dispersion_energy_cutoff_lr_damping
+  # are still required exactly as without PME dispersion.
   compute_avg_num_neighbors: True
+  # --- Custom atomic energy shifts (E0s) ---
+  # From scratch: overrides values computed from training data (unlisted
+  # elements default to 0.0). When fine-tuning from a pretrained model
+  # (pretrained_weights/pretrained_model set below): unlisted elements keep
+  # the pretrained checkpoint's own shifts; mutually exclusive with
+  # TRAINING.force_use_average_shifts.
+  # atomic_energy_shifts:
+  #   1: -13.6    # H
+  #   6: -1027.0  # C
+  #   8: -2042.0  # O
 
 TRAINING:
   batch_size: 5
@@ -62,12 +127,73 @@ TRAINING:
   forces_weight: 1000.
   # charges_weight: 0.   # partial charge MSE loss; requires REF_charges per-atom array in training data
   # hirshfeld_weight: 0. # Hirshfeld ratio MSE loss; requires REF_hirsh_ratios per-atom array
+  #   (alias: a0_ratios_weight, the SO3LR-tauri/JAX name for the same
+  #   polarizability-ratio target; fallback label keys: hirshfeld_ratios,
+  #   hirsh_ratios, a0_ratios)
+  # c6_ratios_weight: 0.  # per-atom C6-ratio MSE loss; requires
+  #   ARCHITECTURE.c6_ratios_bool: true and REF_c6_ratios (fallback: c6_ratios)
+  # Dispersion labels may be missing for part of the data (e.g. mixed
+  # datasets): atoms without a label (NaN, or absent key) are masked out
+  # of the ratio losses and metrics, as in JAX so3lr.
+  # SO3LR-tauri paper weights (SI Eq. S13): forces 1.0, energy 0.01,
+  # dipole 0.1, a0 ratios 0.1, C6 ratios 0.1 -- comparable to JAX only
+  # with loss_reduction: per_graph.
+  # loss_reduction: flat  # flat = one mean over all elements (default);
+  #   per_graph = JAX so3lr reduction (per-structure mean, then mean over
+  #   labelled structures; multi-GPU counts are global)
+  # Robust loss (Barron 2019; JAX so3lr default is adaptive). alpha: 2 = L2,
+  # 1 = Charbonnier, 0 = Cauchy. Mutually exclusive:
+  # use_robust_loss: false            # fixed: 2*rho(x, robust_loss_alpha, 1)
+  # robust_loss_alpha: 1.0
+  # use_adaptive_robust_loss: false   # learn alpha/scale per property (NLL;
+  #                                   #   loss can be negative)
+  # adaptive_robust_loss_init_alpha: 1.0
+  # adaptive_robust_loss_init_scale: 1.0
+  # use_robust_loss_validation: null  # null = same as use_robust_loss
+  # robust_loss_alpha_validation: null  # null = same as robust_loss_alpha
+  # Two-stage loss weights (JAX stage_two_*): from stage_two_start_epoch on,
+  # train and validate with these weights (unlisted keys keep stage one's);
+  # best-loss / early-stopping / plateau trackers reset at the switch.
+  # stage_two_start_epoch: 100
+  # stage_two_loss_weights:
+  #   energy_weight: 0.01
   eval_interval: 1
   num_epochs: 5
   path_to_train_data: ./path/to/train/data
   valid_ratio: 0.1
   clip_grad: 10.0
   patience: 50
+  # --- Warm-starting from a converted pretrained v1/v2 checkpoint ---
+  # pretrained_weights: pretrained/so3lr/tauri/so3lr-tauri-s-2606.pt
+  #   Path to a converted checkpoint's raw state_dict .pt file (produced
+  #   by `torchkrates-jax2torch`; the bundled v1/v2 checkpoints under
+  #   `pretrained/so3lr/{v1,tauri}/` follow the same convention). Loaded via
+  #   `load_pretrained_weights()` with strict=False into a model built
+  #   fresh from this file's own ARCHITECTURE section below -- so
+  #   ARCHITECTURE must match the checkpoint's architecture (see its
+  #   sibling `*_settings.yaml`, e.g. `pretrained/so3lr/tauri/
+  #   so3lr-tauri-s-2606_settings.yaml`, for the exact values to copy in). Enabling
+  #   PME here on top of a checkpoint trained without it (`use_pme: true`
+  #   + `pme_smearing`/`pme_mesh_spacing` above) is fine even so: PME
+  #   introduces no new *learned* parameters, only its own non-learned
+  #   buffers, which is exactly what strict=False allows to be missing.
+  #   Mutually exclusive with `pretrained_model` (a pickled whole-model
+  #   `.model` file) below -- use one or the other.
+  # pretrained_model: /path/to/model.model  # complete pickled model object
+  # --- Fine-tuning (finetune_choice: naive | last_layer | last_layer+mlp |
+  #     qkv | qkv+mlp | mlp | lora | lora+mlp | dora | vera) ---
+  # finetune_choice: lora
+  # Heads kept frozen unless set to false (ignored for naive):
+  # freeze_hirshfeld: true     # polarizability/a0 head (alias: freeze_a0_ratios)
+  # freeze_c6_ratios: true     # C6 ratio head (SO3LR-tauri, c6_ratios_bool: true)
+  # freeze_partial_charges: true
+  # freeze_zbl: true
+  # freeze_embedding: true
+  # freeze_shifts: false
+  # freeze_scales: false
+  # For LoRA/DoRA/VeRA fine-tuning of a bundled pretrained checkpoint
+  # instead of plain warm-started training, see
+  # examples/finetuning/finetune_pretrained_so3lr.py.
   # lazy_loading: false       # on-the-fly preprocessing from raw HDF5 (default: false)
   # num_workers: 4            # DataLoader worker processes (only with lazy_loading)
   # prefetch_factor: 2        # batches prefetched per worker (only with lazy_loading)

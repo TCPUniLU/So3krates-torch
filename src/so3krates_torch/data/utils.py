@@ -11,7 +11,16 @@
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 import ase.data
 import ase.io
@@ -20,6 +29,7 @@ import numpy as np
 import torch
 
 from so3krates_torch.tools.default_keys import DefaultKeys
+from so3krates_torch.tools.gather import gather_rows
 from so3krates_torch.tools.utils import AtomicNumberTable
 
 Positions = np.ndarray  # [..., 3]
@@ -67,7 +77,12 @@ def update_keyspec_from_kwargs(
         "polarizability_key",
         "total_spin_key",
     ]
-    arrays = ["forces_key", "charges_key", "hirshfeld_ratios_key"]
+    arrays = [
+        "forces_key",
+        "charges_key",
+        "hirshfeld_ratios_key",
+        "c6_ratios_key",
+    ]
     info_keys = {}
     arrays_keys = {}
     for key in infos:
@@ -78,6 +93,30 @@ def update_keyspec_from_kwargs(
             arrays_keys[key[:-4]] = keydict[key]
     keyspec.update(info_keys=info_keys, arrays_keys=arrays_keys)
     return keyspec
+
+
+# Alternative atoms.arrays keys for per-atom dispersion ratio labels,
+# tried in order when the configured key is absent. Mirrors the JAX
+# so3lr loader (`dataloader_sparse_ase.py`): the polarizability ratio
+# has been stored as 'hirshfeld_ratios', 'hirsh_ratios' and (tauri)
+# 'a0_ratios'; JAX stores C6 ratios as 'c6_ratios'.
+RATIO_LABEL_FALLBACKS = {
+    "hirshfeld_ratios": ("hirshfeld_ratios", "hirsh_ratios", "a0_ratios"),
+    "c6_ratios": ("c6_ratios",),
+}
+
+
+def resolve_arrays_key(
+    name: str, atoms_key: str, available: Iterable[str]
+) -> Optional[str]:
+    """Return the key under which property `name` is stored, trying
+    the configured `atoms_key` first and then the fallbacks in
+    `RATIO_LABEL_FALLBACKS`; None if none is available."""
+    available = set(available)
+    for key in (atoms_key, *RATIO_LABEL_FALLBACKS.get(name, ())):
+        if key in available:
+            return key
+    return None
 
 
 @dataclass
@@ -92,6 +131,7 @@ class Configuration:
     weight: float = 1.0  # weight of config in loss
     config_type: str = DEFAULT_CONFIG_TYPE  # config_type of config
     head: str = "Default"  # head used to compute the config
+    theory_level: Optional[int] = None  # integer index 0..num_theory_levels-1
 
 
 Configurations = List[Configuration]
@@ -188,13 +228,21 @@ def config_from_atoms(
             property_weights[name] = 0.0
 
     for name, atoms_key in key_specification.arrays_keys.items():
-        properties[name] = atoms.arrays.get(atoms_key, None)
-        if not atoms_key in atoms.arrays:
+        found_key = resolve_arrays_key(name, atoms_key, atoms.arrays.keys())
+        properties[name] = (
+            atoms.arrays[found_key] if found_key is not None else None
+        )
+        if found_key is None:
             property_weights[name] = 0.0
 
     # Use per-structure head from atoms.info if available,
     # otherwise fall back to the caller-supplied default.
     head = atoms.info.get("head", head_name)
+
+    theory_level_raw = atoms.info.get("theory_level", None)
+    theory_level = (
+        int(theory_level_raw) if theory_level_raw is not None else None
+    )
 
     return Configuration(
         atomic_numbers=atomic_numbers,
@@ -206,6 +254,65 @@ def config_from_atoms(
         config_type=config_type,
         pbc=pbc,
         cell=cell,
+        theory_level=theory_level,
+    )
+
+
+def property_presence_from_configs(
+    configs: "Configurations",
+    property_names: Sequence[str],
+) -> Dict[str, bool]:
+    """Check whether each named property's data is actually present
+    (not None) in at least one of the given configs.
+
+    Presence is judged from the property VALUE, not from
+    `property_weights` — a deliberate per-structure
+    `config_<name>_weight=0` override on data that is genuinely
+    present must not be mistaken for the property being absent."""
+    return {
+        name: any(c.properties.get(name) is not None for c in configs)
+        for name in property_names
+    }
+
+
+def pluralize_property_clause(names: Sequence[str]) -> Tuple[str, str, str]:
+    """Return (noun, verb, was_were) agreeing in number with `names`,
+    for building "The following property/properties has/have ...
+    was/were ..." error messages consistently across call sites."""
+    if len(names) == 1:
+        return "property", "has", "was"
+    return "properties", "have", "were"
+
+
+def raise_if_properties_missing(
+    presence: Dict[str, bool],
+    key_specification: KeySpecification,
+    file_path: str,
+) -> None:
+    """Raise a ValueError listing every property that is missing
+    from presence (i.e. presence[name] is False), naming the key
+    that was looked up for it in the data file."""
+    missing = [name for name, present in presence.items() if not present]
+    if not missing:
+        return
+
+    lines = []
+    for name in missing:
+        key = key_specification.info_keys.get(
+            name
+        ) or key_specification.arrays_keys.get(name)
+        key_desc = f"key '{key}'" if key else "its configured key"
+        lines.append(f"  - '{name}': looked for {key_desc}")
+
+    noun, verb, was_were = pluralize_property_clause(missing)
+    raise ValueError(
+        f"The following {noun} {verb} a non-zero loss weight but "
+        f"{was_were} not found in "
+        f"'{file_path}':\n"
+        + "\n".join(lines)
+        + "\nCheck that the corresponding '<name>_key' under TRAINING.keys "
+        "matches the column name actually used in your data file, or set "
+        "the loss weight to 0 if this property should not be used."
     )
 
 
@@ -514,18 +621,22 @@ def get_symmetric_displacement(
         (num_graphs, 3, 3),
         dtype=positions.dtype,
         device=positions.device,
+        requires_grad=True,
     )
-    displacement.requires_grad_(True)
     symmetric_displacement = 0.5 * (
         displacement + displacement.transpose(-1, -2)
     )  # From https://github.com/mir-group/nequip
     positions = positions + torch.einsum(
-        "be,bec->bc", positions, symmetric_displacement[batch]
+        "be,bec->bc", positions, gather_rows(symmetric_displacement, batch)
     )
     cell = cell.view(-1, 3, 3)
     cell = cell + torch.matmul(cell, symmetric_displacement)
 
     return positions, cell, displacement
+
+
+# Above this many graphs the dense path (E x n_graphs x 3 floats) is not used.
+_DENSE_SHIFT_MAX_GRAPHS = 16
 
 
 def compute_shifts(
@@ -534,12 +645,27 @@ def compute_shifts(
     batch: torch.Tensor,
     sender: torch.Tensor,
 ) -> torch.Tensor:
-    shifts = torch.einsum(
-        "be,bec->bc",
-        unit_shifts,
-        cell[batch[sender]],
+    """Cartesian edge shifts ``unit_shifts @ cell[graph of the edge]``.
+
+    ``cell`` is ``[n_graphs, 3, 3]``.  Gathering the cell per edge
+    (``cell[batch[sender]]``) makes the backward pass accumulate every edge
+    into a handful of 3x3 rows with ``index_put_``, which is very slow on
+    CUDA.  For a few graphs the shifts are therefore computed for all graphs
+    with one dense matmul and each edge picks its own graph afterwards, so
+    the backward pass is a matmul too.
+    """
+    n_graphs = cell.shape[0]
+    if n_graphs == 1:
+        return unit_shifts @ cell[0]
+    if n_graphs <= _DENSE_SHIFT_MAX_GRAPHS:
+        all_graphs = (
+            unit_shifts @ cell.permute(1, 0, 2).reshape(3, n_graphs * 3)
+        ).view(-1, n_graphs, 3)
+        own = batch[sender].long().view(-1, 1, 1).expand(-1, 1, 3)
+        return torch.gather(all_graphs, 1, own).squeeze(1)
+    return torch.einsum(
+        "be,bec->bc", unit_shifts, gather_rows(cell, batch[sender])
     )
-    return shifts
 
 
 def get_edge_vectors_and_lengths(
@@ -551,7 +677,11 @@ def get_edge_vectors_and_lengths(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     sender = edge_index[0]
     receiver = edge_index[1]
-    vectors = positions[receiver] - positions[sender] + shifts  # [n_edges, 3]
+    vectors = (
+        gather_rows(positions, receiver)
+        - gather_rows(positions, sender)
+        + shifts
+    )  # [n_edges, 3]
     lengths = torch.linalg.norm(vectors, dim=-1, keepdim=True)  # [n_edges, 1]
     if normalize:
         vectors_normed = vectors / (lengths + eps)
@@ -630,13 +760,16 @@ def prepare_graph(
             )
         else:
             vectors_all = None
-            vectors = data["vectors"].requires_grad_(True)
+            if not data["vectors"].requires_grad:
+                data["vectors"].requires_grad_(True)
+            vectors = data["vectors"]
             vectors_lr = None
             lengths_lr = None
         lengths = torch.linalg.vector_norm(vectors, dim=1, keepdim=True)
         ikw = InteractionKwargs(data["lammps_class"], (n_real, n_total))
     else:
-        data["positions"].requires_grad_(True)
+        if not data["positions"].requires_grad:
+            data["positions"].requires_grad_(True)
         positions = data["positions"]
         cell = data["cell"]
         num_atoms_arange = torch.arange(

@@ -82,6 +82,7 @@ def model_to_lora(
             qk_non_linearity = (
                 transformer.euclidean_attention_block.qk_non_linearity
             )
+            qk_norm = transformer.euclidean_attention_block.qk_norm
             avg_num_neighbors = (
                 transformer.euclidean_attention_block.avg_num_neighbors
             )
@@ -103,6 +104,7 @@ def model_to_lora(
                     scaling_to_one=scaling_to_one,
                     message_normalization=message_normalization,
                     qk_non_linearity=qk_non_linearity,
+                    qk_norm=qk_norm,
                     avg_num_neighbors=avg_num_neighbors,
                     device=device,
                 )
@@ -147,6 +149,7 @@ def model_to_lora(
                     lora_alpha=alpha,
                     message_normalization=message_normalization,
                     qk_non_linearity=qk_non_linearity,
+                    qk_norm=qk_norm,
                     avg_num_neighbors=avg_num_neighbors,
                     device=device,
                 )
@@ -162,6 +165,7 @@ def model_to_lora(
                     freeze_A=freeze_A,
                     message_normalization=message_normalization,
                     qk_non_linearity=qk_non_linearity,
+                    qk_norm=qk_norm,
                     avg_num_neighbors=avg_num_neighbors,
                     device=device,
                 )
@@ -204,6 +208,7 @@ def freeze_model_parameters(
     freeze_hirshfeld: bool = True,
     freeze_embedding: bool = True,
     freeze_lora_A: bool = False,
+    freeze_c6_ratios: bool = True,
 ):
     if keep_trainable_choice not in POSSIBLE_FINETUNING_CHOICES:
         raise ValueError(
@@ -313,6 +318,9 @@ def freeze_model_parameters(
     ):
         keep_trainable.append("hirshfeld_output_block")
 
+    if not freeze_c6_ratios and getattr(model, "c6_ratios_bool", False):
+        keep_trainable.append("c6_ratios_output_block")
+
     if not freeze_embedding:
         keep_trainable.append("embedding")
 
@@ -338,6 +346,7 @@ def setup_finetuning(
     freeze_hirshfeld: bool = True,
     freeze_partial_charges: bool = True,
     freeze_shifts: bool = False,
+    freeze_c6_ratios: bool = True,
     freeze_scales: bool = False,
     convert_to_lora: bool = True,
     lora_rank: int = 4,
@@ -425,6 +434,7 @@ def setup_finetuning(
             freeze_zbl=freeze_zbl,
             freeze_hirshfeld=freeze_hirshfeld,
             freeze_partial_charges=freeze_partial_charges,
+            freeze_c6_ratios=freeze_c6_ratios,
         )
 
     if log:

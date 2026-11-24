@@ -73,11 +73,15 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
         "layer_normalization_2": arch_config.get(
             "layer_normalization_2", False
         ),
+        "use_rms_norm": arch_config.get("use_rms_norm", False),
         "residual_mlp_1": arch_config.get("residual_mlp_1", False),
         "residual_mlp_2": arch_config.get("residual_mlp_2", False),
         "use_charge_embed": arch_config.get("use_charge_embed", False),
         "use_spin_embed": arch_config.get("use_spin_embed", False),
         "qk_non_linearity": arch_config.get("qk_non_linearity", "identity"),
+        "qk_norm": arch_config.get("qk_norm", False),
+        "use_residual_scalars": arch_config.get("use_residual_scalars", False),
+        "final_layer_bias": arch_config.get("final_layer_bias", True),
         "cutoff_fn": arch_config.get("cutoff_fn", "cosine"),
         "activation_fn": arch_config.get("activation_fn", "silu"),
         "energy_activation_fn": arch_config.get(
@@ -114,10 +118,34 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
         "use_pme": arch_config.get("use_pme", False),
         "pme_smearing": arch_config.get("pme_smearing", None),
         "pme_mesh_spacing": arch_config.get("pme_mesh_spacing", None),
+        "use_pme_dispersion": arch_config.get("use_pme_dispersion", False),
+        "pme_dispersion_smearing": arch_config.get(
+            "pme_dispersion_smearing", None
+        ),
+        "pme_dispersion_mesh_spacing": arch_config.get(
+            "pme_dispersion_mesh_spacing", None
+        ),
+        "pme_mesh_rule": arch_config.get("pme_mesh_rule", "jax"),
+        "legacy_dispersion_bool": arch_config.get(
+            "legacy_dispersion_bool", True
+        ),
         "neighborlist_format_lr": arch_config.get(
             "neighborlist_format_lr", "sparse"
         ),
+        "nhl_repulsion_bool": arch_config.get("nhl_repulsion_bool", False),
+        "c6_ratios_bool": arch_config.get("c6_ratios_bool", False),
+        "use_simple_hirshfeld": arch_config.get("use_simple_hirshfeld", False),
+        "num_theory_levels": arch_config.get("num_theory_levels", 1),
     }
+
+    if model_params.get("num_theory_levels", 1) > 1:
+        logging.warning(
+            "num_theory_levels=%d: every training structure must carry "
+            "atoms.info['theory_level'] = <int 0..%d>. Structures "
+            "without this key will raise a KeyError at forward time.",
+            model_params["num_theory_levels"],
+            model_params["num_theory_levels"] - 1,
+        )
 
     if arch_config.get("convert_to_multihead", False):
         model_params["num_output_heads"] = arch_config.get(
@@ -335,6 +363,7 @@ def set_atomic_energy_shifts_in_model(
 
 def process_config_atomic_energies(
     atomic_shifts_config: dict,
+    default_shifts: Optional[torch.Tensor] = None,
 ):
     atomic_energy_shifts = {}
     # turn keys to str if they are int
@@ -342,9 +371,60 @@ def process_config_atomic_energies(
     for z in range(1, 119):
         if str(z) in atomic_shifts_config:
             atomic_energy_shifts[z] = atomic_shifts_config[str(z)]
+        elif default_shifts is not None:
+            atomic_energy_shifts[z] = float(default_shifts[z - 1].item())
         else:
             atomic_energy_shifts[z] = 0.0
     return atomic_energy_shifts
+
+
+def resolve_atomic_energy_shifts(
+    config: dict,
+    model: Union[SO3LR, MultiHeadSO3LR],
+    warm_start: bool,
+    average_atomic_energy_shifts: torch.Tensor,
+) -> Union[dict, torch.Tensor]:
+    atomic_shifts_config = config["ARCHITECTURE"].get(
+        "atomic_energy_shifts", None
+    )
+    force_use_average_shifts = config["TRAINING"].get(
+        "force_use_average_shifts", False
+    )
+
+    if warm_start:
+        if atomic_shifts_config is not None and force_use_average_shifts:
+            raise ValueError(
+                "ARCHITECTURE.atomic_energy_shifts and "
+                "TRAINING.force_use_average_shifts cannot both be set "
+                "when fine-tuning from a pretrained model."
+            )
+        if atomic_shifts_config is not None:
+            logging.info(
+                "Using provided atomic energy shifts for specified "
+                "elements; retaining pretrained shifts for the rest."
+            )
+            return process_config_atomic_energies(
+                atomic_shifts_config,
+                default_shifts=model.atomic_energy_output_block.energy_shifts,
+            )
+        if force_use_average_shifts:
+            logging.info(
+                "Forcing use of average atomic energy shifts "
+                "computed from training data for training."
+            )
+            return average_atomic_energy_shifts
+        return model.atomic_energy_output_block.energy_shifts
+    else:
+        if atomic_shifts_config is not None:
+            logging.info(
+                "Using provided atomic energy shifts for " "training."
+            )
+            return process_config_atomic_energies(atomic_shifts_config)
+        logging.info(
+            "Using average atomic energy shifts computed "
+            "from training data for training."
+        )
+        return average_atomic_energy_shifts
 
 
 def set_dtype_model(model: torch.nn.Module, dtype_str: str) -> None:
@@ -372,14 +452,39 @@ def handle_finetuning(
     num_elements: int,
     device_name: str,
 ) -> None:
+    training = config["TRAINING"]
+    # `freeze_a0_ratios` is the SO3LR-tauri name for the same head
+    # (hirshfeld_output_block predicts polarizability/a0 ratios there).
+    freeze_hirshfeld = training.get(
+        "freeze_hirshfeld", training.get("freeze_a0_ratios", True)
+    )
+    freeze_c6_ratios = training.get("freeze_c6_ratios", True)
+    finetune_choice = training.get("finetune_choice", None)
+    if finetune_choice != "naive":
+        for head, frozen, weight_key in (
+            (
+                "polarizability (a0/Hirshfeld)",
+                freeze_hirshfeld,
+                "hirshfeld_weight",
+            ),
+            ("C6 ratio", freeze_c6_ratios, "c6_ratios_weight"),
+        ):
+            if frozen and training.get(weight_key, 0.0) > 0:
+                logging.warning(
+                    f"{weight_key} > 0 but the {head} head is frozen; its "
+                    "loss only adapts the shared representation. Set "
+                    "freeze_hirshfeld/freeze_a0_ratios or freeze_c6_ratios "
+                    "to false to train the head itself."
+                )
     return setup_finetuning(
         model=model,
-        finetune_choice=config["TRAINING"].get("finetune_choice", None),
+        finetune_choice=finetune_choice,
         device_name=device_name,
         num_elements=num_elements,
         freeze_embedding=config["TRAINING"].get("freeze_embedding", True),
         freeze_zbl=config["TRAINING"].get("freeze_zbl", True),
-        freeze_hirshfeld=config["TRAINING"].get("freeze_hirshfeld", True),
+        freeze_hirshfeld=freeze_hirshfeld,
+        freeze_c6_ratios=freeze_c6_ratios,
         freeze_partial_charges=config["TRAINING"].get(
             "freeze_partial_charges", True
         ),

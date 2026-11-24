@@ -326,6 +326,40 @@ class TestLAMMPS_MLIAP_SO3:
         assert calc.initialized is False
         assert calc.step == 0
 
+    @pytest.mark.parametrize(
+        "pme_kwargs",
+        [
+            {"use_pme": True, "pme_smearing": 0.5, "pme_mesh_spacing": 0.25},
+            {
+                "use_pme_dispersion": True,
+                "pme_dispersion_smearing": 0.5,
+                "pme_dispersion_mesh_spacing": 0.25,
+            },
+        ],
+        ids=["pme_electrostatics", "pme_dispersion"],
+    )
+    def test_pme_models_are_rejected(self, pme_kwargs, water_atomic_numbers):
+        """LAMMPS passes no absolute positions/cell, so either PME term
+        would silently compute with zeros."""
+        model = SO3LR(
+            r_max=4.5,
+            r_max_lr=8.0,
+            num_radial_basis_fn=8,
+            degrees=[1, 2],
+            num_features=16,
+            num_heads=2,
+            num_layers=1,
+            num_elements=20,
+            energy_regression_dim=16,
+            seed=42,
+            device=torch.device("cpu"),
+            dtype="float64",
+            dispersion_energy_cutoff_lr_damping=2.0,
+            **pme_kwargs,
+        )
+        with pytest.raises(RuntimeError, match="PME"):
+            LAMMPS_MLIAP_SO3(model, atomic_numbers=water_atomic_numbers)
+
     def test_initialization_single_element(
         self, so3lr_short_range_model, si_atomic_numbers
     ):
