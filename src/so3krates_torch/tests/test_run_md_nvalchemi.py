@@ -164,13 +164,24 @@ def test_compile_guard_cpu_lr(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _save_tiny_model(tmp_path, dtype=torch.float64, strip_lr_cutoff=False):
+def _save_tiny_model(
+    tmp_path, dtype=torch.float64, strip_lr_cutoff=False, output_heads=None
+):
     """Tiny long-range model.  ``strip_lr_cutoff`` stores no long-range
-    cutoff, like the packaged pre-trained ``so3lr.model``."""
-    from so3krates_torch.tests.test_nvalchemi_so3 import _make_so3lr
+    cutoff, like the packaged pre-trained ``so3lr.model``.  With
+    ``output_heads`` it is a ``MultiHeadSO3LR`` with that many heads."""
+    from so3krates_torch.tests.test_nvalchemi_so3 import (
+        _make_multihead,
+        _make_so3lr,
+    )
 
     path = tmp_path / "tiny.model"
-    model = _make_so3lr(electrostatics_bool=True).to(dtype)
+    if output_heads is None:
+        model = _make_so3lr(electrostatics_bool=True).to(dtype)
+    else:
+        model = _make_multihead(
+            output_heads, electrostatic_energy_bool=True
+        ).to(dtype)
     if strip_lr_cutoff:
         model.r_max_lr = None
     torch.save(model, path)
@@ -201,6 +212,7 @@ def _run_cli(
     *extra,
     model_dtype=None,
     strip_lr_cutoff=False,
+    output_heads=None,
 ):
     from ase.io import write
 
@@ -210,6 +222,7 @@ def _run_cli(
         tmp_path,
         dtype=model_dtype or torch.float64,
         strip_lr_cutoff=strip_lr_cutoff,
+        output_heads=output_heads,
     )
     xyz = tmp_path / "in.xyz"
     write(xyz, frames, format="extxyz")
@@ -1189,3 +1202,185 @@ def test_cli_model_pme_needs_a_periodic_cell(monkeypatch, tmp_path):
             *_V1_PME_ARGS,
         )
     assert "periodic" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# Multi-output-head models (MultiHeadSO3LR): head mean + uncertainty columns
+# ---------------------------------------------------------------------------
+
+_UNCERTAINTY = ["energy_std_eV", "force_std_max_eV_A"]
+
+
+def test_cli_multihead_nvt_logs_uncertainty(monkeypatch, tmp_path, capsys):
+    log = _run_cli(
+        monkeypatch,
+        tmp_path,
+        _nacl_crystal(),
+        "--ensemble",
+        "nvt",
+        output_heads=3,
+    )
+    rows = _read_csv_rows(log)
+    _assert_finite_rows(rows, ["energy", *_UNCERTAINTY])
+    for row in rows:
+        for key in _UNCERTAINTY:
+            assert float(row[key]) > 0, key
+    assert "Multi-head model: 3 output heads" in capsys.readouterr().out
+
+
+def test_cli_multihead_npt_runs(monkeypatch, tmp_path):
+    log = _run_cli(
+        monkeypatch,
+        tmp_path,
+        _nacl_crystal(),
+        "--ensemble",
+        "npt",
+        output_heads=3,
+    )
+    rows = _read_csv_rows(log)
+    _assert_finite_rows(rows, ["energy", "pressure_bar", *_UNCERTAINTY])
+
+
+def test_cli_multihead_native_pme_force_column_nan(monkeypatch, tmp_path):
+    log = _run_cli(
+        monkeypatch,
+        tmp_path,
+        _nacl_crystal(),
+        "--ensemble",
+        "nvt",
+        *_NATIVE_PME,
+        output_heads=3,
+    )
+    rows = _read_csv_rows(log)
+    for row in rows:
+        assert np.isfinite(float(row["energy_std_eV"]))
+        # The short-range step is energy-only in the PME pipeline, so
+        # there are no per-head forces.
+        assert np.isnan(float(row["force_std_max_eV_A"]))
+
+
+def test_cli_multihead_two_frames(monkeypatch, tmp_path):
+    a1 = _nacl_crystal()
+    a2 = _nacl_crystal()
+    a2.rattle(0.05, seed=7)
+    log = _run_cli(
+        monkeypatch,
+        tmp_path,
+        [a1, a2],
+        "--ensemble",
+        "nvt",
+        "--index",
+        ":",
+        output_heads=3,
+    )
+    rows = _read_csv_rows(log)
+    _assert_finite_rows(rows, ["energy", *_UNCERTAINTY])
+    by_step = {}
+    for row in rows:
+        graph = int(float(row["graph_idx"]))  # the CSV writes 0.0, 1.0
+        by_step.setdefault(row["step"], {})[graph] = float(
+            row["energy_std_eV"]
+        )
+    for step, per_graph in by_step.items():
+        assert set(per_graph) == {0, 1}, step
+        assert per_graph[0] != per_graph[1], step
+
+
+def test_cli_single_head_has_no_uncertainty_columns(monkeypatch, tmp_path):
+    log = _run_cli(monkeypatch, tmp_path, _nacl_crystal(), "--ensemble", "nvt")
+    rows = _read_csv_rows(log)
+    for key in _UNCERTAINTY:
+        assert key not in rows[0]
+
+
+def test_load_model_multihead_refuses_compile(tmp_path):
+    from so3krates_torch.cli.run_md_nvalchemi import load_model
+
+    path = _save_tiny_model(tmp_path, output_heads=3)
+    with pytest.raises(ValueError, match="--compile"):
+        load_model(str(path), "cpu", torch.float64, compile_model=True)
+
+
+def test_head_spread_scalars_values():
+    """Hand-checked values: 2 heads, 3 atoms in 2 graphs."""
+    from so3krates_torch.cli.run_md_nvalchemi import _head_spread_scalars
+
+    # Head forces differ only on atom 1 (graph 0, ±3 in x) and atom 2
+    # (graph 1, ±1 in z) -> per-atom spread 0, 3, 1.
+    forces = torch.zeros(2, 3, 3, dtype=torch.float64)
+    forces[0, 1, 0], forces[1, 1, 0] = 3.0, -3.0
+    forces[0, 2, 2], forces[1, 2, 2] = 1.0, -1.0
+    wrapper = types.SimpleNamespace(
+        head_results={
+            "energy_var": torch.tensor([4.0, 0.25], dtype=torch.float64),
+            "forces_comm": forces,
+        }
+    )
+    ctx = types.SimpleNamespace(
+        batch=types.SimpleNamespace(
+            num_graphs=2,
+            device=torch.device("cpu"),
+            batch_idx=torch.tensor([0, 0, 1]),
+        )
+    )
+    cols = _head_spread_scalars(wrapper)
+    assert cols["energy_std_eV"](ctx).tolist() == [2.0, 0.5]
+    assert cols["force_std_max_eV_A"](ctx).tolist() == [3.0, 1.0]
+
+    wrapper.head_results["forces_comm"] = None
+    nan_col = cols["force_std_max_eV_A"](ctx)
+    assert torch.isnan(nan_col).all()
+    assert nan_col.dtype == torch.float64  # same dtype as the other branch
+
+
+def test_cli_multihead_native_pme_several_structures(monkeypatch, tmp_path):
+    """Multi-head model, two structures in one batch, NVAlchemi PME: one row
+    per structure, the energy spread per structure (not pooled over the
+    batch) and a NaN force column (energy-only model step)."""
+    a1 = _nacl_crystal()  # 8 atoms
+    a2 = _nacl_crystal() * (1, 1, 2)  # 16 atoms: a clearly different spread
+    a2.rattle(0.03, seed=5)
+
+    def run(name, frames, *extra):
+        run_dir = tmp_path / name
+        run_dir.mkdir()
+        # _run_cli builds a freshly initialised model: same seed, same
+        # weights in all three runs.
+        torch.manual_seed(0)
+        log = _run_cli(
+            monkeypatch,
+            run_dir,
+            frames,
+            "--ensemble",
+            "npt",
+            *_NATIVE_PME,
+            *extra,
+            output_heads=3,
+        )
+        return _read_csv_rows(log)
+
+    def step0_std(rows, graph):
+        (row,) = [
+            r
+            for r in rows
+            if float(r["step"]) == 0 and int(float(r["graph_idx"])) == graph
+        ]
+        return float(row["energy_std_eV"])
+
+    rows = run("batch", [a1, a2], "--index", ":")
+    ref_a1 = step0_std(run("a1", [a1]), 0)
+    ref_a2 = step0_std(run("a2", [a2]), 0)
+
+    graphs_per_step = {}
+    for row in rows:
+        graphs_per_step.setdefault(row["step"], set()).add(
+            int(float(row["graph_idx"]))
+        )
+        assert np.isnan(float(row["force_std_max_eV_A"]))
+        assert np.isfinite(float(row["pressure_bar"]))
+        assert np.isfinite(float(row["energy_std_eV"]))
+    assert all(g == {0, 1} for g in graphs_per_step.values())
+
+    assert abs(ref_a1 - ref_a2) > 1e-3  # the pair can detect pooling
+    assert step0_std(rows, 0) == pytest.approx(ref_a1, abs=1e-6)
+    assert step0_std(rows, 1) == pytest.approx(ref_a2, abs=1e-6)
