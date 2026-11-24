@@ -1371,3 +1371,182 @@ def test_wrapper_single_head_model_needs_no_theory_level():
     assert "theory_level" not in wrapper.adapt_input(
         _make_batch_with_nl(wrapper, _small_nacl())
     )
+
+
+# ---------------------------------------------------------------------------
+# Multi-output-head models (MultiHeadSO3LR): run on the head mean, like
+# MultiHeadSO3LRCalculator
+# ---------------------------------------------------------------------------
+
+_MH_HEADS = 3
+
+
+def _make_multihead(num_output_heads: int = _MH_HEADS, **extra):
+    """Tiny MultiHeadSO3LR with the same settings as ``_make_so3lr``."""
+    from so3krates_torch.modules.models import MultiHeadSO3LR
+
+    settings = dict(
+        num_output_heads=num_output_heads,
+        r_max=4.5,
+        r_max_lr=6.0,
+        num_radial_basis_fn=8,
+        degrees=[1, 2],
+        num_features=16,
+        num_heads=2,
+        num_layers=1,
+        num_elements=118,
+        avg_num_neighbors=10.0,
+        energy_regression_dim=16,
+        electrostatic_energy_bool=False,
+        dispersion_energy_bool=False,
+        zbl_repulsion_bool=False,
+    )
+    settings.update(extra)
+    model = MultiHeadSO3LR(**settings).to(dtype=DTYPE, device=DEVICE)
+    model.eval()
+    return model
+
+
+def _rattled_nacl():
+    atoms = _small_nacl()
+    atoms.rattle(0.05, seed=1)
+    return atoms
+
+
+def _mh_calc_results(model, atoms):
+    """Reference: MultiHeadSO3LRCalculator on the same model and atoms."""
+    from so3krates_torch.calculator.so3 import MultiHeadSO3LRCalculator
+
+    calc = MultiHeadSO3LRCalculator(
+        model=model,
+        device=str(DEVICE),
+        default_dtype="float64",
+        compute_stress=True,
+        r_max_lr=model.r_max_lr,
+    )
+    atoms = atoms.copy()
+    atoms.calc = calc
+    atoms.get_potential_energy()
+    return calc.results
+
+
+def _mh_wrapper_out(wrapper, atoms, outputs):
+    from so3krates_torch.calculator.nvalchemi_so3 import set_active_outputs
+
+    set_active_outputs(wrapper, outputs)
+    return wrapper(_make_batch_with_nl(wrapper, atoms))
+
+
+def _assert_nvt_parity(wrapper, out, ref):
+    assert out["energy"].shape == (1, 1)
+    np.testing.assert_allclose(out["energy"].item(), ref["energy"], atol=1e-8)
+    np.testing.assert_allclose(
+        out["forces"].detach().numpy(), ref["forces"], atol=1e-8
+    )
+    hr = wrapper.head_results
+    np.testing.assert_allclose(
+        hr["energies"][0].numpy(), ref["energies"].ravel(), atol=1e-8
+    )
+    np.testing.assert_allclose(
+        hr["energy_var"][0].item(), ref["energy_var"], atol=1e-8
+    )
+    np.testing.assert_allclose(
+        hr["forces_comm"].numpy(), ref["forces_comm"], atol=1e-8
+    )
+
+
+def test_multihead_nvt_matches_ase_calc():
+    atoms = _rattled_nacl()
+    model = _make_multihead()
+    ref = _mh_calc_results(model, atoms)
+
+    wrapper = NVAlchemiSO3LR(model)
+    out = _mh_wrapper_out(wrapper, atoms, {"energy", "forces"})
+
+    _assert_nvt_parity(wrapper, out, ref)
+    assert wrapper.head_results["stress_var"] is None
+    assert wrapper.head_results["energy_var"][0] > 0  # heads differ
+
+
+def test_multihead_npt_stress_matches_ase_calc():
+    from ase.stress import voigt_6_to_full_3x3_stress
+
+    atoms = _rattled_nacl()
+    model = _make_multihead()
+    ref = _mh_calc_results(model, atoms)
+
+    wrapper = NVAlchemiSO3LR(model)
+    out = _mh_wrapper_out(wrapper, atoms, {"energy", "forces", "stress"})
+
+    assert out["stress"].shape == (1, 3, 3)
+    np.testing.assert_allclose(
+        out["stress"][0].detach().numpy(),
+        voigt_6_to_full_3x3_stress(ref["stress"]),
+        atol=1e-8,
+    )
+    np.testing.assert_allclose(
+        wrapper.head_results["stress_var"][0].numpy(),
+        voigt_6_to_full_3x3_stress(ref["stress_var"]),
+        atol=1e-8,
+    )
+
+
+def test_multihead_two_graph_batch_per_graph_variance():
+    from so3krates_torch.calculator.nvalchemi_so3 import set_active_outputs
+
+    a1 = _rattled_nacl()
+    a2 = a1 * (1, 1, 2)
+    model = _make_multihead()
+    wrapper = NVAlchemiSO3LR(model)
+    set_active_outputs(wrapper, {"energy", "forces"})
+
+    singles = []
+    for atoms in (a1, a2):
+        wrapper(_make_batch_with_nl(wrapper, atoms))
+        singles.append(wrapper.head_results["energy_var"][0].item())
+
+    out = wrapper(_make_batch_with_nl_multi(wrapper, [a1, a2]))
+    var = wrapper.head_results["energy_var"]
+    assert var.shape == (2,)
+    np.testing.assert_allclose(var.numpy(), singles, atol=1e-8)
+    assert out["energy"].shape == (2, 1)
+    assert out["forces"].shape == (len(a1) + len(a2), 3)
+
+
+def test_multihead_resets_select_heads():
+    atoms = _rattled_nacl()
+    model = _make_multihead()
+    model.select_heads = True  # e.g. pickled mid-training (use_multihead)
+
+    wrapper = NVAlchemiSO3LR(model)
+    assert model.select_heads is False
+    assert model.return_mean is False
+
+    ref = _mh_calc_results(model, atoms)
+    out = _mh_wrapper_out(wrapper, atoms, {"energy", "forces"})
+    _assert_nvt_parity(wrapper, out, ref)
+
+
+def test_multihead_energy_only_stays_attached():
+    from so3krates_torch.calculator.nvalchemi_so3 import set_active_outputs
+
+    wrapper = NVAlchemiSO3LR(_make_multihead())
+    set_active_outputs(wrapper, {"energy"})
+    batch = _make_batch_with_nl(wrapper, _rattled_nacl())
+    batch.positions.requires_grad_(True)
+
+    out = wrapper(batch)
+
+    assert out["energy"].shape == (1, 1)
+    assert out["energy"].grad_fn is not None
+    assert wrapper.head_results["forces_comm"] is None
+    assert wrapper.head_results["energies"].shape == (1, _MH_HEADS)
+
+
+def test_single_head_has_no_head_results():
+    wrapper = NVAlchemiSO3LR(_make_so3lr())
+    wrapper(_make_batch_with_nl(wrapper, _rattled_nacl()))
+
+    assert wrapper.is_multihead is False
+    assert wrapper.num_output_heads is None
+    assert wrapper.head_results is None

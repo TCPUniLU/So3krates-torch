@@ -45,6 +45,7 @@ from nvalchemi.models.base import BaseModelMixin, ModelConfig, NeighborConfig
 from nvalchemi.models.base import NeighborListFormat
 
 from so3krates_torch.data.utils import compute_shifts
+from so3krates_torch.modules.models import MultiHeadSO3LR
 
 
 def _resolve_theory_level(
@@ -190,6 +191,16 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
     (e.g. ``data.spin = torch.tensor([[S]])``) for spin-embedding models.
     Both default to 0 when absent.
 
+    *Multi-head models.*  For a ``MultiHeadSO3LR`` (several independent
+    energy output heads, from ``convert_to_multihead``) the atoms move on
+    the mean over heads of energy, forces and stress, as with
+    :class:`~so3krates_torch.calculator.so3.MultiHeadSO3LRCalculator`.
+    After each call :attr:`head_results` holds the per-head values
+    (detached): ``energies`` ``[B, H]``, ``energy_var`` ``[B]``,
+    ``forces_comm`` ``[H, N, 3]`` (``None`` without forces) and
+    ``stress_var`` ``[B, 3, 3]`` (``None`` without stress).  It is
+    ``None`` for single-head models.
+
     *Dtype.*  Inputs are cast to the dtype of the wrapped model's
     parameters at call time, so ``wrapper.to(dtype)`` (or converting the
     inner model) is honoured; there is no dtype frozen at construction.
@@ -226,6 +237,16 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
         _validate_long_range_settings(model)
         self.theory_level = _resolve_theory_level(model, theory_level)
         self.model = model
+
+        # Multi-output-head models: keep every head's output (as
+        # MultiHeadSO3LRCalculator does) and reduce to the mean in forward.
+        self.is_multihead: bool = isinstance(model, MultiHeadSO3LR)
+        self.num_output_heads: int | None = None
+        self.head_results: dict[str, torch.Tensor | None] | None = None
+        if self.is_multihead:
+            model.select_heads = False
+            model.return_mean = False
+            self.num_output_heads = int(model.num_output_heads)
 
         self.r_sr: float = float(model.r_max)
         self.has_lr: bool = (
@@ -458,7 +479,43 @@ class NVAlchemiSO3LR(nn.Module, BaseModelMixin):
             compute_force="forces" in active,
             compute_stress="stress" in active,
         )
+        if self.is_multihead:
+            raw = self._reduce_heads(raw)
         return self.adapt_output(raw, data)
+
+    def _reduce_heads(self, raw: dict[str, Any]) -> dict[str, Any]:
+        """Mean over output heads; per-head spread into ``head_results``.
+
+        ``MultiHeadSO3LR`` returns ``energy (H, B)``, ``forces (H, N, 3)``
+        and ``stress (H, B, 3, 3)``.  The atoms move on the head mean, as
+        with :class:`MultiHeadSO3LRCalculator`; variances are population
+        variances (``unbiased=False``), as there.  The energy mean keeps
+        its graph so autograd pipeline groups can differentiate it.
+        """
+        energy = raw["energy"]  # (H, B)
+        forces = raw.get("forces")  # (H, N, 3) or None
+        stress = raw.get("stress")  # (H, B, 3, 3) or None
+        if stress is not None:
+            # compute_multihead_forces_stress squeezes size-1 axes (B=1
+            # or H=1); restore them from the energy's (H, B) shape.
+            stress = stress.reshape(*energy.shape, 3, 3)
+        self.head_results = {
+            "energies": energy.detach().T,  # (B, H)
+            "energy_var": energy.detach().var(dim=0, unbiased=False),
+            "forces_comm": None if forces is None else forces.detach(),
+            "stress_var": (
+                None
+                if stress is None
+                else stress.detach().var(dim=0, unbiased=False)
+            ),
+        }
+        out = dict(raw)
+        out["energy"] = energy.mean(dim=0)  # (B,)
+        if forces is not None:
+            out["forces"] = forces.mean(dim=0)  # (N, 3)
+        if stress is not None:
+            out["stress"] = stress.mean(dim=0)  # (B, 3, 3)
+        return out
 
 
 def set_active_outputs(model: nn.Module, outputs) -> None:
