@@ -776,7 +776,9 @@ class MultiHeadSO3LRCalculator(TorchkratesCalculator):
             model_type="so3lr",
             **kwargs,
         )
-        self.num_heads = self.models[0].num_heads
+        # Number of energy output heads (not the attention heads, which
+        # the model calls num_heads).
+        self.num_heads = self.models[0].num_output_heads
         self.models[0].select_heads = False
 
         assert (
@@ -814,16 +816,21 @@ class MultiHeadSO3LRCalculator(TorchkratesCalculator):
                 ret_tensors["stress"] = out["stress"].detach()
 
         if self.model_type in ["so3lr"]:
+            # Dipole, partial charges and Hirshfeld ratios come from one
+            # network shared by all heads. _process_results averages over
+            # a leading model axis (as for ensembles), so give them one of
+            # length 1; without it the per-atom arrays were averaged over
+            # atoms.
             if out["dipole"] is not None:
-                ret_tensors["dipole"] = out["dipole"].detach()
+                ret_tensors["dipole"] = out["dipole"].detach()  # (1, 3)
             if out["partial_charges"] is not None:
-                ret_tensors["partial_charges"] = out[
-                    "partial_charges"
-                ].detach()
+                ret_tensors["partial_charges"] = (
+                    out["partial_charges"].detach().unsqueeze(0)
+                )
             if out["hirshfeld_ratios"] is not None:
-                ret_tensors["hirshfeld_ratios"] = out[
-                    "hirshfeld_ratios"
-                ].detach()
+                ret_tensors["hirshfeld_ratios"] = (
+                    out["hirshfeld_ratios"].detach().unsqueeze(0)
+                )
 
         self._process_results(ret_tensors, out, multi_output=True)
 
@@ -845,9 +852,10 @@ class MultiHeadSO3LRCalculator(TorchkratesCalculator):
                 }
             )
         if model_type in ["so3lr"]:
-            dipole = torch.zeros(3, device=self.device)
-            partial_charges = torch.zeros(num_atoms, device=self.device)
-            hirshfeld_ratios = torch.zeros(num_atoms, device=self.device)
+            # Leading axis of length 1: one shared network (see calculate).
+            dipole = torch.zeros(1, 3, device=self.device)
+            partial_charges = torch.zeros(1, num_atoms, device=self.device)
+            hirshfeld_ratios = torch.zeros(1, num_atoms, device=self.device)
             dict_of_tensors.update(
                 {
                     "dipole": dipole,
