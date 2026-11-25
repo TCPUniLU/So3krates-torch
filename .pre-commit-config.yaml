@@ -11,6 +11,8 @@ repos:
         name: pytest
         entry: pytest
         language: system
-        stages: [pre-push]
+        # Run on demand: pre-commit run pytest --hook-stage manual
+        # (CI runs the full suite on every PR.)
+        stages: [manual]
         always_run: true
         pass_filenames: false

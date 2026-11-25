@@ -1,4 +1,5 @@
 from .cli_models import (
+    ConvertHeadsArgs,
     CreateLammpsArgs,
     EvalArgs,
     Jax2TorchArgs,
@@ -28,4 +29,5 @@ __all__ = [
     "Jax2TorchArgs",
     "Torch2JaxArgs",
     "CreateLammpsArgs",
+    "ConvertHeadsArgs",
 ]
