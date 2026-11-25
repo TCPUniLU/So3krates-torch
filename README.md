@@ -39,7 +39,8 @@ Upgrading from 0.2.x? See the breaking changes in [CHANGELOG.md](CHANGELOG.md).
 9. HDF5 file merging: `torchkrates-merge`
 10. LAMMPS model export: `torchkrates-create-lammps-model`
 11. PME parameter tuning (electrostatics and dispersion): `torchkrates-tune-pme`
-12. *Experimental:* `torch.compile` for inference and MD (`--compile`; see [Experimental: torch.compile](#experimental-torchcompile))
+12. Multi-head ⇄ single-head conversion: `torchkrates-convert-heads`
+13. *Experimental:* `torch.compile` for inference and MD (`--compile`; see [Experimental: torch.compile](#experimental-torchcompile))
 
 
 > [!IMPORTANT]
@@ -275,6 +276,34 @@ mpirun -np $num_gpus /path/to/lammps/build_cuda/lmp \
 where `$num_gpus` is the number of GPU processes and `/path/to/lammps/build_cuda/lmp` is the Kokkos-enabled LAMMPS executable. The model auto-detects the GPU device on the first timestep.
 
 ---
+
+### `torchkrates-convert-heads` — Multi-Head Conversion
+
+Turn a trained SO3LR model into a multi-head model with the same backbone and N freshly initialised, independent energy output heads (e.g. as a starting point for ensemble fine-tuning), or keep one head of a multi-head model as a plain single-head model. Everything except the energy head (backbone weights, `r_max_lr`, dtype, long-range settings) is kept.
+
+```bash
+# Bundled model -> 4 untrained heads
+torchkrates-convert-heads --model v1 --output so3lr_mh.model --to-multihead 4
+
+# tauri models have 16 theory levels; level 5 is kept unless you pass --theory-level
+torchkrates-convert-heads --model tauri-m-2606 --output tauri_mh.model --to-multihead 4
+
+# Keep head 2 of a fine-tuned multi-head model
+torchkrates-convert-heads --model finetuned.model --output head2.model --select-head 2
+```
+
+| Flag | Description |
+|------|-------------|
+| `--model` | Pickled model file (`torch.save(model)`, e.g. the `.model` written by training) or a bundled model name (`v1`, `tauri-m-2606`, ...) |
+| `--output` | Output `.model` file |
+| `--to-multihead N` | Make a multi-head model with N new heads (exactly one of `--to-multihead` / `--select-head`) |
+| `--select-head K` | Keep head K (0-based) of a multi-head model |
+| `--theory-level T` | Theory level to keep for multi-theory-level models such as tauri (default: `5`, so3lr_dev's level; only with `--to-multihead`) |
+| `--seed` | Seed for the new heads' weights (default: `42`) |
+| `--device` | Torch device (default: `cpu`) |
+| `--force` | Overwrite an existing output file |
+
+From Python: `to_multihead_model`, `to_single_head_model` and `select_theory_level` in `so3krates_torch.tools.multihead_utils`.
 
 ### `torchkrates-eval` — Inference
 
@@ -819,6 +848,7 @@ ARCHITECTURE:
 |-----|------|---------|-------------|
 | `convert_to_multihead` | `bool` | `False` | Convert the single energy output head to multiple independent heads for ensemble predictions. |
 | `num_output_heads` | `int` | `None` | Number of output heads. Required when `convert_to_multihead: true`. |
+| `convert_theory_level` | `int` | `None` | Theory level to keep when converting a multi-theory-level model (e.g. the bundled `tauri-*` models) to multiple heads. Unset means level `5` (so3lr_dev's level). |
 | `use_multihead` | `bool` | `False` | Enable head selection during multi-head training (each sample is assigned to a specific head). |
 
 

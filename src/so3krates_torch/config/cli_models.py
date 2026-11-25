@@ -203,3 +203,28 @@ class CreateLammpsArgs(BaseModel):
     electrostatic_energy_scale: Optional[float] = None
     dispersion_energy_scale: Optional[float] = None
     dispersion_energy_cutoff_lr_damping: Optional[float] = None
+
+
+class ConvertHeadsArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model: str
+    output: str
+    to_multihead: Optional[int] = Field(default=None, ge=1)
+    select_head: Optional[int] = Field(default=None, ge=0)
+    theory_level: Optional[int] = Field(default=None, ge=0)
+    seed: int = 42
+    device: str = "cpu"
+    force: bool = False
+
+    @model_validator(mode="after")
+    def validate_mode(self):
+        if (self.to_multihead is None) == (self.select_head is None):
+            raise ValueError(
+                "Give exactly one of --to-multihead or --select-head."
+            )
+        if self.select_head is not None and self.theory_level is not None:
+            raise ValueError(
+                "--theory-level only applies with --to-multihead "
+                "(multi-head models have no theory levels)."
+            )
+        return self
