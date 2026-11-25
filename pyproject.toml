@@ -1,14 +1,17 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "So3krates-torch"
-version = "0.3.0"
+version = "0.4.0"
 description = "PyTorch implementation of So3krates neural network potential for atomistic simulations"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT (code); bundled SO3LR tauri weights CC-BY-NC-4.0, robust loss Apache-2.0 (see NOTICE.md)" }
+# Code MIT; bundled SO3LR tauri weights CC-BY-NC-4.0; robust loss
+# Apache-2.0. See NOTICE.md.
+license = "MIT AND CC-BY-NC-4.0 AND Apache-2.0"
+license-files = ["LICENSE.md", "NOTICE.md", "licenses/*"]
 authors = [
     { name = "Tobias Henkes", email = "tobias.henkes@uni.lu" }
 ]
@@ -27,7 +30,6 @@ keywords = [
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -67,11 +69,6 @@ documentation = "https://github.com/TCPUniLU/So3krates-torch#readme"
 issues = "https://github.com/TCPUniLU/So3krates-torch/issues"
 "Bug Reports" = "https://github.com/TCPUniLU/So3krates-torch/issues"
 "Source Code" = "https://github.com/TCPUniLU/So3krates-torch"
-
-[tool.setuptools]
-# Ship third-party license texts (Apache-2.0 robust loss, CC BY-NC 4.0
-# tauri weights) with the wheel; see NOTICE.md.
-license-files = ["LICENSE.md", "NOTICE.md", "licenses/*"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
