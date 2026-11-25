@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- **Removed `pretrained_to_mh_model`, `model_to_multihead` and
+  `reduce_mh_model_to_sh`** from `so3krates_torch.tools.multihead_utils`.
+  Use `to_multihead_model(model, num_output_heads)` and
+  `to_single_head_model(model, head_idx)` instead; both take and return
+  model objects.
+
+### Fixed
+
+- **`convert_to_multihead` fine-tuning.** Converting a pretrained model to
+  multiple energy heads crashed on a validated config
+  (`unexpected keyword argument 'compute_avg_num_neighbors'`). The
+  conversion now copies the pretrained model and replaces only its energy
+  head, so it also no longer:
+  - builds the model in float32 (and switches torch's default dtype to
+    float32) when training in float64;
+  - resets `r_max_lr` to 12.0;
+  - drops learned per-element energy scales;
+  - takes settings that are not weights (e.g. `cutoff_fn`,
+    `electrostatic_energy_scale`) from the config instead of the
+    pretrained model.
+
+### Added
+
+- `convert_theory_level` (ARCHITECTURE): with `convert_to_multihead`, keep
+  this theory level of a multi-theory-level model such as the bundled
+  `tauri-*` models, which could not be converted before.
+- `select_theory_level(model, theory_level)` in
+  `so3krates_torch.tools.multihead_utils`.
+
 ## 0.3.0 (unreleased)
 
 ### Breaking changes

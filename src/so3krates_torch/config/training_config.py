@@ -78,6 +78,7 @@ class ArchitectureConfig(BaseModel):
     # Multi-head
     convert_to_multihead: bool = False
     num_output_heads: Optional[int] = None
+    convert_theory_level: Optional[int] = None
     use_multihead: bool = False
 
     @model_validator(mode="after")

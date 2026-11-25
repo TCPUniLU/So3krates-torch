@@ -819,6 +819,7 @@ ARCHITECTURE:
 |-----|------|---------|-------------|
 | `convert_to_multihead` | `bool` | `False` | Convert the single energy output head to multiple independent heads for ensemble predictions. |
 | `num_output_heads` | `int` | `None` | Number of output heads. Required when `convert_to_multihead: true`. |
+| `convert_theory_level` | `int` | `None` | Theory level to keep when converting a multi-theory-level model (e.g. the bundled `tauri-*` models) to multiple heads. Required for such models. |
 | `use_multihead` | `bool` | `False` | Enable head selection during multi-head training (each sample is assigned to a specific head). |
 
 

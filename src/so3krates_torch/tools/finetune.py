@@ -7,7 +7,7 @@ from so3krates_torch.blocks.euclidean_transformer import (
     EuclideanAttentionBlockDoRA,
     EuclideanAttentionBlock,
 )
-from so3krates_torch.tools.multihead_utils import pretrained_to_mh_model
+from so3krates_torch.tools.multihead_utils import to_multihead_model
 from so3krates_torch.tools.utils import report_count_params
 import math
 import logging
@@ -379,8 +379,20 @@ def setup_finetuning(
         assert (
             architecture_settings is not None
         ), "architecture_settings must be provided when convert_to_multihead is True"
-        model = pretrained_to_mh_model(
-            architecture_settings, model, device_name
+        num_output_heads = architecture_settings.get("num_output_heads")
+        assert (
+            num_output_heads is not None
+        ), "num_output_heads must be specified for multi-head model"
+        if log:
+            logging.info(
+                f"Converting pretrained model to {num_output_heads} "
+                "energy output heads (backbone and settings kept)."
+            )
+        model = to_multihead_model(
+            model,
+            num_output_heads,
+            seed=seed,
+            theory_level=architecture_settings.get("convert_theory_level"),
         )
 
     if (

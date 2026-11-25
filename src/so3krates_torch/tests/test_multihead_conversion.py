@@ -14,7 +14,7 @@ from so3krates_torch.modules.models import (
     SO3LR,
     So3krates,
 )
-from so3krates_torch.tools.finetune import model_to_lora
+from so3krates_torch.tools.finetune import model_to_lora, setup_finetuning
 from so3krates_torch.tools.multihead_utils import (
     select_theory_level,
     to_multihead_model,
@@ -334,3 +334,54 @@ class TestSelectTheoryLevel:
         mh = MultiHeadSO3LR(**multihead_model_config)
         with pytest.raises(ValueError, match="SO3LR"):
             select_theory_level(mh, 0)
+
+
+# ---------------------------------------------------------------------------
+# Fine-tuning path and persistence
+# ---------------------------------------------------------------------------
+
+
+class TestFinetuneConversion:
+    def test_setup_finetuning_converts_with_validated_config(self, sh):
+        # A validated ARCHITECTURE section carries keys the model
+        # constructor does not accept, and an r_max_lr that differs from
+        # the pretrained model's.
+        arch = {
+            "convert_to_multihead": True,
+            "num_output_heads": 3,
+            "compute_avg_num_neighbors": True,
+            "r_max_lr": 12.0,
+        }
+        mh = setup_finetuning(
+            sh,
+            finetune_choice="naive",
+            device_name="cpu",
+            convert_to_multihead=True,
+            architecture_settings=arch,
+        )
+        assert type(mh) is MultiHeadSO3LR
+        assert mh.num_output_heads == 3
+        assert mh.r_max_lr == 10.0  # from the model, not the config
+        assert all(p.dtype == torch.float64 for p in mh.parameters())
+
+    def test_setup_finetuning_theory_level(self, so3lr_model_config):
+        sh = SO3LR(**so3lr_model_config, num_theory_levels=3)
+        arch = {"num_output_heads": 2, "convert_theory_level": 2}
+        mh = setup_finetuning(
+            sh,
+            finetune_choice="naive",
+            device_name="cpu",
+            convert_to_multihead=True,
+            architecture_settings=arch,
+        )
+        assert type(mh) is MultiHeadSO3LR
+
+    def test_converted_models_pickle(self, sh, tmp_path):
+        mh = to_multihead_model(sh, 2)
+        for model in (mh, to_single_head_model(mh, 0)):
+            path = tmp_path / "m.model"
+            torch.save(model, path)
+            loaded = torch.load(path, weights_only=False)
+            assert type(loaded) is type(model)
+            a, b = model.state_dict(), loaded.state_dict()
+            assert all(torch.equal(a[k], b[k]) for k in a)
