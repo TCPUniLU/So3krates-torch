@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-11-25)
+
+First release on PyPI since 0.2.1: it also contains all changes of 0.3.0
+below, which was tagged but not published to PyPI.
+
+### Packaging
+
+- License metadata is now an SPDX expression
+  (`MIT AND CC-BY-NC-4.0 AND Apache-2.0`); building needs
+  `setuptools>=77`.
+- New GitHub Actions workflow `publish.yml` builds and checks the sdist
+  and wheel for every GitHub release and publishes them to TestPyPI or
+  PyPI on manual dispatch (trusted publishing).
+- The pytest pre-commit hook runs on demand only:
+  `pre-commit run pytest --hook-stage manual`.
 
 ### Breaking changes
 
@@ -44,7 +58,7 @@
 - `select_theory_level(model, theory_level)` in
   `so3krates_torch.tools.multihead_utils`.
 
-## 0.3.0 (unreleased)
+## 0.3.0 (2026-11-24, tagged; not published to PyPI)
 
 ### Breaking changes
 
