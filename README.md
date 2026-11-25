@@ -285,9 +285,8 @@ Turn a trained SO3LR model into a multi-head model with the same backbone and N 
 # Bundled model -> 4 untrained heads
 torchkrates-convert-heads --model v1 --output so3lr_mh.model --to-multihead 4
 
-# tauri models have 16 theory levels: choose the one to keep
-torchkrates-convert-heads --model tauri-m-2606 --output tauri_mh.model \
-    --to-multihead 4 --theory-level 5
+# tauri models have 16 theory levels; level 5 is kept unless you pass --theory-level
+torchkrates-convert-heads --model tauri-m-2606 --output tauri_mh.model --to-multihead 4
 
 # Keep head 2 of a fine-tuned multi-head model
 torchkrates-convert-heads --model finetuned.model --output head2.model --select-head 2
@@ -299,7 +298,7 @@ torchkrates-convert-heads --model finetuned.model --output head2.model --select-
 | `--output` | Output `.model` file |
 | `--to-multihead N` | Make a multi-head model with N new heads (exactly one of `--to-multihead` / `--select-head`) |
 | `--select-head K` | Keep head K (0-based) of a multi-head model |
-| `--theory-level T` | Theory level to keep; required for multi-theory-level models (only with `--to-multihead`) |
+| `--theory-level T` | Theory level to keep for multi-theory-level models such as tauri (default: `5`, so3lr_dev's level; only with `--to-multihead`) |
 | `--seed` | Seed for the new heads' weights (default: `42`) |
 | `--device` | Torch device (default: `cpu`) |
 | `--force` | Overwrite an existing output file |
@@ -849,7 +848,7 @@ ARCHITECTURE:
 |-----|------|---------|-------------|
 | `convert_to_multihead` | `bool` | `False` | Convert the single energy output head to multiple independent heads for ensemble predictions. |
 | `num_output_heads` | `int` | `None` | Number of output heads. Required when `convert_to_multihead: true`. |
-| `convert_theory_level` | `int` | `None` | Theory level to keep when converting a multi-theory-level model (e.g. the bundled `tauri-*` models) to multiple heads. Required for such models. |
+| `convert_theory_level` | `int` | `None` | Theory level to keep when converting a multi-theory-level model (e.g. the bundled `tauri-*` models) to multiple heads. Unset means level `5` (so3lr_dev's level). |
 | `use_multihead` | `bool` | `False` | Enable head selection during multi-head training (each sample is assigned to a specific head). |
 
 

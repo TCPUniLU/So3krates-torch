@@ -1,5 +1,6 @@
 import contextlib
 import copy
+import logging
 from typing import Optional
 
 import torch
@@ -9,6 +10,11 @@ from so3krates_torch.blocks.output_block import (
     MultiAtomicEnergyOutputHead,
 )
 from so3krates_torch.modules.models import SO3LR, MultiHeadSO3LR
+
+# Theory level kept when converting a multi-theory-level model (the
+# bundled tauri models have 16) without an explicit choice; so3lr_dev's
+# default level.
+DEFAULT_THEORY_LEVEL = 5
 
 
 @contextlib.contextmanager
@@ -100,9 +106,10 @@ def to_multihead_model(
     non-weight settings are kept. Per-element energy shifts and scales
     are copied into the new head. ``model`` is not modified.
 
-    A model with several theory levels (e.g. the bundled tauri models)
-    needs ``theory_level``: that level is kept, see
-    ``select_theory_level``.
+    For a model with several theory levels (e.g. the bundled tauri
+    models) only ``theory_level`` is kept, see ``select_theory_level``;
+    it defaults to ``DEFAULT_THEORY_LEVEL`` (5, the level so3lr_dev
+    uses).
     """
     if isinstance(model, MultiHeadSO3LR):
         raise ValueError(
@@ -122,9 +129,11 @@ def to_multihead_model(
         model.atomic_energy_output_block, "num_theory_levels", 1
     )
     if num_levels > 1 and theory_level is None:
-        raise ValueError(
-            f"Model has {num_levels} theory levels; pass theory_level to "
-            "choose the one to keep."
+        theory_level = DEFAULT_THEORY_LEVEL
+        logging.info(
+            f"Model has {num_levels} theory levels; keeping the default "
+            f"theory_level={DEFAULT_THEORY_LEVEL} (pass theory_level to "
+            "choose another)."
         )
     if theory_level is not None:
         model = select_theory_level(model, theory_level)

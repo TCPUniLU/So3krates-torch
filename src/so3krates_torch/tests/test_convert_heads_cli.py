@@ -65,13 +65,21 @@ def test_bundled_v1_keyword(tmp_path):
     assert type(_load(out)) is MultiHeadSO3LR
 
 
-def test_tauri_needs_theory_level(tmp_path, capsys):
+def test_tauri_defaults_to_theory_level_5(tmp_path):
+    argv = ["--model", "tauri-s-2602", "--to-multihead", "2"]
+    default, explicit = (str(tmp_path / f"{n}.model") for n in "de")
+    main(argv + ["--output", default])
+    main(argv + ["--output", explicit, "--theory-level", "5"])
+    a, b = _load(default).state_dict(), _load(explicit).state_dict()
+    assert all(torch.equal(a[k], b[k]) for k in a)
+
+
+def test_tauri_other_theory_level(tmp_path):
     out = str(tmp_path / "out.model")
-    argv = ["--model", "tauri-s-2602", "--output", out]
-    with pytest.raises(SystemExit):
-        main(argv + ["--to-multihead", "2"])
-    assert "theory_level" in capsys.readouterr().err
-    main(argv + ["--to-multihead", "2", "--theory-level", "5"])
+    main(
+        ["--model", "tauri-s-2602", "--output", out]
+        + ["--to-multihead", "2", "--theory-level", "0"]
+    )
     assert type(_load(out)) is MultiHeadSO3LR
 
 

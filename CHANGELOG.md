@@ -38,7 +38,9 @@
   model as a single-head model. See the README.
 - `convert_theory_level` (ARCHITECTURE): with `convert_to_multihead`, keep
   this theory level of a multi-theory-level model such as the bundled
-  `tauri-*` models, which could not be converted before.
+  `tauri-*` models, which could not be converted before. Defaults to 5
+  (so3lr_dev's level), also for `torchkrates-convert-heads --theory-level`
+  and `to_multihead_model(theory_level=...)`.
 - `select_theory_level(model, theory_level)` in
   `so3krates_torch.tools.multihead_utils`.
 

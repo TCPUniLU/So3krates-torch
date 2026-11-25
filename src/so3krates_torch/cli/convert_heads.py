@@ -10,7 +10,7 @@ Usage::
 
     torchkrates-convert-heads --model v1 --output mh.model --to-multihead 4
     torchkrates-convert-heads --model tauri-m-2606 --output mh.model \\
-        --to-multihead 4 --theory-level 5
+        --to-multihead 4  # keeps theory level 5
     torchkrates-convert-heads --model ft.model --output head2.model \\
         --select-head 2
 """
@@ -69,8 +69,9 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         metavar="T",
         default=None,
-        help="Theory level to keep (required for multi-theory-level "
-        "models such as tauri-*; only with --to-multihead).",
+        help="Theory level to keep for multi-theory-level models such as "
+        "tauri-* (only with --to-multihead). Unset means level 5, "
+        "so3lr_dev's level.",
     )
     parser.add_argument(
         "--seed", type=int, default=42, help="Seed for new head weights."

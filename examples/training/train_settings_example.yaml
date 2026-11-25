@@ -78,6 +78,26 @@ ARCHITECTURE:
   #   output weights, shifts, and scales (one per level).
   #   At inference: SO3LRCalculator(theory_level=<int>) selects the level.
   #   Default: 1 (standard single-theory SO3LR, no theory_level field required).
+  #
+  # --- Multiple energy output heads (ensemble) ---
+  # convert_to_multihead: false
+  #   Use several independent energy output heads (MultiHeadSO3LR). Their
+  #   spread is an uncertainty estimate (see torchkrates-md-nvalchemi and
+  #   MultiHeadSO3LRCalculator).
+  #   - Without a pretrained model: trains a multi-head model from scratch.
+  #   - With TRAINING.pretrained_model / pretrained_weights (single-head):
+  #     keeps the pretrained backbone and all its settings and adds
+  #     num_output_heads freshly initialised heads (per-element energy
+  #     shifts and scales are copied). Works with or without
+  #     finetune_choice. Multi-head pretrained weights are loaded as they
+  #     are. Offline alternative: `torchkrates-convert-heads`.
+  # num_output_heads: 4
+  #   Number of energy output heads. Required with convert_to_multihead.
+  # convert_theory_level: 5
+  #   When converting a multi-theory-level model (num_theory_levels > 1,
+  #   e.g. the bundled tauri models with 16), only this theory level is
+  #   kept. Default: 5 (so3lr_dev's level). The models' other levels are
+  #   dropped, so training data needs no atoms.info["theory_level"].
   neighborlist_format_lr: sparse
   use_pme: false  # true = torch-pme electrostatics for periodic systems (requires torch-pme)
   # pme_smearing: 1.2       # Ewald splitting (Å); default = r_max / 5

@@ -321,7 +321,17 @@ class TestSelectTheoryLevel:
             dst.energy_scales.flatten(), src.energy_scales.weight[1]
         )
 
-    def test_multihead_requires_theory_level(self, sh_tl):
+    def test_multihead_defaults_to_level_5(self, so3lr_model_config):
+        # The tauri models have 16 theory levels; so3lr_dev uses level 5.
+        sh = _trained_like(SO3LR(**so3lr_model_config, num_theory_levels=16))
+        mh = to_multihead_model(sh, 2)
+        assert torch.equal(
+            mh.atomic_energy_output_block.energy_shifts,
+            sh.atomic_energy_output_block.energy_shifts[:, 5],
+        )
+
+    def test_default_level_out_of_range_names_theory_level(self, sh_tl):
+        # sh_tl has 4 levels, so the default level 5 does not exist.
         with pytest.raises(ValueError, match="theory_level"):
             to_multihead_model(sh_tl, 2)
 
