@@ -27,6 +27,10 @@
 
 ### Added
 
+- **`torchkrates-convert-heads` CLI.** `--to-multihead N` turns a trained
+  or bundled model into a multi-head model with the same backbone and N
+  fresh energy heads; `--select-head K` keeps one head of a multi-head
+  model as a single-head model. See the README.
 - `convert_theory_level` (ARCHITECTURE): with `convert_to_multihead`, keep
   this theory level of a multi-theory-level model such as the bundled
   `tauri-*` models, which could not be converted before.
