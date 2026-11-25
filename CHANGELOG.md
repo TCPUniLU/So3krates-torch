@@ -24,6 +24,11 @@
   - takes settings that are not weights (e.g. `cutoff_fn`,
     `electrostatic_energy_scale`) from the config instead of the
     pretrained model.
+- **`convert_to_multihead` with `pretrained_weights`** now loads single-head
+  weights into a single-head model before converting (the energy scales
+  were dropped before), and multi-head weights into a multi-head model.
+- **`convert_to_multihead` without `finetune_choice`** converts a pretrained
+  model too; before, the setting was silently ignored.
 
 ### Added
 

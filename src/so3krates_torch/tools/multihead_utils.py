@@ -19,7 +19,12 @@ def _isolated_init(dtype: torch.dtype, device: torch.device, seed):
     exit; seeds the RNG inside the block when ``seed`` is given.
     """
     previous = torch.get_default_dtype()
-    devices = [device] if device.type == "cuda" else []
+    # torch.manual_seed seeds every CUDA device, so fork all of them.
+    devices = (
+        list(range(torch.cuda.device_count()))
+        if torch.cuda.is_available()
+        else []
+    )
     try:
         with torch.random.fork_rng(devices=devices):
             if seed is not None:

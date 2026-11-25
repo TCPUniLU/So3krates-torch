@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 from so3krates_torch.modules.models import SO3LR, MultiHeadSO3LR
 from so3krates_torch.tools.finetune import fuse_lora_weights, setup_finetuning
+from so3krates_torch.tools.multihead_utils import to_multihead_model
 from so3krates_torch.tools.utils import AtomicNumberTable
 
 DTYPE_MAP = {
@@ -222,10 +223,11 @@ def load_pretrained_model_direct(
         )
 
 
-def load_pretrained_weights(
-    model: torch.nn.Module, pretrained_path: str, device: torch.device
-) -> None:
-    """Load pretrained model weights into existing model."""
+def read_pretrained_state_dict(
+    pretrained_path: str, device: torch.device
+) -> dict:
+    """Read a state dict from a model object, checkpoint or state dict
+    file."""
     if not os.path.exists(pretrained_path):
         raise FileNotFoundError(
             f"Pretrained model not found: {pretrained_path}"
@@ -253,7 +255,18 @@ def load_pretrained_weights(
         raise ValueError(
             f"Unsupported pretrained model format: " f"{type(loaded_object)}"
         )
+    return state_dict
 
+
+def load_pretrained_weights(
+    model: torch.nn.Module,
+    pretrained_path: str,
+    device: torch.device,
+    state_dict: Optional[dict] = None,
+) -> None:
+    """Load pretrained model weights into existing model."""
+    if state_dict is None:
+        state_dict = read_pretrained_state_dict(pretrained_path, device)
     # Load the state dict into our model
     missing_keys, unexpected_keys = model.load_state_dict(
         state_dict, strict=False
@@ -271,6 +284,10 @@ def load_pretrained_weights(
         )
 
     logging.info("Successfully loaded pretrained weights")
+
+
+def _is_multihead_state_dict(state_dict: dict) -> bool:
+    return "atomic_energy_output_block.final_layer_weights" in state_dict
 
 
 def _setup_model_for_training(
@@ -300,9 +317,27 @@ def _setup_model_for_training(
         logging.info("Using complete pretrained model.")
         warm_start = True
     else:
-        model = create_model(config, device)
+        build_config = config
+        state_dict = None
         if pretrained_weights:
-            load_pretrained_weights(model, pretrained_weights, device)
+            state_dict = read_pretrained_state_dict(pretrained_weights, device)
+            if config["ARCHITECTURE"].get(
+                "convert_to_multihead", False
+            ) and not _is_multihead_state_dict(state_dict):
+                # Single-head weights: load them into an SO3LR; it is
+                # converted to multiple heads in prepare_model_for_training.
+                build_config = {
+                    **config,
+                    "ARCHITECTURE": {
+                        **config["ARCHITECTURE"],
+                        "convert_to_multihead": False,
+                    },
+                }
+        model = create_model(build_config, device)
+        if pretrained_weights:
+            load_pretrained_weights(
+                model, pretrained_weights, device, state_dict=state_dict
+            )
             warm_start = True
 
     config_r_max = config["ARCHITECTURE"].get("r_max", 4.5)
@@ -503,3 +538,66 @@ def handle_finetuning(
         seed=config["GENERAL"].get("seed", 42),
         log=True,
     )
+
+
+def prepare_model_for_training(
+    config: dict,
+    model: torch.nn.Module,
+    warm_start: bool,
+    avg_num_neighbors: float,
+    average_atomic_energy_shifts: torch.Tensor,
+    num_elements: int,
+    device_name: str,
+) -> torch.nn.Module:
+    """Set up a created or loaded model for training: average number of
+    neighbours, conversion of a pretrained single-head model to multiple
+    heads (``convert_to_multihead``), atomic energy shifts, fine-tuning
+    and dtype."""
+    if warm_start:
+        if config["TRAINING"].get("ft_update_avg_num_neighbors", False):
+            logging.info(
+                "Updating average number of neighbors from "
+                "training data for fine-tuning."
+            )
+            model.avg_num_neighbors = avg_num_neighbors
+        else:
+            logging.info(
+                "Retaining average number of neighbors from "
+                "pretrained model for fine-tuning."
+            )
+            avg_num_neighbors = model.avg_num_neighbors
+    else:
+        model.avg_num_neighbors = avg_num_neighbors
+
+    arch = config["ARCHITECTURE"]
+    if (
+        warm_start
+        and arch.get("convert_to_multihead", False)
+        and not isinstance(model, MultiHeadSO3LR)
+    ):
+        # Convert before the shifts are resolved: they are read from the
+        # (converted) energy head.
+        logging.info(
+            f"Converting pretrained model to {arch['num_output_heads']} "
+            "energy output heads (backbone and settings kept)."
+        )
+        model = to_multihead_model(
+            model,
+            arch["num_output_heads"],
+            seed=config["GENERAL"].get("seed", 42),
+            theory_level=arch.get("convert_theory_level"),
+        )
+
+    atomic_energy_shifts = resolve_atomic_energy_shifts(
+        config, model, warm_start, average_atomic_energy_shifts
+    )
+
+    # Setup finetuning if specified
+    if config["TRAINING"].get("finetune_choice", None):
+        model = handle_finetuning(config, model, num_elements, device_name)
+
+    logging.info(f"Atomic energy shifts: {atomic_energy_shifts}")
+    set_atomic_energy_shifts_in_model(model, atomic_energy_shifts)
+    set_avg_num_neighbors_in_model(model, avg_num_neighbors)
+    set_dtype_model(model, config["GENERAL"].get("default_dtype", "float32"))
+    return model

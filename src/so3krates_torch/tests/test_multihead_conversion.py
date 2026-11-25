@@ -169,6 +169,13 @@ class TestToMultihead:
             to_multihead_model(sh, n)
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA only")
+    def test_cuda_rng_untouched_for_cpu_model(self, sh):
+        before = torch.cuda.get_rng_state_all()
+        to_multihead_model(sh, 2, seed=3)
+        after = torch.cuda.get_rng_state_all()
+        assert all(torch.equal(a, b) for a, b in zip(before, after))
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA only")
     def test_cuda_device_preserved(self, sh):
         mh = to_multihead_model(sh.cuda(), 2)
         assert all(p.is_cuda for p in mh.parameters())

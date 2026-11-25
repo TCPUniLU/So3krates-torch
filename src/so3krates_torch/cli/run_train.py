@@ -22,6 +22,7 @@ from so3krates_torch.tools.model_setup import (
     resolve_atomic_energy_shifts,
     set_dtype_model,
     handle_finetuning,
+    prepare_model_for_training,
 )
 from so3krates_torch.tools.data_setup import (
     setup_data_loaders,
@@ -167,34 +168,15 @@ def run_training(config: dict) -> None:
         world_size=world_size,
     )
 
-    if warm_start:
-        if config["TRAINING"].get("ft_update_avg_num_neighbors", False):
-            logging.info(
-                "Updating average number of neighbors from "
-                "training data for fine-tuning."
-            )
-            model.avg_num_neighbors = avg_num_neighbors
-        else:
-            logging.info(
-                "Retaining average number of neighbors from "
-                "pretrained model for fine-tuning."
-            )
-            avg_num_neighbors = model.avg_num_neighbors
-    else:
-        model.avg_num_neighbors = avg_num_neighbors
-
-    atomic_energy_shifts = resolve_atomic_energy_shifts(
-        config, model, warm_start, average_atomic_energy_shifts
+    model = prepare_model_for_training(
+        config,
+        model,
+        warm_start=warm_start,
+        avg_num_neighbors=avg_num_neighbors,
+        average_atomic_energy_shifts=average_atomic_energy_shifts,
+        num_elements=num_elements,
+        device_name=str(device),
     )
-
-    # Setup finetuning if specified
-    if config["TRAINING"].get("finetune_choice", None):
-        model = handle_finetuning(config, model, num_elements, str(device))
-
-    logging.info(f"Atomic energy shifts: {atomic_energy_shifts}")
-    set_atomic_energy_shifts_in_model(model, atomic_energy_shifts)
-    set_avg_num_neighbors_in_model(model, avg_num_neighbors)
-    set_dtype_model(model, config["GENERAL"].get("default_dtype", "float32"))
 
     # ---- wrap model in DDP (after all weight mutations) ----
     ddp_model = None
