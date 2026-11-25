@@ -31,6 +31,35 @@ def _isolated_init(dtype: torch.dtype, device: torch.device, seed):
         torch.set_default_dtype(previous)
 
 
+def _deepcopy_model(model: torch.nn.Module) -> torch.nn.Module:
+    """``copy.deepcopy`` that tolerates tensors cached by a forward pass.
+
+    The models keep geometry from their last forward (``vectors``,
+    ``lengths``, ...) as attributes; those are attached to the autograd
+    graph and cannot be deep-copied (also inside the cached ``ctx``
+    tuple). They are copied detached instead;
+    the source model is not modified.
+    """
+    memo = {}
+
+    def collect(value):
+        if torch.is_tensor(value):
+            if value.grad_fn is not None:
+                memo[id(value)] = value.detach().clone()
+        elif isinstance(value, dict):
+            for item in value.values():
+                collect(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                collect(item)
+
+    for module in model.modules():
+        for name, value in vars(module).items():
+            if name not in ("_parameters", "_buffers", "_modules"):
+                collect(value)
+    return copy.deepcopy(model, memo)
+
+
 def _head_spec(head: AtomicEnergyOutputHead) -> dict:
     """Shapes and settings of a single-head energy MLP, read from its
     tensors rather than from model attributes or config."""
@@ -93,7 +122,7 @@ def to_multihead_model(
         raise NotImplementedError("theory_level selection")
 
     spec = _head_spec(src)
-    new = copy.deepcopy(model)
+    new = _deepcopy_model(model)
     with _isolated_init(spec["dtype"], spec["device"], seed):
         head = MultiAtomicEnergyOutputHead(
             num_output_heads=num_output_heads,
@@ -142,6 +171,73 @@ def model_to_multihead(
     model = mh_model.to(device)
 
     return model
+
+
+def to_single_head_model(model: MultiHeadSO3LR, head_idx: int) -> SO3LR:
+    """Return an ``SO3LR`` that keeps head ``head_idx`` of a
+    ``MultiHeadSO3LR`` (0-based; negative indices are rejected).
+
+    The model is deep-copied and only ``atomic_energy_output_block`` is
+    replaced, so the backbone and all settings are kept. Its energy
+    equals the multi-head model's energy for that head. ``model`` is
+    not modified.
+    """
+    if not isinstance(model, MultiHeadSO3LR):
+        raise ValueError(
+            "to_single_head_model requires a MultiHeadSO3LR model, got "
+            f"{type(model).__name__}."
+        )
+    num_heads = model.num_output_heads
+    if not 0 <= head_idx < num_heads:
+        raise ValueError(
+            f"head_idx must be in [0, {num_heads - 1}], got {head_idx}."
+        )
+
+    src = model.atomic_energy_output_block
+    final_w = src.final_layer_weights  # (heads, in, 1)
+    hidden = list(zip(src.layers_weights, src.layers_bias))
+    num_features = hidden[0][0].shape[1] if hidden else final_w.shape[1]
+    dtype, device = final_w.dtype, final_w.device
+
+    new = _deepcopy_model(model)
+    with _isolated_init(dtype, device, seed=None):
+        head = AtomicEnergyOutputHead(
+            num_features=num_features,
+            energy_regression_dim=final_w.shape[1],
+            final_output_features=1,
+            layers=len(hidden) + 1,
+            bias=True,
+            final_layer_bias=True,
+            use_non_linearity=True,
+            non_linearity=type(src.non_linearity),
+            final_non_linearity=False,
+            atomic_type_shifts=None,
+            energy_learn_atomic_type_shifts=(
+                src.energy_learn_atomic_type_shifts
+            ),
+            energy_learn_atomic_type_scales=(
+                src.energy_learn_atomic_type_scales
+            ),
+            num_elements=src.energy_shifts.shape[0],
+            num_theory_levels=1,
+            device=device,
+        )
+    head = head.to(device=device, dtype=dtype)
+    with torch.no_grad():
+        for layer, (weight, bias) in zip(head.layers, hidden):
+            layer.weight.copy_(weight[head_idx].T)
+            layer.bias.copy_(bias[head_idx])
+        head.final_layer.weight.copy_(final_w[head_idx].T)
+        head.final_layer.bias.copy_(src.final_layer_bias[head_idx])
+        head.energy_shifts.copy_(src.energy_shifts)
+        head.energy_scales.weight.copy_(src.energy_scales.T)
+
+    new.atomic_energy_output_block = head
+    new.__class__ = SO3LR
+    for attr in ("num_output_heads", "select_heads", "return_mean"):
+        if attr in new.__dict__:
+            delattr(new, attr)
+    return new
 
 
 def pretrained_to_mh_model(

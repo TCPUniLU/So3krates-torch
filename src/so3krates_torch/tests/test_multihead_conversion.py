@@ -14,7 +14,11 @@ from so3krates_torch.modules.models import (
     SO3LR,
     So3krates,
 )
-from so3krates_torch.tools.multihead_utils import to_multihead_model
+from so3krates_torch.tools.finetune import model_to_lora
+from so3krates_torch.tools.multihead_utils import (
+    to_multihead_model,
+    to_single_head_model,
+)
 
 HEAD_PREFIX = "atomic_energy_output_block."
 
@@ -139,6 +143,16 @@ class TestToMultihead:
         assert energy.shape == (3, 1)
         assert forces.shape == (3, 3, 3)
 
+    def test_converts_after_forward(self, sh, make_batch, h2o_atoms):
+        # A forward pass leaves graph-attached geometry tensors cached on
+        # the model; conversion must still work and leave them intact.
+        batch = make_batch(h2o_atoms, r_max=5.0, cutoff_lr=10.0)
+        _energy_forces(sh, batch)
+        cached = sh.vectors
+        mh = to_multihead_model(sh, 2)
+        assert type(mh) is MultiHeadSO3LR
+        assert sh.vectors is cached
+
     def test_rejects_so3krates(self, default_model_config):
         with pytest.raises(ValueError, match="SO3LR"):
             to_multihead_model(So3krates(**default_model_config), 2)
@@ -157,3 +171,92 @@ class TestToMultihead:
     def test_cuda_device_preserved(self, sh):
         mh = to_multihead_model(sh.cuda(), 2)
         assert all(p.is_cuda for p in mh.parameters())
+
+
+# ---------------------------------------------------------------------------
+# to_single_head_model
+# ---------------------------------------------------------------------------
+
+
+def _copy_single_head_into(mh, sh, head_idx):
+    """Write ``sh``'s energy MLP into head ``head_idx`` of ``mh`` (the
+    inverse of the layout ``to_single_head_model`` reads)."""
+    src = sh.atomic_energy_output_block
+    dst = mh.atomic_energy_output_block
+    with torch.no_grad():
+        for i, layer in enumerate(src.layers):
+            dst.layers_weights[i][head_idx].copy_(layer.weight.T)
+            dst.layers_bias[i][head_idx].copy_(layer.bias)
+        dst.final_layer_weights[head_idx].copy_(src.final_layer.weight.T)
+        dst.final_layer_bias[head_idx].copy_(src.final_layer.bias)
+
+
+class TestToSingleHead:
+    @pytest.mark.parametrize("k", [0, 1, 2])
+    def test_extracted_head_matches_multihead(
+        self, sh, make_batch, h2o_atoms, k
+    ):
+        mh = to_multihead_model(sh, 3, seed=0)
+        batch = make_batch(h2o_atoms, r_max=5.0, cutoff_lr=10.0)
+        e_mh, f_mh = _energy_forces(mh, batch)
+        single = to_single_head_model(mh, k)
+        e, f = _energy_forces(single, batch)
+        assert type(single) is SO3LR
+        assert torch.allclose(e, e_mh[k], atol=1e-10)
+        assert torch.allclose(f, f_mh[k], atol=1e-10)
+
+    def test_original_head_round_trips(self, sh, make_batch, h2o_atoms):
+        mh = to_multihead_model(sh, 3)
+        _copy_single_head_into(mh, sh, head_idx=1)
+        batch = make_batch(h2o_atoms, r_max=5.0, cutoff_lr=10.0)
+        e_ref, f_ref = _energy_forces(sh, batch)
+        e, f = _energy_forces(to_single_head_model(mh, 1), batch)
+        assert torch.allclose(e, e_ref, atol=1e-10)
+        assert torch.allclose(f, f_ref, atol=1e-10)
+
+    def test_keeps_settings(self, sh):
+        single = to_single_head_model(to_multihead_model(sh, 2), 0)
+        assert single.r_max_lr == 10.0
+        assert not hasattr(single, "num_output_heads")
+        assert not hasattr(single, "select_heads")
+        assert single.atomic_energy_output_block.num_theory_levels == 1
+        assert all(p.dtype == torch.float64 for p in single.parameters())
+
+    def test_shifts_and_scales_copied(self, sh):
+        mh = to_multihead_model(sh, 2)
+        src = mh.atomic_energy_output_block
+        dst = to_single_head_model(mh, 1).atomic_energy_output_block
+        assert torch.equal(dst.energy_shifts, src.energy_shifts)
+        assert torch.equal(dst.energy_scales.weight, src.energy_scales.T)
+
+    def test_lora_wrapped_multihead(self, sh, make_batch, h2o_atoms):
+        mh = model_to_lora(
+            to_multihead_model(sh, 2), rank=2, alpha=4.0, device="cpu"
+        )
+        lora_b = [p for n, p in mh.named_parameters() if "lora_B" in n]
+        assert lora_b
+        with torch.no_grad():
+            lora_b[0].normal_()  # make the adapter non-trivial
+        batch = make_batch(h2o_atoms, r_max=5.0, cutoff_lr=10.0)
+        e_mh, f_mh = _energy_forces(mh, batch)
+        e, f = _energy_forces(to_single_head_model(mh, 1), batch)
+        assert torch.allclose(e, e_mh[1], atol=1e-10)
+        assert torch.allclose(f, f_mh[1], atol=1e-10)
+
+    def test_input_not_mutated(self, sh):
+        mh = to_multihead_model(sh, 2)
+        before = {k: v.clone() for k, v in mh.state_dict().items()}
+        to_single_head_model(mh, 0)
+        assert type(mh) is MultiHeadSO3LR
+        assert mh.num_output_heads == 2
+        after = mh.state_dict()
+        assert all(torch.equal(before[k], after[k]) for k in before)
+
+    @pytest.mark.parametrize("k", [-1, 2])
+    def test_rejects_bad_head_idx(self, sh, k):
+        with pytest.raises(ValueError, match="head_idx"):
+            to_single_head_model(to_multihead_model(sh, 2), k)
+
+    def test_rejects_single_head_model(self, sh):
+        with pytest.raises(ValueError, match="MultiHeadSO3LR"):
+            to_single_head_model(sh, 0)
