@@ -95,6 +95,10 @@ def to_multihead_model(
     replaced, so backbone weights, ``r_max_lr``, dtype, device and all
     non-weight settings are kept. Per-element energy shifts and scales
     are copied into the new head. ``model`` is not modified.
+
+    A model with several theory levels (e.g. the bundled tauri models)
+    needs ``theory_level``: that level is kept, see
+    ``select_theory_level``.
     """
     if isinstance(model, MultiHeadSO3LR):
         raise ValueError(
@@ -110,16 +114,17 @@ def to_multihead_model(
         raise ValueError(
             f"num_output_heads must be >= 1, got {num_output_heads}."
         )
-    src = model.atomic_energy_output_block
-    if getattr(src, "num_theory_levels", 1) > 1:
-        if theory_level is None:
-            raise ValueError(
-                f"Model has {src.num_theory_levels} theory levels; pass "
-                "theory_level to choose the one to keep."
-            )
-        raise NotImplementedError("theory_level selection")
+    num_levels = getattr(
+        model.atomic_energy_output_block, "num_theory_levels", 1
+    )
+    if num_levels > 1 and theory_level is None:
+        raise ValueError(
+            f"Model has {num_levels} theory levels; pass theory_level to "
+            "choose the one to keep."
+        )
     if theory_level is not None:
-        raise NotImplementedError("theory_level selection")
+        model = select_theory_level(model, theory_level)
+    src = model.atomic_energy_output_block
 
     spec = _head_spec(src)
     new = _deepcopy_model(model)
@@ -171,6 +176,69 @@ def model_to_multihead(
     model = mh_model.to(device)
 
     return model
+
+
+def select_theory_level(model: SO3LR, theory_level: int) -> SO3LR:
+    """Return an ``SO3LR`` with a single theory level: level
+    ``theory_level`` of a multi-theory-level model (0-based).
+
+    Its energy equals the source model's energy for data with
+    ``theory_level``, and it no longer needs ``theory_level`` in the
+    input. The model is deep-copied; ``model`` is not modified.
+    """
+    if isinstance(model, MultiHeadSO3LR) or not isinstance(model, SO3LR):
+        raise ValueError(
+            "select_theory_level requires a single-head SO3LR model, got "
+            f"{type(model).__name__}."
+        )
+    src = model.atomic_energy_output_block
+    num_levels = getattr(src, "num_theory_levels", 1)
+    if num_levels == 1:
+        raise ValueError(
+            "Model has a single theory level; theory_level does not apply."
+        )
+    if not 0 <= theory_level < num_levels:
+        raise ValueError(
+            f"theory_level must be in [0, {num_levels - 1}], got "
+            f"{theory_level}."
+        )
+
+    spec = _head_spec(src)
+    has_final_bias = src.final_layer.bias is not None
+    new = _deepcopy_model(model)
+    with _isolated_init(spec["dtype"], spec["device"], seed=None):
+        head = AtomicEnergyOutputHead(
+            num_features=spec["num_features"],
+            energy_regression_dim=spec["energy_regression_dim"],
+            final_output_features=1,
+            layers=spec["layers"],
+            bias=True,
+            final_layer_bias=has_final_bias,
+            use_non_linearity=src.use_non_linearity,
+            non_linearity=spec["non_linearity"],
+            final_non_linearity=src.final_non_linearity,
+            atomic_type_shifts=None,
+            energy_learn_atomic_type_shifts=spec[
+                "energy_learn_atomic_type_shifts"
+            ],
+            energy_learn_atomic_type_scales=spec[
+                "energy_learn_atomic_type_scales"
+            ],
+            num_elements=spec["num_elements"],
+            num_theory_levels=1,
+            device=spec["device"],
+        )
+    head = head.to(device=spec["device"], dtype=spec["dtype"])
+    level = slice(theory_level, theory_level + 1)
+    with torch.no_grad():
+        head.layers.load_state_dict(src.layers.state_dict())
+        head.final_layer.weight.copy_(src.final_layer.weight[level])
+        if has_final_bias:
+            head.final_layer.bias.copy_(src.final_layer.bias[level])
+        head.energy_shifts.copy_(src.energy_shifts[:, theory_level])
+        head.energy_scales.weight.copy_(src.energy_scales.weight[level])
+    new.atomic_energy_output_block = head
+    return new
 
 
 def to_single_head_model(model: MultiHeadSO3LR, head_idx: int) -> SO3LR:

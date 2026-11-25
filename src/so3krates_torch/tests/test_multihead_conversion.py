@@ -16,6 +16,7 @@ from so3krates_torch.modules.models import (
 )
 from so3krates_torch.tools.finetune import model_to_lora
 from so3krates_torch.tools.multihead_utils import (
+    select_theory_level,
     to_multihead_model,
     to_single_head_model,
 )
@@ -260,3 +261,76 @@ class TestToSingleHead:
     def test_rejects_single_head_model(self, sh):
         with pytest.raises(ValueError, match="MultiHeadSO3LR"):
             to_single_head_model(sh, 0)
+
+
+# ---------------------------------------------------------------------------
+# select_theory_level
+# ---------------------------------------------------------------------------
+
+NUM_LEVELS = 4
+
+
+@pytest.fixture(params=[True, False], ids=["bias", "nobias"])
+def sh_tl(request, so3lr_model_config):
+    """SO3LR with several theory levels, as the bundled tauri models."""
+    model = SO3LR(
+        **so3lr_model_config,
+        num_theory_levels=NUM_LEVELS,
+        final_layer_bias=request.param,
+    )
+    return _trained_like(model)
+
+
+class TestSelectTheoryLevel:
+    @pytest.mark.parametrize("t", [0, NUM_LEVELS - 1])
+    def test_matches_original_at_level(self, sh_tl, make_batch, h2o_atoms, t):
+        atoms = h2o_atoms.copy()
+        atoms.info["theory_level"] = t
+        e_ref, f_ref = _energy_forces(
+            sh_tl, make_batch(atoms, r_max=5.0, cutoff_lr=10.0)
+        )
+        reduced = select_theory_level(sh_tl, t)
+        # The reduced model needs no theory_level in the data.
+        e, f = _energy_forces(
+            reduced, make_batch(h2o_atoms, r_max=5.0, cutoff_lr=10.0)
+        )
+        assert reduced.atomic_energy_output_block.num_theory_levels == 1
+        assert torch.allclose(e, e_ref, atol=1e-10)
+        assert torch.allclose(f, f_ref, atol=1e-10)
+
+    def test_input_not_mutated(self, sh_tl):
+        select_theory_level(sh_tl, 1)
+        assert sh_tl.atomic_energy_output_block.num_theory_levels == (
+            NUM_LEVELS
+        )
+
+    def test_multihead_from_theory_level_model(self, sh_tl):
+        mh = to_multihead_model(sh_tl, 2, theory_level=1)
+        src = sh_tl.atomic_energy_output_block
+        dst = mh.atomic_energy_output_block
+        assert type(mh) is MultiHeadSO3LR
+        assert torch.equal(dst.energy_shifts, src.energy_shifts[:, 1])
+        assert torch.equal(
+            dst.energy_scales.flatten(), src.energy_scales.weight[1]
+        )
+
+    def test_multihead_requires_theory_level(self, sh_tl):
+        with pytest.raises(ValueError, match="theory_level"):
+            to_multihead_model(sh_tl, 2)
+
+    @pytest.mark.parametrize("t", [-1, NUM_LEVELS])
+    def test_rejects_out_of_range(self, sh_tl, t):
+        with pytest.raises(ValueError, match="theory_level"):
+            select_theory_level(sh_tl, t)
+
+    def test_rejects_single_level_model(self, so3lr_model_config):
+        sh = SO3LR(**so3lr_model_config)
+        with pytest.raises(ValueError, match="theory_level"):
+            select_theory_level(sh, 0)
+        with pytest.raises(ValueError, match="theory_level"):
+            to_multihead_model(sh, 2, theory_level=0)
+
+    def test_rejects_multihead(self, multihead_model_config):
+        mh = MultiHeadSO3LR(**multihead_model_config)
+        with pytest.raises(ValueError, match="SO3LR"):
+            select_theory_level(mh, 0)
