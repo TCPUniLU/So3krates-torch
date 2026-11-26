@@ -90,9 +90,12 @@ def test_eval_tauri_uses_theory_level_of_structures(tmp_path):
     )
 
 
-def test_eval_tauri_without_theory_level_raises(data_path):
-    with pytest.raises(ValueError, match="--theory_level"):
-        _evaluate(TAURI, data_path)
+def test_eval_tauri_defaults_to_theory_level_5(data_path):
+    """As torchkrates-md-nvalchemi: level 5 when neither --theory_level
+    nor the structures give one."""
+    _assert_same(
+        _evaluate(TAURI, data_path), _calculator(TAURI, theory_level=5)
+    )
 
 
 def test_eval_theory_level_on_single_level_model_raises(data_path):
@@ -189,10 +192,12 @@ def test_lammps_export_of_tauri_keeps_one_theory_level(tmp_path, monkeypatch):
     assert model.dispersion_energy_cutoff_lr_damping == 2.0
 
 
-def test_lammps_export_of_tauri_without_theory_level_raises(
+def test_lammps_export_of_tauri_defaults_to_theory_level_5(
     tmp_path, monkeypatch
 ):
-    with pytest.raises(ValueError, match="--theory-level"):
-        _create_lammps(
-            monkeypatch, tmp_path, TAURI, "--elements", "C", "H", "O"
-        )
+    _create_lammps(monkeypatch, tmp_path, TAURI, "--elements", "C", "H", "O")
+    exported = torch.load(
+        tmp_path / f"{TAURI}-mliap_lammps.pt", weights_only=False
+    )
+    model = exported.model.model
+    assert model.atomic_energy_output_block.num_theory_levels == 1

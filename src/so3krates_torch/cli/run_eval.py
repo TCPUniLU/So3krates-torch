@@ -32,6 +32,7 @@ from so3krates_torch.data.hdf5_utils import load_atoms_from_hdf5
 from so3krates_torch.tools.eval import (
     BUNDLED_LR_DAMPING,
     BUNDLED_R_MAX_LR,
+    cli_theory_level,
     ensemble_prediction,
     evaluate_model,
     select_inference_theory_level,
@@ -151,7 +152,6 @@ def run_evaluation(
             )
             model.return_mean = False
             models.append(model)
-    models = [select_inference_theory_level(m, theory_level) for m in models]
     logging.info("Loaded %d model(s) from %s", len(models), model_path)
 
     data_suffix = Path(data_path).suffix.lower()
@@ -166,6 +166,8 @@ def run_evaluation(
             f"input files, got: {data_path}"
         )
     logging.info("Loaded %d structures from %s", len(data), data_path)
+    theory_level = cli_theory_level(models, theory_level, data)
+    models = [select_inference_theory_level(m, theory_level) for m in models]
     keyspec = KeySpecification(
         info_keys={
             "energy": energy_key,
@@ -263,8 +265,8 @@ def main():
         type=int,
         default=None,
         help="Theory level of a multi-theory-level model (e.g. the tauri "
-        "models; so3lr_dev uses 5). Without it, every structure needs "
-        "atoms.info['theory_level'].",
+        "models). Default: the structures' atoms.info['theory_level'] if "
+        "every structure has one, otherwise 5 (so3lr_dev's level).",
     )
     argparser.add_argument(
         "--multispecies", action="store_true", default=False

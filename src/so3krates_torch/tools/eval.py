@@ -49,6 +49,32 @@ def select_inference_theory_level(
     return select_theory_level(model, theory_level)
 
 
+def cli_theory_level(
+    models, theory_level: Optional[int], atoms_list=None
+) -> Optional[int]:
+    """Theory level the CLIs use, as torchkrates-md-nvalchemi: the given
+    one; else, for a multi-level model, the structures' own
+    atoms.info['theory_level'] if every structure has one, otherwise level
+    5 (so3lr_dev's default)."""
+    from so3krates_torch.tools.multihead_utils import DEFAULT_THEORY_LEVEL
+
+    levels = max((num_theory_levels(m) for m in models), default=1)
+    if theory_level is not None or levels == 1:
+        return theory_level
+    if atoms_list is not None and all(
+        "theory_level" in a.info for a in atoms_list
+    ):
+        logger.info("Using the structures' atoms.info['theory_level'].")
+        return None
+    logger.warning(
+        "Using theory level %d (so3lr_dev default) of %d; change it with "
+        "--theory_level.",
+        DEFAULT_THEORY_LEVEL,
+        levels,
+    )
+    return DEFAULT_THEORY_LEVEL
+
+
 def check_theory_levels(models, atoms_list) -> None:
     """A multi-theory-level model needs a theory level for every
     structure: fail with a clear message instead of a KeyError."""

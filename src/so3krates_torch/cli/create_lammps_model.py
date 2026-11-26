@@ -13,6 +13,7 @@ from so3krates_torch.calculator.so3 import (
     _PRETRAINED_SO3LR_MODELS,
     load_pretrained_so3lr,
 )
+from so3krates_torch.tools.multihead_utils import DEFAULT_THEORY_LEVEL
 from so3krates_torch.tools.eval import (
     BUNDLED_LR_DAMPING,
     BUNDLED_R_MAX_LR,
@@ -68,7 +69,7 @@ def parse_args():
         type=int,
         default=None,
         help="Theory level to export from a multi-theory-level model "
-        "(e.g. the tauri models; so3lr_dev uses 5). Required for them.",
+        "(e.g. the tauri models; default 5, so3lr_dev's level).",
     )
     parser.add_argument(
         "--electrostatic-energy-scale",
@@ -196,12 +197,13 @@ def main():
     else:
         model = torch.load(model_path, map_location=torch.device("cpu"))
 
-    # LAMMPS passes no theory level: keep one level of a multi-level model.
+    # LAMMPS passes no theory level: keep one level of a multi-level model
+    # (default 5, so3lr_dev's level, as torchkrates-md-nvalchemi).
     if num_theory_levels(model) > 1 and args.theory_level is None:
-        raise ValueError(
-            f"The model has {num_theory_levels(model)} theory levels: pass "
-            "--theory-level <int> to choose the one to export (so3lr_dev "
-            "uses theory level 5)."
+        args.theory_level = DEFAULT_THEORY_LEVEL
+        print(
+            f"Using theory level {DEFAULT_THEORY_LEVEL} (so3lr_dev default) "
+            f"of {num_theory_levels(model)}; change it with --theory-level."
         )
     if args.theory_level is not None:
         model = select_inference_theory_level(model, args.theory_level)

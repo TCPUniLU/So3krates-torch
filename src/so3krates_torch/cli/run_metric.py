@@ -2,6 +2,7 @@ from so3krates_torch.config import MetricArgs
 from so3krates_torch.tools.eval import (
     BUNDLED_LR_DAMPING,
     BUNDLED_R_MAX_LR,
+    cli_theory_level,
     select_inference_theory_level,
     test_ensemble,
 )
@@ -12,6 +13,7 @@ import argparse
 import numpy as np
 from prettytable import PrettyTable
 import logging
+from ase.io import read
 
 
 POSSIBLE_OUTPUT_ARGS = (
@@ -93,8 +95,8 @@ def main():
         "--theory_level",
         type=int,
         help="Theory level of a multi-theory-level model (e.g. the tauri "
-        "models; so3lr_dev uses 5). Without it, every structure needs "
-        "atoms.info['theory_level'].",
+        "models). Default: the structures' atoms.info['theory_level'] if "
+        "every structure has one, otherwise 5 (so3lr_dev's level).",
         default=None,
     )
     parser.add_argument(
@@ -168,8 +170,12 @@ def main():
     ensemble = ensemble_from_folder(
         path_to_models=args.models, device=args.device, dtype=torch.float32
     )
+    data = read(args.data, index=":")
+    theory_level = cli_theory_level(
+        list(ensemble.values()), args.theory_level, data
+    )
     ensemble = {
-        tag: select_inference_theory_level(model, args.theory_level)
+        tag: select_inference_theory_level(model, theory_level)
         for tag, model in ensemble.items()
     }
     if args.models in _PRETRAINED_SO3LR_MODELS:
@@ -198,7 +204,7 @@ def main():
 
     (avg_ensemble_metrics, ensemble_metrics) = test_ensemble(
         ensemble=ensemble,
-        path_to_data=args.data,
+        atoms_list=data,
         batch_size=args.batch_size,
         output_args=output_args,
         device=args.device,
