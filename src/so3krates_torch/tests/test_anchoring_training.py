@@ -305,7 +305,7 @@ def test_finetune_with_anchors_runs_and_logs_metrics(tmp_path, monkeypatch):
     assert "RMSE_anchor_hirshfeld_ratios=" in log
     assert "Long-range anchoring" in log
     assert "nan" not in log.lower().replace("nan_", "")
-    assert (tmp_path / "anchor.model").exists()
+    assert (tmp_path / "model" / "anchor.model").exists()
 
 
 def _charges(model, atoms):
@@ -329,9 +329,11 @@ def test_anchoring_keeps_charges_closer(tmp_path, monkeypatch):
     load = lambda p: torch.load(p, weights_only=False)  # noqa: E731
     probe = molecule("CH3OH")
     ref = _charges(load(tmp_path / "pretrained.model"), probe)
-    drift_free = (_charges(load(tmp_path / "free.model"), probe) - ref).norm()
+    drift_free = (
+        _charges(load(tmp_path / "model" / "free.model"), probe) - ref
+    ).norm()
     drift_anchored = (
-        _charges(load(tmp_path / "anchored.model"), probe) - ref
+        _charges(load(tmp_path / "model" / "anchored.model"), probe) - ref
     ).norm()
     assert drift_free > 0
     assert drift_anchored < drift_free

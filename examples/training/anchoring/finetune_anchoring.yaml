@@ -16,8 +16,8 @@
 # model has moved away from the pretrained one, e.g.
 #   deviation from pretrained model: RMSE_anchor_charges=  0.0239,
 #   RMSE_anchor_hirshfeld_ratios=  0.0066
-# Checkpoints and logs go to ./anchoring_example/; the fine-tuned model is
-# saved as ethanol_anchored.model (and .pth) in the current directory.
+# Outputs go to ./anchoring_example/; the fine-tuned model is
+# ./anchoring_example/model/ethanol_anchored.model (and .pth).
 #
 # Starting model: the bundled SO3LR v1 weights. The tauri checkpoints work
 # the same way, but they have 16 theory levels: copy ARCHITECTURE from their

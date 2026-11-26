@@ -1250,7 +1250,7 @@ def test_run_training_logs_c6_metrics(tmp_path, monkeypatch):
     )
     assert "MAE_c6_ratios=" in log_text
     assert "loss=nan" not in log_text.lower()
-    assert (tmp_path / "ratio_labels.model").exists()
+    assert (tmp_path / "model" / "ratio_labels.model").exists()
 
 
 # ── Adaptive robust loss: optimizer, DDP, logging ──────────────

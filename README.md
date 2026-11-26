@@ -1089,7 +1089,7 @@ This samples 3500 structures from `pretrain_A.xyz` and 1500 from `pretrain_B.h5`
 |-----|------|---------|-------------|
 | `name_exp` | `str` | *required* | Experiment name. Used for checkpoint filenames, log files, and the final saved model. |
 | `checkpoints_dir` | `str` | *required* | Directory where training checkpoints are saved. |
-| `model_dir` | `str` | *required* | Directory for the final trained model. |
+| `model_dir` | `str` | `"./model"` | Directory for the final trained model, saved as `<model_dir>/<name_exp>.model` (pickled model) and `<name_exp>.pth` (state dict). Created if missing. |
 | `log_dir` | `str` | *required* | Directory for training and validation log files. |
 | `default_dtype` | `str` | `"float64"` | Default floating-point precision. Options: `float32`, `float64`, `float16`, `bfloat16`. Training typically uses `float64` for numerical stability. |
 | `seed` | `int` | `42` | Random seed for reproducibility (weight initialization, data shuffling). |
