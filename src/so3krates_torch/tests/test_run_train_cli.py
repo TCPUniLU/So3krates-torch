@@ -15,6 +15,7 @@ from so3krates_torch.cli.run_train import (
 REPO = Path(__file__).resolve().parents[3]
 EXAMPLES = REPO / "examples/training"
 ANCHORING_EXAMPLE = EXAMPLES / "anchoring/finetune_anchoring.yaml"
+TAURI_ANCHORING_EXAMPLE = EXAMPLES / "anchoring/finetune_anchoring_tauri.yaml"
 
 
 @pytest.fixture(autouse=True)
@@ -77,10 +78,17 @@ def test_final_model_is_saved_to_model_dir(tmp_path, monkeypatch):
     assert list(cwd.iterdir()) == []
 
 
-def test_anchoring_example_config_is_valid_and_runs(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "example",
+    [ANCHORING_EXAMPLE, TAURI_ANCHORING_EXAMPLE],
+    ids=["v1", "tauri"],
+)
+def test_anchoring_example_config_is_valid_and_runs(
+    example, tmp_path, monkeypatch
+):
     # The example's paths are relative to the repository root.
     monkeypatch.chdir(REPO)
-    config = setup_config_from_yaml(str(ANCHORING_EXAMPLE))
+    config = setup_config_from_yaml(str(example))
     training = config["TRAINING"]
     assert Path(training["path_to_train_data"]).is_file()
     assert Path(training["pretrained_weights"]).is_file()
@@ -130,3 +138,28 @@ def test_pretrained_weights_without_avg_num_neighbors_warns(
 
     assert model.avg_num_neighbors == 1.0
     assert "ARCHITECTURE.avg_num_neighbors is not set" in caplog.text
+
+
+def test_tauri_anchoring_example_trains_one_level_with_c6(
+    tmp_path, monkeypatch
+):
+    """The tauri example fine-tunes theory level 5 as a single-level model
+    on data without theory_level, anchoring the C6 ratios too."""
+    from so3krates_torch.cli.run_train import run_training
+
+    monkeypatch.chdir(REPO)
+    config = _redirect_outputs(
+        setup_config_from_yaml(str(TAURI_ANCHORING_EXAMPLE)), tmp_path
+    )
+    config["TRAINING"]["num_epochs"] = 1
+
+    run_training(config)
+
+    log = "".join(p.read_text() for p in (tmp_path / "log_dir").glob("*.log"))
+    assert "RMSE_anchor_c6_ratios=" in log
+    assert "must carry atoms.info['theory_level']" not in log
+    name = config["GENERAL"]["name_exp"]
+    model = torch.load(
+        tmp_path / "model_dir" / f"{name}.model", weights_only=False
+    )
+    assert model.atomic_energy_output_block.num_theory_levels == 1

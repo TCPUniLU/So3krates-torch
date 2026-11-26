@@ -13,8 +13,12 @@
   `dipole_vec` (torch aliases `charges`, `dipole`). A warning is logged
   when the data also has labels for an anchored quantity. Validation logs
   `RMSE_anchor_<quantity>`, the deviation from the pretrained model.
-  Runnable example:
-  [`examples/training/anchoring/finetune_anchoring.yaml`](examples/training/anchoring/finetune_anchoring.yaml).
+  Runnable examples in
+  [`examples/training/anchoring/`](examples/training/anchoring/): v1
+  (charges, a0) and tauri (charges, a0, C6).
+- **`convert_theory_level` without `convert_to_multihead`**: fine-tune one
+  theory level of a multi-level pretrained model (e.g. tauri) as a plain
+  single-level model, on data without `theory_level`.
 
 ### Fixed
 
@@ -34,9 +38,19 @@
   `<name_exp>.model`/`.pth` in the current directory. It is now saved to
   `model_dir` (default `./model`, created if missing). Scripts that pick up
   the trained model from the current directory need the new path.
+- **Per-element energy shifts on multi-theory-level models crashed
+  training** (`force_use_average_shifts`, `ARCHITECTURE.atomic_energy_shifts`,
+  and every multi-level training from scratch): one shift per element was
+  stored where the model needs one per element and level. The shift now
+  applies to every level.
+- **Anchoring a multi-level model with `convert_to_multihead`** crashed
+  with `KeyError: 'theory_level'` on data without theory levels: the frozen
+  copy of the pretrained model kept all levels. It now keeps one (the
+  long-range heads do not depend on the theory level).
 - **`torchkrates-train --dry-run` always crashed** ("element 0 of tensors
   does not require grad"): its forward pass ran without gradients, which
-  the forces need.
+  the forces need. It now also prepares the model exactly as training does
+  (theory level, multi-head conversion, fine-tuning).
 
 ## 0.4.0 (2026-11-25)
 
