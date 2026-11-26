@@ -1,6 +1,12 @@
 from so3krates_torch.config import MetricArgs
-from so3krates_torch.tools.eval import test_ensemble
+from so3krates_torch.tools.eval import (
+    BUNDLED_LR_DAMPING,
+    BUNDLED_R_MAX_LR,
+    select_inference_theory_level,
+    test_ensemble,
+)
 from so3krates_torch.tools.utils import ensemble_from_folder
+from so3krates_torch.calculator.so3 import _PRETRAINED_SO3LR_MODELS
 import torch
 import argparse
 import numpy as np
@@ -79,7 +85,16 @@ def main():
     parser.add_argument(
         "--r_max_lr",
         type=float,
-        help="Max radius for long-range potentials",
+        help="Long-range cutoff (A). Default: the model's own; 12.0 for "
+        "the bundled models, as SO3LRCalculator.",
+        default=None,
+    )
+    parser.add_argument(
+        "--theory_level",
+        type=int,
+        help="Theory level of a multi-theory-level model (e.g. the tauri "
+        "models; so3lr_dev uses 5). Without it, every structure needs "
+        "atoms.info['theory_level'].",
         default=None,
     )
     parser.add_argument(
@@ -153,6 +168,16 @@ def main():
     ensemble = ensemble_from_folder(
         path_to_models=args.models, device=args.device, dtype=torch.float32
     )
+    ensemble = {
+        tag: select_inference_theory_level(model, args.theory_level)
+        for tag, model in ensemble.items()
+    }
+    if args.models in _PRETRAINED_SO3LR_MODELS:
+        # As SO3LRCalculator for the bundled models.
+        if args.r_max_lr is None:
+            args.r_max_lr = BUNDLED_R_MAX_LR
+        if args.dispersion_energy_cutoff_lr_damping is None:
+            args.dispersion_energy_cutoff_lr_damping = BUNDLED_LR_DAMPING
 
     for model in ensemble.values():
         if args.r_max_lr is not None:

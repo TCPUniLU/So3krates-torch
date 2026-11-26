@@ -9,6 +9,16 @@ from ase.data import atomic_numbers as ase_atomic_numbers
 from ase.data import chemical_symbols
 
 from so3krates_torch.calculator.lammps_mliap_so3 import LAMMPS_MLIAP_SO3
+from so3krates_torch.calculator.so3 import (
+    _PRETRAINED_SO3LR_MODELS,
+    load_pretrained_so3lr,
+)
+from so3krates_torch.tools.eval import (
+    BUNDLED_LR_DAMPING,
+    BUNDLED_R_MAX_LR,
+    num_theory_levels,
+    select_inference_theory_level,
+)
 from so3krates_torch.config import CreateLammpsArgs
 from so3krates_torch.modules.models import MultiHeadSO3LR, SO3LR
 
@@ -21,7 +31,8 @@ def parse_args():
     parser.add_argument(
         "model_path",
         type=str,
-        help="Path to the input model (.pt file)",
+        help="Pickled model file (.model, e.g. from torchkrates-train) or "
+        "a bundled model name (v1, tauri-s-2606, ...)",
     )
     parser.add_argument(
         "--elements",
@@ -49,7 +60,15 @@ def parse_args():
         "--r-max-lr",
         type=float,
         default=None,
-        help="Override the long-range cutoff (default: from model)",
+        help="Override the long-range cutoff (default: from model; 12.0 "
+        "for the bundled models, as SO3LRCalculator)",
+    )
+    parser.add_argument(
+        "--theory-level",
+        type=int,
+        default=None,
+        help="Theory level to export from a multi-theory-level model "
+        "(e.g. the tauri models; so3lr_dev uses 5). Required for them.",
     )
     parser.add_argument(
         "--electrostatic-energy-scale",
@@ -153,7 +172,8 @@ def main():
     CreateLammpsArgs.model_validate(vars(args))
     model_path = args.model_path
 
-    if not os.path.isfile(model_path):
+    bundled = model_path in _PRETRAINED_SO3LR_MODELS
+    if not bundled and not os.path.isfile(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
 
     # Validate elements
@@ -165,7 +185,27 @@ def main():
 
     # Load model
     print(f"Loading model from {model_path}...")
-    model = torch.load(model_path, map_location=torch.device("cpu"))
+    if bundled:
+        model = load_pretrained_so3lr(model_path, device="cpu")
+        # As SO3LRCalculator: the checkpoints save no (v1) or a very
+        # large (tauri: 1000 A) long-range cutoff.
+        if args.r_max_lr is None:
+            args.r_max_lr = BUNDLED_R_MAX_LR
+        if args.dispersion_energy_cutoff_lr_damping is None:
+            args.dispersion_energy_cutoff_lr_damping = BUNDLED_LR_DAMPING
+    else:
+        model = torch.load(model_path, map_location=torch.device("cpu"))
+
+    # LAMMPS passes no theory level: keep one level of a multi-level model.
+    if num_theory_levels(model) > 1 and args.theory_level is None:
+        raise ValueError(
+            f"The model has {num_theory_levels(model)} theory levels: pass "
+            "--theory-level <int> to choose the one to export (so3lr_dev "
+            "uses theory level 5)."
+        )
+    if args.theory_level is not None:
+        model = select_inference_theory_level(model, args.theory_level)
+        print(f"Exporting theory level {args.theory_level}")
 
     # Convert dtype
     if args.dtype == "float64":

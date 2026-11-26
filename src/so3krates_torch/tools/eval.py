@@ -20,6 +20,48 @@ from so3krates_torch.tools.utils import (
 from so3krates_torch.tools.utils import create_dataloader_from_list
 from torchmetrics import Metric
 
+
+# SO3LRCalculator's long-range defaults for the bundled models: their
+# checkpoints save no (v1) or a very large (tauri: 1000 A) cutoff.
+BUNDLED_R_MAX_LR = 12.0
+BUNDLED_LR_DAMPING = 2.0
+
+
+def num_theory_levels(model: torch.nn.Module) -> int:
+    head = getattr(model, "atomic_energy_output_block", None)
+    return getattr(head, "num_theory_levels", 1)
+
+
+def select_inference_theory_level(
+    model: torch.nn.Module, theory_level: Optional[int]
+) -> torch.nn.Module:
+    """Keep only ``theory_level`` of a multi-theory-level model (e.g. the
+    tauri models), so that the data needs no ``theory_level``."""
+    if theory_level is None:
+        return model
+    if num_theory_levels(model) == 1:
+        raise ValueError(
+            f"--theory_level={theory_level} was given, but the model has a "
+            "single theory level."
+        )
+    from so3krates_torch.tools.multihead_utils import select_theory_level
+
+    return select_theory_level(model, theory_level)
+
+
+def check_theory_levels(models, atoms_list) -> None:
+    """A multi-theory-level model needs a theory level for every
+    structure: fail with a clear message instead of a KeyError."""
+    levels = max((num_theory_levels(m) for m in models), default=1)
+    if levels > 1 and not all("theory_level" in a.info for a in atoms_list):
+        raise ValueError(
+            f"The model has {levels} theory levels, but not every structure "
+            "has atoms.info['theory_level']. Pass --theory_level <int> "
+            "(theory_level=... in Python) to choose one; so3lr_dev uses "
+            "theory level 5."
+        )
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -116,6 +158,8 @@ def evaluate_model(
         "so3krates",
     ], f"Unknown model type: {model_type}"
     key_spec = KeySpecification() if key_spec is None else key_spec
+    if theory_level_override is None:
+        check_theory_levels([model], atoms_list)
 
     # Resolve r_max_lr and damping from model when not explicitly provided.
     # PME models (use_lr=False) resolve to None → no LR neighbor list built.
@@ -1000,8 +1044,13 @@ def test_ensemble(
         },
     )
 
+    check_theory_levels(list(ensemble.values()), data_to_use)
+
     # Get reference model for r_max
     reference_model = ensemble[list(ensemble.keys())[0]]
+    if r_max_lr is None:
+        # As evaluate_model: the model's own long-range cutoff.
+        r_max_lr = getattr(reference_model, "r_max_lr", None)
 
     # Create dataloader using the create_dataloader function
     data_loader = create_dataloader_from_list(
