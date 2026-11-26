@@ -1,11 +1,19 @@
 from so3krates_torch.config import MetricArgs
-from so3krates_torch.tools.eval import test_ensemble
+from so3krates_torch.tools.eval import (
+    BUNDLED_LR_DAMPING,
+    BUNDLED_R_MAX_LR,
+    cli_theory_level,
+    select_inference_theory_level,
+    test_ensemble,
+)
 from so3krates_torch.tools.utils import ensemble_from_folder
+from so3krates_torch.calculator.so3 import _PRETRAINED_SO3LR_MODELS
 import torch
 import argparse
 import numpy as np
 from prettytable import PrettyTable
 import logging
+from ase.io import read
 
 
 POSSIBLE_OUTPUT_ARGS = (
@@ -79,7 +87,16 @@ def main():
     parser.add_argument(
         "--r_max_lr",
         type=float,
-        help="Max radius for long-range potentials",
+        help="Long-range cutoff (A). Default: the model's own; 12.0 for "
+        "the bundled models, as SO3LRCalculator.",
+        default=None,
+    )
+    parser.add_argument(
+        "--theory_level",
+        type=int,
+        help="Theory level of a multi-theory-level model (e.g. the tauri "
+        "models). Default: the structures' atoms.info['theory_level'] if "
+        "every structure has one, otherwise 5 (so3lr_dev's level).",
         default=None,
     )
     parser.add_argument(
@@ -153,6 +170,20 @@ def main():
     ensemble = ensemble_from_folder(
         path_to_models=args.models, device=args.device, dtype=torch.float32
     )
+    data = read(args.data, index=":")
+    theory_level = cli_theory_level(
+        list(ensemble.values()), args.theory_level, data
+    )
+    ensemble = {
+        tag: select_inference_theory_level(model, theory_level)
+        for tag, model in ensemble.items()
+    }
+    if args.models in _PRETRAINED_SO3LR_MODELS:
+        # As SO3LRCalculator for the bundled models.
+        if args.r_max_lr is None:
+            args.r_max_lr = BUNDLED_R_MAX_LR
+        if args.dispersion_energy_cutoff_lr_damping is None:
+            args.dispersion_energy_cutoff_lr_damping = BUNDLED_LR_DAMPING
 
     for model in ensemble.values():
         if args.r_max_lr is not None:
@@ -173,7 +204,7 @@ def main():
 
     (avg_ensemble_metrics, ensemble_metrics) = test_ensemble(
         ensemble=ensemble,
-        path_to_data=args.data,
+        atoms_list=data,
         batch_size=args.batch_size,
         output_args=output_args,
         device=args.device,

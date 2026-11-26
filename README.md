@@ -34,7 +34,7 @@ Upgrading from 0.2.x? See the breaking changes in [CHANGELOG.md](CHANGELOG.md).
    - multi-head fine-tuning with data replay (`convert_to_multihead`, `replay_*`)
    - the SO3LR-tauri loss: fixed or adaptive robust loss, per-structure loss reduction, two-stage loss weights, Hirshfeld (a0) and C6 ratio losses
    - LoRA/DoRA/VeRA fine-tuning
-   - long-range anchoring for fine-tuning: keeps the pretrained model's partial charges, a0/C6 ratios and dipole when the data has only energies and forces (`long_range_anchor_weights`; example: [`examples/training/anchoring/finetune_anchoring.yaml`](examples/training/anchoring/finetune_anchoring.yaml))
+   - long-range anchoring for fine-tuning: keeps the pretrained model's partial charges, a0/C6 ratios and dipole when the data has only energies and forces (`long_range_anchor_weights`; examples for v1 and tauri in [`examples/training/anchoring/`](examples/training/anchoring/))
 7. SO3LR physics: ZBL or NHL repulsion, electrostatics, dispersion (Hirshfeld or C6 ratios), optional PME for electrostatics and dispersion
 8. Data preprocessing: `torchkrates-preprocess`
 9. HDF5 file merging: `torchkrates-merge`
@@ -230,16 +230,19 @@ torchkrates-merge --inputs a.h5 b.h5 --output merged.h5 \
 Convert a trained SO3LR model to a format compatible with the LAMMPS ML-IAP interface.
 
 ```bash
-torchkrates-create-lammps-model model.pt --elements Si O
+torchkrates-create-lammps-model my_model.model --elements Si O
+# bundled tauri model, theory level 5 (the default)
+torchkrates-create-lammps-model tauri-s-2606 --elements C H O --theory-level 5
 ```
 
 | Flag | Description |
 |------|-------------|
-| `model_path` | Path to the trained `.pt` model file |
+| `model_path` | Pickled model file (`.model`, as written by training) or a bundled model name (`v1`, `tauri-s-2606`, ...); the output is `<model_path>-mliap_lammps.pt` |
 | `--elements` | Element symbols present in the simulation (must match LAMMPS `pair_coeff` type order) |
 | `--head` | Head name for multi-head models (interactive selection if omitted) |
 | `--dtype` | `float32` or `float64` (default: `float64`) |
-| `--r-max-lr` | Override the long-range cutoff radius (Å). Only applicable to LR models. |
+| `--r-max-lr` | Override the long-range cutoff radius (Å). Only applicable to LR models. Default for the bundled models: `12.0` (damping `2.0`), as in `SO3LRCalculator`. |
+| `--theory-level` | Theory level to export from a multi-theory-level model such as tauri (LAMMPS passes no theory level). Default: `5` (so3lr_dev's level). |
 | `--electrostatic-energy-scale` | Override the electrostatic energy scaling factor. |
 | `--dispersion-energy-scale` | Override the dispersion energy scaling factor. |
 | `--dispersion-energy-cutoff-lr-damping` | Override the dispersion long-range damping cutoff. |
@@ -299,7 +302,7 @@ torchkrates-convert-heads --model finetuned.model --output head2.model --select-
 | `--output` | Output `.model` file |
 | `--to-multihead N` | Make a multi-head model with N new heads (exactly one of `--to-multihead` / `--select-head`) |
 | `--select-head K` | Keep head K (0-based) of a multi-head model |
-| `--theory-level T` | Theory level to keep for multi-theory-level models such as tauri (default: `5`, so3lr_dev's level; only with `--to-multihead`) |
+| `--theory-level T` | Theory level to keep for multi-theory-level models such as tauri (default: `5`, so3lr_dev's level; only with `--to-multihead`). A bundled model gets `SO3LRCalculator`'s long-range cutoff (`12.0` Å, damping `2.0`) instead of the checkpoint's 1000 Å |
 | `--seed` | Seed for the new heads' weights (default: `42`) |
 | `--device` | Torch device (default: `cpu`) |
 | `--force` | Overwrite an existing output file |
@@ -347,6 +350,8 @@ Models with several theory levels (the tauri models and the `v2-*` aliases) need
 | `--dtype` | `float32` | `float32` or `float64` |
 | `--multihead_model` | `False` | Enable multi-head model support |
 | `--multispecies` | `False` | Required when the dataset's structures don't all share the same atom count (allows batches/results to be ragged instead of stacked into one array) |
+| `--theory_level` | see description | Theory level of a multi-theory-level model (e.g. the tauri models, 16 levels). Default: each structure's `atoms.info["theory_level"]` if every structure has one, otherwise `5` (so3lr_dev's level, logged) |
+| `--r_max_lr` | see description | Long-range cutoff [Å]. Default: the model's own; `12.0` (and damping `2.0`) for the bundled models, as in `SO3LRCalculator` |
 | `--compute_dipole` | `False` | Compute dipole predictions |
 | `--compute_stress` | `False` | Compute stress predictions |
 | `--compute_hirshfeld` | `False` | Compute Hirshfeld ratio predictions |
@@ -530,14 +535,15 @@ Note there is no `--multispecies` flag here (unlike `torchkrates-eval`); use `--
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--models` | *required* | Path to a model file or a directory of model files, a bundled pretrained keyword (`v1`, `tauri-*`, `v2-*`), or a `.pt` state_dict checkpoint with a sibling `<stem>_settings.yaml` |
+| `--models` | *required* | Path to a `.model` file or a directory of `.model` files (e.g. a training `model_dir`), a bundled pretrained keyword (`v1`, `tauri-*`, `v2-*`), or a `.pt` state_dict checkpoint with a sibling `<stem>_settings.yaml` |
 | `--data` | *required* | Dataset path (must contain reference values) |
 | `--output_args` | `energy forces` | Properties to evaluate. Can include `stress`, `virials`, `dipole`, `hirshfeld_ratios`, `c6_ratios`. |
 | `--batch_size` | `16` | Structures per batch |
 | `--device` | `cpu` | `cuda` or `cpu` |
 | `--save` | `./` | Directory for output files |
 | `--results_file` | `ensemble_test_results.npz` | `.npz` file with raw error arrays |
-| `--r_max_lr` | `None` | Long-range cutoff when model uses electrostatics/dispersion |
+| `--r_max_lr` | see description | Long-range cutoff [Å]. Default: the model's own; `12.0` (and damping `2.0`) for the bundled models, as in `SO3LRCalculator` |
+| `--theory_level` | see description | Theory level of a multi-theory-level model (e.g. the tauri models, 16 levels). Default: each structure's `atoms.info["theory_level"]` if every structure has one, otherwise `5` (so3lr_dev's level, logged) |
 | `--multihead_model` | `False` | Enable multi-head model support |
 | `--multihead_return_mean` | `False` | Return mean prediction across heads |
 | `--energy_key` | `REF_energy` | Key for reference energies |
@@ -849,7 +855,7 @@ ARCHITECTURE:
 |-----|------|---------|-------------|
 | `convert_to_multihead` | `bool` | `False` | Convert the single energy output head to multiple independent heads for ensemble predictions. |
 | `num_output_heads` | `int` | `None` | Number of output heads. Required when `convert_to_multihead: true`. |
-| `convert_theory_level` | `int` | `None` | Theory level to keep when converting a multi-theory-level model (e.g. the bundled `tauri-*` models) to multiple heads. Unset means level `5` (so3lr_dev's level). |
+| `convert_theory_level` | `int` | `None` | Theory level to keep of a multi-theory-level pretrained model (e.g. the bundled `tauri-*` models, 16 levels); the others are dropped, so the data needs no `theory_level`. With `convert_to_multihead`, unset means level `5` (so3lr_dev's level). Without it, setting `convert_theory_level` fine-tunes that one level as a plain single-level model; unset keeps all levels, and every structure needs `atoms.info["theory_level"]`. |
 | `use_multihead` | `bool` | `False` | Enable head selection during multi-head training (each sample is assigned to a specific head). |
 
 
@@ -957,7 +963,7 @@ The loss function is automatically determined based on which weights are non-zer
 | `dipole_weight` | `float` | `0.0` | Weight of the dipole loss term. Set > 0 to train dipole predictions (requires dipole labels in training data). |
 | `hirshfeld_weight` | `float` | `0.0` | Weight of the Hirshfeld (polarizability, a0) ratios loss term. Also accepted as `a0_ratios_weight`. |
 | `c6_ratios_weight` | `float` | `0.0` | Weight of the per-atom C6 ratios loss term. Requires `ARCHITECTURE.c6_ratios_bool: true` (SO3LR-tauri). |
-| `long_range_anchor_weights` | `dict` | `None` | Long-range anchoring for fine-tuning (as in so3lr 0.2.0): a frozen copy of the pretrained model predicts the partial charges, a0 ratios, C6 ratios and/or dipole of every training and validation batch, and the fine-tuned model is pulled towards them with these weights. Keys: `partial_charges` (or `charges`), `a0_ratios` (or `hirshfeld_ratios`), `c6_ratios`, `dipole_vec` (or `dipole`). Keeps the long-range behaviour when the data has only energies and forces. Needs `pretrained_model` or `pretrained_weights` and `loss_type: auto`/`properties`. If the data also has labels for an anchored quantity, a warning says so and both terms are trained. Validation logs the deviation from the pretrained model (`RMSE_anchor_<quantity>`). Costs one extra forward pass per batch (about 10–15 % per epoch on CPU for an SO3LR-sized model). Runnable example: [`examples/training/anchoring/finetune_anchoring.yaml`](examples/training/anchoring/finetune_anchoring.yaml). |
+| `long_range_anchor_weights` | `dict` | `None` | Long-range anchoring for fine-tuning (as in so3lr 0.2.0): a frozen copy of the pretrained model predicts the partial charges, a0 ratios, C6 ratios and/or dipole of every training and validation batch, and the fine-tuned model is pulled towards them with these weights. Keys: `partial_charges` (or `charges`), `a0_ratios` (or `hirshfeld_ratios`), `c6_ratios`, `dipole_vec` (or `dipole`). Keeps the long-range behaviour when the data has only energies and forces. Needs `pretrained_model` or `pretrained_weights` and `loss_type: auto`/`properties`. If the data also has labels for an anchored quantity, a warning says so and both terms are trained. Validation logs the deviation from the pretrained model (`RMSE_anchor_<quantity>`). Costs one extra forward pass per batch (about 10–15 % per epoch on CPU for an SO3LR-sized model). `c6_ratios` needs a model with a C6 head (the tauri models). Runnable examples: [`finetune_anchoring.yaml`](examples/training/anchoring/finetune_anchoring.yaml) (v1: charges, a0) and [`finetune_anchoring_tauri.yaml`](examples/training/anchoring/finetune_anchoring_tauri.yaml) (tauri: charges, a0, C6). |
 | `loss_type` | `str` | `"auto"` | `auto`/`properties`: one weighted term per non-zero weight (`WeightedPropertiesLoss`). Legacy explicit options: `energy_forces`, `energy_forces_dipole`, `energy_forces_hirshfeld`, `energy_forces_dipole_hirshfeld`, `energy_forces_charges`, `energy_forces_charges_hirshfeld`. |
 
 Per-atom ratio labels (Hirshfeld/a0 and C6) may be missing for part of the training data: atoms with a NaN or absent label, or a zero structure weight, are excluded from the ratio losses and validation metrics (numerator and denominator), mirroring the JAX `so3lr` trainer. The SO3LR-tauri paper trains with forces 1.0, energy 0.01, dipole 0.1, a0 ratios 0.1 and C6 ratios 0.1 (SI Eq. S13); these weights transfer to torch only with `loss_reduction: per_graph`.

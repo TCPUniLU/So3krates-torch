@@ -19,10 +19,9 @@
 # Outputs go to ./anchoring_example/; the fine-tuned model is
 # ./anchoring_example/model/ethanol_anchored.model (and .pth).
 #
-# Starting model: the bundled SO3LR v1 weights. The tauri checkpoints work
-# the same way, but they have 16 theory levels: copy ARCHITECTURE from their
-# *_settings.yaml and give every structure an atoms.info["theory_level"]
-# (or fine-tune with convert_to_multihead, which keeps one level).
+# Starting model: the bundled SO3LR v1 weights, which have no C6 head.
+# To anchor the C6 ratios too, start from a tauri model:
+# finetune_anchoring_tauri.yaml.
 
 GENERAL:
   name_exp: ethanol_anchored

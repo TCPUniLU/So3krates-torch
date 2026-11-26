@@ -29,7 +29,14 @@ from typing import Optional
 
 from so3krates_torch.config import EvalArgs
 from so3krates_torch.data.hdf5_utils import load_atoms_from_hdf5
-from so3krates_torch.tools.eval import evaluate_model, ensemble_prediction
+from so3krates_torch.tools.eval import (
+    BUNDLED_LR_DAMPING,
+    BUNDLED_R_MAX_LR,
+    cli_theory_level,
+    ensemble_prediction,
+    evaluate_model,
+    select_inference_theory_level,
+)
 from so3krates_torch.tools.utils import save_results_hdf5, save_results_xyz
 from so3krates_torch.tools.load_descriptors import (
     save_descriptors_hdf5,
@@ -82,6 +89,7 @@ def run_evaluation(
     return_mean_eqv_descriptors: bool = False,
     compile: bool = False,
     fullgraph: Optional[bool] = None,
+    theory_level: Optional[int] = None,
 ):
     """Load models from `model_path`, read data from `data_path`, run
     evaluation or ensemble prediction and return (result, is_ensemble).
@@ -118,6 +126,11 @@ def run_evaluation(
         )
         model.return_mean = False
         models = [model]
+        # As SO3LRCalculator for the bundled models.
+        if r_max_lr is None and getattr(model, "use_lr", False):
+            r_max_lr = BUNDLED_R_MAX_LR
+        if dispersion_energy_cutoff_lr_damping is None:
+            dispersion_energy_cutoff_lr_damping = BUNDLED_LR_DAMPING
     elif model_path.endswith(".pt"):
         settings_path = settings_path_for_checkpoint(model_path)
         model = _build_so3lr_from_settings_and_state_dict(
@@ -153,6 +166,8 @@ def run_evaluation(
             f"input files, got: {data_path}"
         )
     logging.info("Loaded %d structures from %s", len(data), data_path)
+    theory_level = cli_theory_level(models, theory_level, data)
+    models = [select_inference_theory_level(m, theory_level) for m in models]
     keyspec = KeySpecification(
         info_keys={
             "energy": energy_key,
@@ -238,7 +253,21 @@ def main():
     argparser.add_argument("--device", type=str, default="cuda")
     argparser.add_argument("--batch_size", type=int, default=5)
     argparser.add_argument("--model_type", type=str, default="so3lr")
-    argparser.add_argument("--r_max_lr", type=float, default=None)
+    argparser.add_argument(
+        "--r_max_lr",
+        type=float,
+        default=None,
+        help="Long-range cutoff (A). Default: the model's own; 12.0 for "
+        "the bundled models, as SO3LRCalculator.",
+    )
+    argparser.add_argument(
+        "--theory_level",
+        type=int,
+        default=None,
+        help="Theory level of a multi-theory-level model (e.g. the tauri "
+        "models). Default: the structures' atoms.info['theory_level'] if "
+        "every structure has one, otherwise 5 (so3lr_dev's level).",
+    )
     argparser.add_argument(
         "--multispecies", action="store_true", default=False
     )
@@ -451,6 +480,7 @@ def main():
         return_mean_eqv_descriptors=return_mean_eqv_descriptors,
         compile=compile_model,
         fullgraph=fullgraph,
+        theory_level=validated.theory_level,
     )
     extension = os.path.splitext(output_file)[1].lower()
     if mean_descriptors_only:

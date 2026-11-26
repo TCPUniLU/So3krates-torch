@@ -13,6 +13,7 @@ class EvalArgs(BaseModel):
     batch_size: int = 5
     model_type: str = "so3lr"
     r_max_lr: Optional[float] = None
+    theory_level: Optional[int] = None
     multispecies: bool = False
     multihead_model: bool = False
     compute_dipole: bool = False
@@ -85,6 +86,7 @@ class MetricArgs(BaseModel):
     log_file: str = "test_ensemble.log"
     results_file: str = "ensemble_test_results.npz"
     r_max_lr: Optional[float] = None
+    theory_level: Optional[int] = None
     dispersion_energy_cutoff_lr_damping: Optional[float] = None
     energy_key: str = "REF_energy"
     forces_key: str = "REF_forces"
@@ -203,6 +205,7 @@ class CreateLammpsArgs(BaseModel):
     electrostatic_energy_scale: Optional[float] = None
     dispersion_energy_scale: Optional[float] = None
     dispersion_energy_cutoff_lr_damping: Optional[float] = None
+    theory_level: Optional[int] = None
 
 
 class ConvertHeadsArgs(BaseModel):

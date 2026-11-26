@@ -98,6 +98,10 @@ ARCHITECTURE:
   #   e.g. the bundled tauri models with 16), only this theory level is
   #   kept. Default: 5 (so3lr_dev's level). The models' other levels are
   #   dropped, so training data needs no atoms.info["theory_level"].
+  #   Also works without convert_to_multihead: setting it when fine-tuning
+  #   a multi-level pretrained model keeps this one level as a plain
+  #   single-level model (unset: all levels are kept, and every structure
+  #   needs atoms.info["theory_level"]).
   neighborlist_format_lr: sparse
   use_pme: false  # true = torch-pme electrostatics for periodic systems (requires torch-pme)
   # pme_smearing: 1.2       # Ewald splitting (Å); default = r_max / 5

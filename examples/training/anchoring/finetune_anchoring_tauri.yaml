@@ -1,0 +1,121 @@
+# Fine-tuning a pretrained SO3LR tauri model with long-range anchoring,
+# including the C6 ratios (only the tauri models have a C6 head).
+#
+# Same idea and data as finetune_anchoring.yaml (v1): the ethanol data has
+# only energies and forces, and a frozen copy of the pretrained model keeps
+# the partial charges, a0 ratios and C6 ratios close to the pretrained ones.
+#
+# The tauri models have 16 theory levels. convert_theory_level: 5 keeps
+# level 5 (so3lr_dev's default) and drops the others, so the fine-tuned
+# model is a plain single-level model and the data needs no
+# atoms.info["theory_level"].
+#
+# Run from the repository root (paths below are relative to it):
+#
+#   torchkrates-train --config examples/training/anchoring/finetune_anchoring_tauri.yaml
+#
+# It takes about 15 s on a laptop CPU. Over the 10 epochs the force error
+# drops from about 180 to about 20 meV/A, and validation logs how far the
+# model has moved away from the pretrained one:
+#   deviation from pretrained model: RMSE_anchor_charges=..., ...,
+#   RMSE_anchor_c6_ratios=...
+# Outputs go to ./anchoring_example/; the fine-tuned model is
+# ./anchoring_example/model/ethanol_anchored_tauri.model (and .pth).
+
+GENERAL:
+  name_exp: ethanol_anchored_tauri
+  checkpoints_dir: ./anchoring_example/checkpoints
+  model_dir: ./anchoring_example/model
+  log_dir: ./anchoring_example/logs
+  default_dtype: float64
+  seed: 42
+
+# Copied from
+# src/so3krates_torch/pretrained/so3lr/tauri/so3lr-tauri-s-2606_settings.yaml
+# (num_theory_levels: 16 and avg_num_neighbors included). Only r_max_lr is
+# changed: the checkpoint saves 1000 A, impractical for a real neighbour
+# list; 12 A is SO3LRCalculator's default.
+ARCHITECTURE:
+  activation_fn: silu
+  avg_num_neighbors: 16.0
+  c6_ratios_bool: true
+  cutoff_fn: phys
+  degrees: [1, 2, 3, 4]
+  dispersion_energy_bool: true
+  dispersion_energy_cutoff_lr_damping: 2.0
+  dispersion_energy_scale: 1.0
+  electrostatic_energy_bool: true
+  electrostatic_energy_scale: 4.0
+  energy_activation_fn: silu
+  energy_learn_atomic_type_scales: true
+  energy_learn_atomic_type_shifts: true
+  energy_regression_dim: 128
+  final_layer_bias: false
+  input_convention: positions
+  layer_normalization_1: true
+  layer_normalization_2: false
+  layers_behave_like_identity_fn_at_init: false
+  legacy_dispersion_bool: false
+  message_normalization: avg_num_neighbors
+  nhl_repulsion_bool: true
+  num_elements: 118
+  num_features: 128
+  num_features_head: 32
+  num_heads: 4
+  num_layers: 2
+  num_radial_basis_fn: 32
+  num_theory_levels: 16
+  output_is_zero_at_init: false
+  qk_non_linearity: identity
+  qk_norm: true
+  r_max: 4.5
+  r_max_lr: 12.0
+  radial_basis_fn: bernstein
+  residual_mlp_1: true
+  residual_mlp_2: false
+  trainable_rbf: false
+  use_charge_embed: true
+  use_pme: false
+  use_residual_scalars: true
+  use_rms_norm: true
+  use_simple_hirshfeld: true
+  use_spin_embed: true
+  zbl_repulsion_bool: true
+  # Fine-tune theory level 5 only (see above).
+  convert_theory_level: 5
+
+TRAINING:
+  path_to_train_data: ./examples/training/md17_ethanol_small.xyz
+  valid_ratio: 0.1
+  batch_size: 5
+  valid_batch_size: 10
+  num_epochs: 10
+  lr: 0.0001
+  optimizer: adam
+  amsgrad: true
+  scheduler: exponential_decay
+  lr_scheduler_gamma: 0.95
+  energy_weight: 1.0
+  forces_weight: 100.0
+  # Anchoring needs loss_type auto (the default) or properties.
+  loss_type: auto
+
+  pretrained_weights: ./src/so3krates_torch/pretrained/so3lr/tauri/so3lr-tauri-s-2606.pt
+  # The data's energies are absolute DFT energies; take the per-element
+  # energy shifts from the data instead of the pretrained model.
+  force_use_average_shifts: true
+
+  # Train every parameter, including the long-range heads, which are
+  # frozen by default.
+  finetune_choice: naive
+  freeze_partial_charges: false
+  freeze_hirshfeld: false
+  freeze_c6_ratios: false
+
+  long_range_anchor_weights:
+    partial_charges: 1.0
+    a0_ratios: 1.0
+    c6_ratios: 1.0
+
+MISC:
+  device: cpu

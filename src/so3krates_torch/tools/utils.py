@@ -731,18 +731,21 @@ def ensemble_from_folder(path_to_models: str, device: str, dtype: str) -> dict:
         stem = os.path.splitext(os.path.basename(path_to_models))[0]
         return {stem: model}
 
-    assert os.path.exists(path_to_models)
-    assert os.listdir(Path(path_to_models))
+    path = Path(path_to_models)
+    if not path.exists():
+        raise FileNotFoundError(f"No model or folder at {path_to_models}")
+    # A single pickled model, or every pickled *.model in a folder (a
+    # training model_dir also holds the <name>.pth state dict).
+    paths = [path] if path.is_file() else sorted(path.glob("*.model"))
+    if not paths:
+        raise FileNotFoundError(f"No *.model files in {path_to_models}")
 
     ensemble = {}
-    for filename in os.listdir(path_to_models):
-        if os.path.isfile(os.path.join(path_to_models, filename)):
-            complete_path = os.path.join(path_to_models, filename)
-            model = torch.load(
-                complete_path, map_location=device, weights_only=False
-            ).to(dtype)
-            filename_without_suffix = os.path.splitext(filename)[0]
-            ensemble[filename_without_suffix] = model
+    for model_path in paths:
+        model = torch.load(
+            model_path, map_location=device, weights_only=False
+        ).to(dtype)
+        ensemble[model_path.stem] = model
     return ensemble
 
 

@@ -13,8 +13,18 @@
   `dipole_vec` (torch aliases `charges`, `dipole`). A warning is logged
   when the data also has labels for an anchored quantity. Validation logs
   `RMSE_anchor_<quantity>`, the deviation from the pretrained model.
-  Runnable example:
-  [`examples/training/anchoring/finetune_anchoring.yaml`](examples/training/anchoring/finetune_anchoring.yaml).
+  Runnable examples in
+  [`examples/training/anchoring/`](examples/training/anchoring/): v1
+  (charges, a0) and tauri (charges, a0, C6).
+- **`convert_theory_level` without `convert_to_multihead`**: fine-tune one
+  theory level of a multi-level pretrained model (e.g. tauri) as a plain
+  single-level model, on data without `theory_level`.
+- **`--theory_level` for `torchkrates-eval` and `torchkrates-metric`, and
+  `--theory-level` for `torchkrates-create-lammps-model`** (multi-level
+  models such as tauri). Default, as `torchkrates-md-nvalchemi`: each
+  structure's `atoms.info["theory_level"]` if every structure has one,
+  otherwise level 5 (logged). `torchkrates-create-lammps-model` also
+  accepts the bundled model names.
 
 ### Fixed
 
@@ -34,9 +44,37 @@
   `<name_exp>.model`/`.pth` in the current directory. It is now saved to
   `model_dir` (default `./model`, created if missing). Scripts that pick up
   the trained model from the current directory need the new path.
+- **Per-element energy shifts on multi-theory-level models crashed
+  training** (`force_use_average_shifts`, `ARCHITECTURE.atomic_energy_shifts`,
+  and every multi-level training from scratch): one shift per element was
+  stored where the model needs one per element and level. The shift now
+  applies to every level.
+- **Anchoring a multi-level model with `convert_to_multihead`** crashed
+  with `KeyError: 'theory_level'` on data without theory levels: the frozen
+  copy of the pretrained model kept all levels. It now keeps one (the
+  long-range heads do not depend on the theory level).
+- **The tauri models in `torchkrates-eval` / `torchkrates-metric`**
+  crashed (`KeyError: 'theory_level'`) unless every structure had a
+  theory level. See the new `--theory_level`.
+- **Bundled models in `torchkrates-eval`, `torchkrates-metric`,
+  `torchkrates-create-lammps-model` and `torchkrates-convert-heads`** now
+  use `SO3LRCalculator`'s long-range cutoff and damping (12 Å, 2.0) unless
+  given. Before, v1 crashed (no cutoff) and tauri used the checkpoint's
+  1000 Å, which gave different energies than the calculator (e.g. 0.2 eV
+  for ethanol) and, in LAMMPS, a 500 Å neighbour cutoff.
+- **Long-range models without an explicit `r_max_lr`**:
+  `torchkrates-metric` and `TorchkratesCalculator` /
+  `MultiHeadSO3LRCalculator` built no long-range graph and crashed
+  (`KeyError: 'edge_index_lr'`). They now use the model's own `r_max_lr`,
+  as `torchkrates-eval` does.
+- **`torchkrates-metric --models`** rejected a single `.model` file (the
+  README's own example) and loaded every file in a folder, including the
+  `<name>.pth` state dict that training writes next to the model; it now
+  loads a `.model` file or the `*.model` files of a folder.
 - **`torchkrates-train --dry-run` always crashed** ("element 0 of tensors
   does not require grad"): its forward pass ran without gradients, which
-  the forces need.
+  the forces need. It now also prepares the model exactly as training does
+  (theory level, multi-head conversion, fine-tuning).
 
 ## 0.4.0 (2026-11-25)
 
