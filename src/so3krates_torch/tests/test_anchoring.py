@@ -355,3 +355,122 @@ def test_check_teacher_names_missing_quantity(so3lr_model_config, batch):
     )
     with pytest.raises(ValueError, match="c6_ratios"):
         loss.check_teacher(batch)
+
+
+# ---------------------------------------------------------------------------
+# Warning when the data has hard labels for an anchored quantity
+# ---------------------------------------------------------------------------
+
+
+def _anchor_warnings(caplog, name):
+    return [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+        and "long_range_anchor_weights" in r.getMessage()
+        and f"'{name}'" in r.getMessage()
+    ]
+
+
+def test_warns_when_hard_labels_present(lr_model, labelled_batch, caplog):
+    loss = AnchoredLoss(
+        WeightedPropertiesLoss({"forces": 1.0, "charges": 1.0}),
+        make_anchor_teacher(lr_model, "float64"),
+        {"charges": 1.0},
+    )
+    with caplog.at_level(logging.WARNING):
+        loss(ref=labelled_batch, pred=_pred(lr_model, labelled_batch))
+    (record,) = _anchor_warnings(caplog, "charges")
+    msg = record.getMessage()
+    assert "hard labels" in msg
+    assert "Both" in msg  # label weight > 0: both terms are trained
+
+
+def test_warning_says_labels_ignored_when_label_weight_zero(
+    lr_model, labelled_batch, caplog
+):
+    loss = AnchoredLoss(
+        WeightedPropertiesLoss({"forces": 1.0}),
+        make_anchor_teacher(lr_model, "float64"),
+        {"charges": 1.0},
+    )
+    with caplog.at_level(logging.WARNING):
+        loss(ref=labelled_batch, pred=_pred(lr_model, labelled_batch))
+    (record,) = _anchor_warnings(caplog, "charges")
+    assert "ignored" in record.getMessage()
+
+
+@pytest.mark.parametrize("name", ["hirshfeld_ratios", "dipole"])
+def test_warns_for_ratio_and_dipole_labels(
+    lr_model, labelled_batch, caplog, name
+):
+    loss = AnchoredLoss(
+        WeightedPropertiesLoss({"forces": 1.0}),
+        make_anchor_teacher(lr_model, "float64"),
+        {name: 1.0},
+    )
+    with caplog.at_level(logging.WARNING):
+        loss(ref=labelled_batch, pred=_pred(lr_model, labelled_batch))
+    assert len(_anchor_warnings(caplog, name)) == 1
+
+
+def test_warns_once_per_quantity(lr_model, labelled_batch, caplog):
+    teacher = make_anchor_teacher(lr_model, "float64")
+    warned = set()
+    losses = [
+        AnchoredLoss(
+            WeightedPropertiesLoss({"forces": 1.0}),
+            teacher,
+            {"charges": 1.0},
+            warned=warned,
+        )
+        for _ in range(2)
+    ]
+    with caplog.at_level(logging.WARNING):
+        for loss in losses + losses:
+            loss(ref=labelled_batch, pred=_pred(lr_model, labelled_batch))
+    assert len(_anchor_warnings(caplog, "charges")) == 1
+
+
+def test_no_warning_without_labels(lr_model, batch, caplog):
+    loss = AnchoredLoss(
+        WeightedPropertiesLoss({"forces": 1.0}),
+        make_anchor_teacher(lr_model, "float64"),
+        ALL_ANCHORS,
+    )
+    with caplog.at_level(logging.WARNING):
+        loss(ref=batch, pred=_pred(lr_model, batch))
+    assert not [
+        r for r in caplog.records if "long_range_anchor_weights" in r.msg
+    ]
+
+
+def test_zero_structure_weight_is_not_a_label(
+    lr_model, labelled_batch, caplog
+):
+    labelled_batch.weight[:] = 0.0
+    loss = AnchoredLoss(
+        WeightedPropertiesLoss({"forces": 1.0}),
+        make_anchor_teacher(lr_model, "float64"),
+        ALL_ANCHORS,
+    )
+    with caplog.at_level(logging.WARNING):
+        loss(ref=labelled_batch, pred=_pred(lr_model, labelled_batch))
+    assert not [
+        r for r in caplog.records if "long_range_anchor_weights" in r.msg
+    ]
+
+
+def test_nan_ratio_labels_are_not_labels(lr_model, batch, caplog):
+    # Absent ratios are NaN; force a non-zero label weight to show that
+    # NaN alone keeps the structure from counting as labelled.
+    batch.hirshfeld_ratios_weight[:] = 1.0
+    assert torch.isnan(batch.hirshfeld_ratios).all()
+    loss = AnchoredLoss(
+        WeightedPropertiesLoss({"forces": 1.0}),
+        make_anchor_teacher(lr_model, "float64"),
+        {"hirshfeld_ratios": 1.0},
+    )
+    with caplog.at_level(logging.WARNING):
+        loss(ref=batch, pred=_pred(lr_model, batch))
+    assert not _anchor_warnings(caplog, "hirshfeld_ratios")

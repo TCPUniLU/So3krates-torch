@@ -9,6 +9,7 @@ only energies and forces, which cannot tell short- from long-range
 energy apart.
 """
 
+import logging
 from typing import Callable, Dict, Mapping, Optional
 
 import torch
@@ -121,6 +122,7 @@ class AnchoredLoss(torch.nn.Module):
         teacher: torch.nn.Module,
         weights: Dict[str, float],
         adaptive: Optional["AdaptiveRobustParams"] = None,
+        warned: Optional[set] = None,
     ) -> None:
         super().__init__()
         from so3krates_torch.modules.loss import AdaptiveRobustParams
@@ -142,6 +144,9 @@ class AnchoredLoss(torch.nn.Module):
             )
         self.anchor_adaptive = adaptive if base.robust == "adaptive" else None
         self.last_anchor_targets: Dict[str, torch.Tensor] = {}
+        # Quantities already warned about; shared between the losses of
+        # one run so each warns once.
+        self._warned = warned if warned is not None else set()
 
     # Attributes the training code reads from the loss.
     @property
@@ -201,9 +206,51 @@ class AnchoredLoss(torch.nn.Module):
                     f"model output has no '{pred_key}'{hint}."
                 )
 
+    def _warn_if_hard_labels(self, ref) -> None:
+        """Warn once per quantity when a batch has real labels for an
+        anchored quantity. Absent labels have per-structure weight 0 in
+        every data format (ratios are also NaN), so a structure has a
+        label iff ``weight * <name>_weight != 0`` (and, for the ratios,
+        the label is finite)."""
+        from so3krates_torch.modules.loss import ratio_label_mask
+
+        for name in self.anchor_weights:
+            if name in self._warned:
+                continue
+            with torch.no_grad():
+                if name in ("hirshfeld_ratios", "c6_ratios"):
+                    labelled = ratio_label_mask(ref, name, f"{name}_weight")
+                elif name == "dipole":
+                    labelled = ref.weight.unsqueeze(-1) * ref.dipole_weight
+                    labelled = labelled != 0
+                else:
+                    labelled = ref.weight * ref.charges_weight != 0
+                if not bool(labelled.any()):
+                    continue
+            self._warned.add(name)
+            label_weight = float(getattr(self.base, f"{name}_weight"))
+            if label_weight > 0:
+                effect = (
+                    f"Both the label term (loss weight {label_weight:g}) "
+                    "and the anchor term are trained."
+                )
+            else:
+                effect = (
+                    "The labels are ignored (loss weight 0); only the "
+                    "anchor term is trained."
+                )
+            logging.warning(
+                f"Training data has hard labels for '{name}' while "
+                "long_range_anchor_weights also anchors it to the "
+                f"pretrained model. {effect} To use only one, remove "
+                f"'{_CONFIG_KEY[name]}' from long_range_anchor_weights or "
+                "set the label's loss weight to 0."
+            )
+
     def forward(self, ref, pred, ddp: Optional[bool] = None) -> torch.Tensor:
         from so3krates_torch.modules.loss import _PROPERTY_LOSS_TERMS
 
+        self._warn_if_hard_labels(ref)
         total = self.base(ref=ref, pred=pred, ddp=ddp)
         targets = self._teacher_targets(ref)
         self.last_anchor_targets = targets
@@ -228,6 +275,14 @@ class AnchoredLoss(torch.nn.Module):
         )
         return f"AnchoredLoss({self.base!r}, anchors: {anchors})"
 
+
+# so3lr config key per anchored quantity (for messages).
+_CONFIG_KEY = {
+    "charges": "partial_charges",
+    "hirshfeld_ratios": "a0_ratios",
+    "c6_ratios": "c6_ratios",
+    "dipole": "dipole_vec",
+}
 
 # Teacher output key per anchored quantity.
 _TEACHER_OUTPUT_KEY = {
