@@ -636,11 +636,23 @@ class ModelEval(Metric):
             dist_reduce_fx="sum",
         )
         self.add_state("delta_charges", default=[], dist_reduce_fx="cat")
+        # Long-range anchoring: model vs frozen pretrained model.
+        self.anchored = list(getattr(loss_fn, "anchor_weights", {}) or {})
+        for name in self.anchored:
+            self.add_state(
+                f"delta_anchor_{name}", default=[], dist_reduce_fx="cat"
+            )
 
     def update(self, batch, output):  # pylint: disable=arguments-differ
         if self.loss_fn is not None:
             loss = self.loss_fn(pred=output, ref=batch)
             self.total_loss += loss
+            targets = getattr(self.loss_fn, "last_anchor_targets", {})
+            for name in self.anchored:
+                pred_key = "partial_charges" if name == "charges" else name
+                getattr(self, f"delta_anchor_{name}").append(
+                    (output[pred_key] - targets[name]).detach()
+                )
         self.num_data += batch.num_graphs
 
         if output.get("energy") is not None and batch.energy is not None:
@@ -765,6 +777,12 @@ class ModelEval(Metric):
             aux["rmse_c6_ratios"] = compute_rmse(delta_c6_ratios)
             aux["q95_c6_ratios"] = compute_q95(delta_c6_ratios)
 
+        for name in self.anchored:
+            deltas = getattr(self, f"delta_anchor_{name}")
+            if len(deltas):
+                delta = self.convert(deltas)
+                aux[f"mae_anchor_{name}"] = compute_mae(delta)
+                aux[f"rmse_anchor_{name}"] = compute_rmse(delta)
         if self.charges_computed:
             delta_charges = self.convert(self.delta_charges)
             aux["mae_charges"] = compute_mae(delta_charges)

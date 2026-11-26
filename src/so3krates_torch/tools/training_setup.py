@@ -14,6 +14,10 @@ from so3krates_torch.modules.loss import (
     WeightedPropertiesLoss,
     AdaptiveRobustParams,
 )
+from so3krates_torch.modules.anchoring import (
+    AnchoredLoss,
+    normalize_anchor_weights,
+)
 from so3krates_torch.tools.checkpoint import (
     CheckpointHandler,
     CheckpointState,
@@ -177,8 +181,15 @@ def _check_stage_two_reachable(loss_config: dict) -> None:
     )
 
 
-def setup_loss_functions(config: dict) -> LossFunctions:
-    """Training and validation losses for both training stages."""
+def setup_loss_functions(
+    config: dict, teacher: Optional[torch.nn.Module] = None
+) -> LossFunctions:
+    """Training and validation losses for both training stages.
+
+    With ``TRAINING.long_range_anchor_weights``, every loss is wrapped in
+    an ``AnchoredLoss`` that anchors to ``teacher`` (the frozen pretrained
+    model, see ``make_anchor_teacher``).
+    """
     loss_config = config["TRAINING"]
     _check_validation_settings(loss_config)
     _check_stage_two_reachable(loss_config)
@@ -223,7 +234,54 @@ def setup_loss_functions(config: dict) -> LossFunctions:
                 stage_two_config, train_two, shared
             ),
         )
+    anchors = normalize_anchor_weights(
+        loss_config.get("long_range_anchor_weights")
+    )
+    if anchors:
+        if teacher is None:
+            raise ValueError(
+                "long_range_anchor_weights needs the frozen pretrained model "
+                "as teacher (make_anchor_teacher)."
+            )
+        _anchor_loss_functions(fns, teacher, anchors, loss_config)
     return fns
+
+
+def _anchor_loss_functions(
+    fns: LossFunctions,
+    teacher: torch.nn.Module,
+    anchors: Dict[str, float],
+    loss_config: dict,
+) -> None:
+    """Wrap every loss of ``fns`` in place. One wrapper per distinct base
+    loss (validation often reuses the training loss); all share the
+    teacher, the anchor robust-loss parameters and the warned set."""
+    adaptive = None
+    if loss_config.get("use_adaptive_robust_loss", False):
+        adaptive = AdaptiveRobustParams(
+            [f"anchor_{name}" for name in anchors],
+            loss_config.get("adaptive_robust_loss_init_alpha", 1.0),
+            loss_config.get("adaptive_robust_loss_init_scale", 1.0),
+        )
+    warned: set = set()
+    wrappers: Dict[int, AnchoredLoss] = {}
+
+    def wrap(base: torch.nn.Module) -> AnchoredLoss:
+        if id(base) not in wrappers:
+            wrappers[id(base)] = AnchoredLoss(
+                base, teacher, anchors, adaptive=adaptive, warned=warned
+            )
+        return wrappers[id(base)]
+
+    fns.train = wrap(fns.train)
+    fns.valid = wrap(fns.valid)
+    if fns.stage_two is not None:
+        fns.stage_two.loss_fn = wrap(fns.stage_two.loss_fn)
+        fns.stage_two.valid_loss_fn = wrap(fns.stage_two.valid_loss_fn)
+    logging.info(
+        "Long-range anchoring to the pretrained model: "
+        + ", ".join(f"{name}={w:g}" for name, w in anchors.items())
+    )
 
 
 def check_loss_outputs(
@@ -236,6 +294,8 @@ def check_loss_outputs(
     for module in loss_fns.modules():
         if hasattr(module, "check_outputs"):
             module.check_outputs(output)
+        if hasattr(module, "check_teacher"):
+            module.check_teacher(batch)
 
 
 def setup_loss_function(
