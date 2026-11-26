@@ -10,6 +10,10 @@ from so3krates_torch.tools.utils import (
     setup_logger,
 )
 from so3krates_torch.tools.train import train
+from so3krates_torch.modules.anchoring import (
+    make_anchor_teacher,
+    normalize_anchor_weights,
+)
 from so3krates_torch.tools.finetune import fuse_lora_weights
 from so3krates_torch.tools.torch_geometric import seed_everything
 import os
@@ -151,6 +155,13 @@ def run_training(config: dict) -> None:
 
     # ---- model creation ----
     model, warm_start = _setup_model_for_training(config, device)
+    # Long-range anchoring: freeze a copy of the pretrained model before
+    # it is converted, wrapped (LoRA) or frozen for fine-tuning.
+    teacher = None
+    if normalize_anchor_weights(
+        config["TRAINING"].get("long_range_anchor_weights")
+    ):
+        teacher = make_anchor_teacher(model, dtype_str)
 
     # ---- data loaders (with DistributedSampler when needed) ----
     (
@@ -184,7 +195,7 @@ def run_training(config: dict) -> None:
         ddp_model = wrap_model_ddp(model, local_rank)
 
     # Setup loss function
-    loss_fns = setup_loss_functions(config)
+    loss_fns = setup_loss_functions(config, teacher=teacher)
     for module in loss_fns.modules():
         module.to(device)
     loss_fn = loss_fns.train

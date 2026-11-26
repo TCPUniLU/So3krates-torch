@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Long-range anchoring** (`TRAINING.long_range_anchor_weights`, as in
+  so3lr 0.2.0). When fine-tuning from a pretrained model, a frozen copy of
+  it predicts the partial charges, a0 ratios, C6 ratios and/or dipole of
+  every batch, and the fine-tuned model is pulled towards them. This keeps
+  the long-range behaviour when the data has only energies and forces.
+  Keys: `partial_charges`, `a0_ratios`/`hirshfeld_ratios`, `c6_ratios`,
+  `dipole_vec` (torch aliases `charges`, `dipole`). A warning is logged
+  when the data also has labels for an anchored quantity. Validation logs
+  `RMSE_anchor_<quantity>`, the deviation from the pretrained model.
+
+### Fixed
+
+- **Training a `convert_to_multihead` model crashed at the first
+  validation** when batches differed in atom count. Validation metrics of
+  multi-head models now use the mean over heads, as
+  `MultiHeadSO3LRCalculator` and `torchkrates-metric` do.
+
 ## 0.4.0 (2026-11-25)
 
 First release on PyPI since 0.2.1: it also contains all changes of 0.3.0
