@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 
 import yaml
 import torch
@@ -328,9 +329,12 @@ def run_training(config: dict) -> None:
 
     # Only rank 0 saves the final model
     if rank == 0:
-        final_model_path = f'{config["GENERAL"]["name_exp"]}.pth'
-        torch.save(model.state_dict(), final_model_path)
-        torch.save(model, final_model_path.replace(".pth", ".model"))
+        model_dir = config["GENERAL"]["model_dir"]
+        os.makedirs(model_dir, exist_ok=True)
+        stem = os.path.join(model_dir, config["GENERAL"]["name_exp"])
+        torch.save(model.state_dict(), f"{stem}.pth")
+        torch.save(model, f"{stem}.model")
+        logging.info(f"Saved the final model to {stem}.model (and .pth)")
 
 
 def run_dry_run(config: dict) -> None:

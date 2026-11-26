@@ -39,21 +39,42 @@ def _dry_run(config):
     assert "Dry-run completed successfully" in log
 
 
-def test_dry_run_computes_forces(tmp_path):
+def _small_config(tmp_path, **training):
     raw = yaml.safe_load(
         (EXAMPLES / "train_settings_example.yaml").read_text()
     )
     raw["TRAINING"]["path_to_train_data"] = str(
         EXAMPLES / "md17_ethanol_small.xyz"
     )
+    raw["TRAINING"].update(training)
     raw["ARCHITECTURE"].update(num_features=16, degrees=[1], num_layers=1)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(raw))
-    config = _redirect_outputs(
+    return _redirect_outputs(
         setup_config_from_yaml(str(config_path)), tmp_path
     )
 
-    _dry_run(config)
+
+def test_dry_run_computes_forces(tmp_path):
+    _dry_run(_small_config(tmp_path))
+
+
+def test_final_model_is_saved_to_model_dir(tmp_path, monkeypatch):
+    from so3krates_torch.cli.run_train import run_training
+
+    config = _small_config(tmp_path, num_epochs=1)
+    model_dir = tmp_path / "out" / "model"  # does not exist yet
+    config["GENERAL"]["model_dir"] = str(model_dir)
+    name = config["GENERAL"]["name_exp"]
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+
+    run_training(config)
+
+    assert (model_dir / f"{name}.model").is_file()
+    assert (model_dir / f"{name}.pth").is_file()
+    assert list(cwd.iterdir()) == []
 
 
 def test_anchoring_example_config_is_valid_and_runs(tmp_path, monkeypatch):

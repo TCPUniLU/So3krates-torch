@@ -30,6 +30,10 @@
   is logged when it is missing. Copy it from the checkpoint's
   `*_settings.yaml` with the rest of the architecture. Pickled
   `pretrained_model` files were not affected.
+- **The final model ignored `GENERAL.model_dir`** and was saved as
+  `<name_exp>.model`/`.pth` in the current directory. It is now saved to
+  `model_dir` (default `./model`, created if missing). Scripts that pick up
+  the trained model from the current directory need the new path.
 - **`torchkrates-train --dry-run` always crashed** ("element 0 of tensors
   does not require grad"): its forward pass ran without gradients, which
   the forces need.
