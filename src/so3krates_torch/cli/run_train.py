@@ -17,15 +17,11 @@ from so3krates_torch.modules.anchoring import (
 )
 from so3krates_torch.tools.finetune import fuse_lora_weights
 from so3krates_torch.tools.torch_geometric import seed_everything
-import os
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from so3krates_torch.tools.model_setup import (
     _setup_model_for_training,
-    set_avg_num_neighbors_in_model,
-    set_atomic_energy_shifts_in_model,
     resolve_atomic_energy_shifts,
-    set_dtype_model,
     handle_finetuning,
     prepare_model_for_training,
 )
@@ -353,7 +349,29 @@ def run_dry_run(config: dict) -> None:
     device = torch.device(device_name)
     logging.info(f"Using device: {device}")
 
-    model, _ = _setup_model_for_training(config, device)
+    model, warm_start = _setup_model_for_training(config, device)
+
+    (
+        train_loader,
+        _valid_loaders,
+        _train_sampler,
+        avg_num_neighbors,
+        num_elements,
+        average_atomic_energy_shifts,
+        _replay_builder,
+    ) = setup_data_loaders(config, distributed=False, rank=0, world_size=1)
+
+    # The same preparation as training (theory level, multi-head
+    # conversion, shifts, fine-tuning, dtype).
+    model = prepare_model_for_training(
+        config,
+        model,
+        warm_start=warm_start,
+        avg_num_neighbors=avg_num_neighbors,
+        average_atomic_energy_shifts=average_atomic_energy_shifts,
+        num_elements=num_elements,
+        device_name=str(device),
+    )
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(
@@ -361,20 +379,6 @@ def run_dry_run(config: dict) -> None:
     )
     logging.info(f"Total parameters: {total_params}")
     logging.info(f"Trainable parameters: {trainable_params}")
-
-    (
-        train_loader,
-        _valid_loaders,
-        _train_sampler,
-        avg_num_neighbors,
-        _num_elements,
-        average_atomic_energy_shifts,
-        _replay_builder,
-    ) = setup_data_loaders(config, distributed=False, rank=0, world_size=1)
-
-    set_atomic_energy_shifts_in_model(model, average_atomic_energy_shifts)
-    set_avg_num_neighbors_in_model(model, avg_num_neighbors)
-    set_dtype_model(model, dtype_str)
 
     batch = next(iter(train_loader))
     batch = batch.to(device)

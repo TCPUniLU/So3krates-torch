@@ -73,10 +73,24 @@ def normalize_anchor_weights(
 def make_anchor_teacher(model: torch.nn.Module, dtype: str) -> torch.nn.Module:
     """Frozen copy of ``model`` (eval mode, no gradients) in ``dtype``
     (``"float32"`` / ``"float64"``); ``model`` is not modified."""
+    from so3krates_torch.modules.models import MultiHeadSO3LR, SO3LR
     from so3krates_torch.tools.model_setup import set_dtype_model
-    from so3krates_torch.tools.multihead_utils import _deepcopy_model
+    from so3krates_torch.tools.multihead_utils import (
+        _deepcopy_model,
+        select_theory_level,
+    )
 
     teacher = _deepcopy_model(model)
+    head = getattr(teacher, "atomic_energy_output_block", None)
+    if (
+        isinstance(teacher, SO3LR)
+        and not isinstance(teacher, MultiHeadSO3LR)
+        and getattr(head, "num_theory_levels", 1) > 1
+    ):
+        # Only the energy head depends on the theory level, and the
+        # teacher's energy is never used: keep one level so that the
+        # teacher needs no theory_level in the data.
+        teacher = select_theory_level(teacher, 0)
     set_dtype_model(teacher, dtype)
     teacher.eval()
     for param in teacher.parameters():

@@ -6,7 +6,10 @@ import torch
 import torch.nn as nn
 from so3krates_torch.modules.models import SO3LR, MultiHeadSO3LR
 from so3krates_torch.tools.finetune import fuse_lora_weights, setup_finetuning
-from so3krates_torch.tools.multihead_utils import to_multihead_model
+from so3krates_torch.tools.multihead_utils import (
+    select_theory_level,
+    to_multihead_model,
+)
 from so3krates_torch.tools.utils import AtomicNumberTable
 
 DTYPE_MAP = {
@@ -143,7 +146,15 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
         "num_theory_levels": arch_config.get("num_theory_levels", 1),
     }
 
-    if model_params.get("num_theory_levels", 1) > 1:
+    training_config = config.get("TRAINING", {})
+    keeps_one_level = (
+        training_config.get("pretrained_weights")
+        or training_config.get("pretrained_model")
+    ) and (
+        arch_config.get("convert_theory_level") is not None
+        or arch_config.get("convert_to_multihead", False)
+    )
+    if model_params.get("num_theory_levels", 1) > 1 and not keeps_one_level:
         logging.warning(
             "num_theory_levels=%d: every training structure must carry "
             "atoms.info['theory_level'] = <int 0..%d>. Structures "
@@ -429,11 +440,25 @@ def process_config_atomic_energies(
     atomic_energy_shifts = {}
     # turn keys to str if they are int
     atomic_shifts_config = {str(k): v for k, v in atomic_shifts_config.items()}
+    # Multi-theory-level models have one shift per element and level
+    # (num_elements, num_theory_levels): a configured shift applies to
+    # every level, the others keep their per-level default.
+    num_levels = (
+        default_shifts.shape[1]
+        if default_shifts is not None and default_shifts.dim() == 2
+        else None
+    )
     for z in range(1, 119):
         if str(z) in atomic_shifts_config:
-            atomic_energy_shifts[z] = atomic_shifts_config[str(z)]
+            value = float(atomic_shifts_config[str(z)])
+            atomic_energy_shifts[z] = (
+                value if num_levels is None else [value] * num_levels
+            )
         elif default_shifts is not None:
-            atomic_energy_shifts[z] = float(default_shifts[z - 1].item())
+            row = default_shifts[z - 1].detach()
+            atomic_energy_shifts[z] = (
+                float(row.item()) if num_levels is None else row.tolist()
+            )
         else:
             atomic_energy_shifts[z] = 0.0
     return atomic_energy_shifts
@@ -596,6 +621,20 @@ def prepare_model_for_training(
         model.avg_num_neighbors = avg_num_neighbors
 
     arch = config["ARCHITECTURE"]
+    if (
+        warm_start
+        and not arch.get("convert_to_multihead", False)
+        and arch.get("convert_theory_level") is not None
+        and not isinstance(model, MultiHeadSO3LR)
+    ):
+        # Fine-tune one theory level of a multi-level model (e.g. tauri)
+        # as a plain single-level model: the data needs no theory_level.
+        level = arch["convert_theory_level"]
+        logging.info(
+            f"Keeping theory level {level} of the pretrained model "
+            "(convert_theory_level); the other levels are dropped."
+        )
+        model = select_theory_level(model, level)
     if (
         warm_start
         and arch.get("convert_to_multihead", False)

@@ -144,6 +144,14 @@ class AtomicEnergyOutputHead(nn.Module):
             raise ValueError(
                 "atomic_type_shifts must be either a dict, torch.Tensor, or nn.Parameter."
             )
+        num_levels = getattr(self, "num_theory_levels", 1)
+        if num_levels > 1 and self.energy_shifts.dim() == 1:
+            # One shift per element (e.g. from the training data): the
+            # same shift for every theory level.
+            self.energy_shifts = nn.Parameter(
+                self.energy_shifts.detach().unsqueeze(1).repeat(1, num_levels),
+                requires_grad=False,
+            )
         self.enable_learned_energy_shifts_and_scales()
 
     def enable_learned_energy_shifts_and_scales(self):
