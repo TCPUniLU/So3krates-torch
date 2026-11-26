@@ -232,6 +232,17 @@ TRAINING:
   # replay_total: 5000            # total number of replay structures to sample
   # replay_oversample_finetune: true   # repeat fine-tune data to match replay size (default: true)
   # replay_resample_per_epoch: false   # re-draw replay subset each epoch (default: false)
+  # --- Long-range anchoring (fine-tuning from a pretrained model) ---
+  # A frozen copy of the pretrained model predicts these long-range
+  # quantities on every batch; the fine-tuned model is pulled towards them,
+  # so energy/force-only data cannot bend the long-range heads. Keys:
+  # partial_charges (or charges), a0_ratios (or hirshfeld_ratios),
+  # c6_ratios, dipole_vec (or dipole). Needs pretrained_model or
+  # pretrained_weights. Warns if the data also has labels for one of them.
+  # long_range_anchor_weights:
+  #   partial_charges: 1.0
+  #   a0_ratios: 1.0
+  #   c6_ratios: 1.0
   # --- LoRA+ optimizer (use with finetune_choice: lora / dora / vera) ---
   # use_lora_plus: false           # apply a separate LR to LoRA B matrices
   # lora_B_lr: 0.01                # B-matrix LR (e.g. 10x the base lr)

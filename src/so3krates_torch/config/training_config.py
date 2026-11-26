@@ -194,6 +194,9 @@ class TrainingConfig(BaseModel):
     # early-stopping and plateau trackers reset at the switch.
     stage_two_start_epoch: Optional[int] = None
     stage_two_loss_weights: Optional[Dict[str, float]] = None
+    # Long-range anchoring (fine-tuning only): keys partial_charges,
+    # a0_ratios/hirshfeld_ratios, c6_ratios, dipole_vec.
+    long_range_anchor_weights: Optional[Dict[str, float]] = None
     # Fine-tuning (finetune_choice != naive): keep dispersion heads frozen.
     # `freeze_hirshfeld` may also be given as `freeze_a0_ratios`.
     freeze_hirshfeld: bool = True
@@ -298,6 +301,27 @@ class TrainingConfig(BaseModel):
             raise ValueError(
                 "Cannot specify both 'pretrained_weights' and "
                 "'pretrained_model'. Use one or the other."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_long_range_anchors(self):
+        from so3krates_torch.modules.anchoring import (
+            normalize_anchor_weights,
+        )
+
+        if not normalize_anchor_weights(self.long_range_anchor_weights):
+            return self
+        if self.pretrained_model is None and self.pretrained_weights is None:
+            raise ValueError(
+                "long_range_anchor_weights anchors to the pretrained model: "
+                "set 'pretrained_model' or 'pretrained_weights'."
+            )
+        if self.loss_type not in ("auto", "properties"):
+            raise ValueError(
+                f"loss_type '{self.loss_type}' does not support "
+                "long_range_anchor_weights. Use loss_type 'auto' or "
+                "'properties'."
             )
         return self
 

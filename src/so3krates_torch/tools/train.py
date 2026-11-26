@@ -246,6 +246,16 @@ def valid_err_log(
             f"{initial_phrase}: head: {valid_loader_name}, "
             f"MAE_c6_ratios={eval_metrics['mae_c6_ratios']:8.4f}"
         )
+    anchor = [
+        f"RMSE_anchor_{key[len('rmse_anchor_'):]}={value:8.4f}"
+        for key, value in eval_metrics.items()
+        if key.startswith("rmse_anchor_")
+    ]
+    if anchor:
+        logging.info(
+            f"{initial_phrase}: head: {valid_loader_name}, "
+            "deviation from pretrained model: " + ", ".join(anchor)
+        )
 
 
 def train(
@@ -845,7 +855,10 @@ def evaluate(
                 compute_virials=output_args["virials"],
                 compute_stress=output_args["stress"],
             )
-            avg_loss, aux = metrics(batch, output)
+            # update(), not metrics(...): Metric.forward runs update twice
+            # (and computes) per batch, which also ran the anchoring
+            # teacher twice; only the final compute() is used.
+            metrics.update(batch, output)
 
     avg_loss, aux = metrics.compute()
     aux["time"] = time.time() - start_time
