@@ -158,6 +158,32 @@ class TestEnsembleFromFolderModelLoading:
         assert len(ensemble) == 2
         assert all(isinstance(m, torch.nn.Module) for m in ensemble.values())
 
+    def test_loads_single_dot_model_file(self, so3lr_model_config, tmp_path):
+        """A single pickled ``.model`` file, as written by training
+        (``torchkrates-metric --models my_model.model``)."""
+        path = tmp_path / "my_model.model"
+        torch.save(SO3LR(**so3lr_model_config), path)
+
+        ensemble = ensemble_from_folder(
+            path_to_models=str(path), device="cpu", dtype=torch.float64
+        )
+        assert list(ensemble.keys()) == ["my_model"]
+
+    def test_directory_loads_only_dot_model_files(
+        self, so3lr_model_config, tmp_path
+    ):
+        """Training writes <name>.model and the state dict <name>.pth into
+        model_dir: only the pickled models are an ensemble."""
+        model = SO3LR(**so3lr_model_config)
+        torch.save(model, tmp_path / "run.model")
+        torch.save(model.state_dict(), tmp_path / "run.pth")
+        (tmp_path / "notes.txt").write_text("not a model")
+
+        ensemble = ensemble_from_folder(
+            path_to_models=str(tmp_path), device="cpu", dtype=torch.float64
+        )
+        assert list(ensemble.keys()) == ["run"]
+
     def test_loads_pretrained_keyword(self):
         """New: a pretrained keyword loads via ``load_pretrained_so3lr``
         directly instead of requiring a directory."""

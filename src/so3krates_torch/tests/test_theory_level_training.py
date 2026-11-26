@@ -160,3 +160,28 @@ def test_configured_shifts_keep_other_levels_of_multi_level_model(
     assert got.shape == (NUM_ELEMENTS, LEVELS)
     assert torch.equal(got[0], torch.full((LEVELS,), -13.6).double())
     assert torch.equal(got[1:], before[1:])
+
+
+WARNING = "must carry atoms.info['theory_level']"
+
+
+@pytest.mark.parametrize(
+    "arch, warns",
+    [
+        (dict(), True),
+        (dict(convert_theory_level=5 % LEVELS), False),
+        (dict(convert_to_multihead=True, num_output_heads=2), False),
+    ],
+    ids=["all_levels", "one_level", "multihead"],
+)
+def test_theory_level_warning_only_when_levels_are_kept(
+    config, multi_level, caplog, arch, warns  # noqa: F811
+):
+    if arch.get("convert_to_multihead"):
+        arch = dict(arch, convert_theory_level=1)
+    cfg = _with(
+        config, ARCHITECTURE=arch, TRAINING=dict(finetune_choice="naive")
+    )
+    with caplog.at_level("WARNING"):
+        _prepare(cfg, multi_level)
+    assert (WARNING in caplog.text) is warns

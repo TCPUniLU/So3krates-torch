@@ -146,23 +146,6 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
         "num_theory_levels": arch_config.get("num_theory_levels", 1),
     }
 
-    training_config = config.get("TRAINING", {})
-    keeps_one_level = (
-        training_config.get("pretrained_weights")
-        or training_config.get("pretrained_model")
-    ) and (
-        arch_config.get("convert_theory_level") is not None
-        or arch_config.get("convert_to_multihead", False)
-    )
-    if model_params.get("num_theory_levels", 1) > 1 and not keeps_one_level:
-        logging.warning(
-            "num_theory_levels=%d: every training structure must carry "
-            "atoms.info['theory_level'] = <int 0..%d>. Structures "
-            "without this key will raise a KeyError at forward time.",
-            model_params["num_theory_levels"],
-            model_params["num_theory_levels"] - 1,
-        )
-
     if arch_config.get("convert_to_multihead", False):
         model_params["num_output_heads"] = arch_config.get(
             "num_output_heads", None
@@ -665,4 +648,19 @@ def prepare_model_for_training(
     set_atomic_energy_shifts_in_model(model, atomic_energy_shifts)
     set_avg_num_neighbors_in_model(model, avg_num_neighbors)
     set_dtype_model(model, config["GENERAL"].get("default_dtype", "float32"))
+    levels = getattr(
+        getattr(model, "atomic_energy_output_block", None),
+        "num_theory_levels",
+        1,
+    )
+    if levels > 1:
+        logging.warning(
+            "num_theory_levels=%d: every training structure must carry "
+            "atoms.info['theory_level'] = <int 0..%d>. Structures "
+            "without this key will raise a KeyError at forward time. "
+            "To fine-tune one level of a pretrained model on data without "
+            "it, set ARCHITECTURE.convert_theory_level.",
+            levels,
+            levels - 1,
+        )
     return model
