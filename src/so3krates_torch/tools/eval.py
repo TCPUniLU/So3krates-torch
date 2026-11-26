@@ -567,6 +567,21 @@ def ensemble_prediction(
     return results
 
 
+def _mean_over_heads(output: dict) -> dict:
+    """Multi-head models without per-structure head selection return
+    energy (heads, graphs), forces (heads, atoms, 3) and stress (heads,
+    graphs, 3, 3). Metrics use the mean over heads, the prediction
+    MultiHeadSO3LRCalculator and torchkrates-metric report."""
+    energy = output.get("energy")
+    if energy is None or energy.dim() != 2:
+        return output
+    output = dict(output)
+    for key in ("energy", "forces", "stress", "virials"):
+        if output.get(key) is not None:
+            output[key] = output[key].mean(0)
+    return output
+
+
 class ModelEval(Metric):
     def __init__(self, loss_fn: Optional[torch.nn.Module] = None) -> None:
         super().__init__()
@@ -654,6 +669,7 @@ class ModelEval(Metric):
                     (output[pred_key] - targets[name]).detach()
                 )
         self.num_data += batch.num_graphs
+        output = _mean_over_heads(output)
 
         if output.get("energy") is not None and batch.energy is not None:
             self.E_computed += 1.0

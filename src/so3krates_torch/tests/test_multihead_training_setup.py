@@ -156,3 +156,31 @@ def test_from_scratch_multihead_unchanged(config):
     )
     model = _prepare(cfg, create_model(cfg, "cpu"), warm_start=False)
     assert type(model) is MultiHeadSO3LR and model.num_output_heads == 2
+
+
+def test_model_eval_multihead_batches_of_different_sizes(
+    so3lr_model_config, make_batch
+):
+    """Validation of a converted multi-head model (no per-structure head
+    selection) must work when batches differ in size; energy/force
+    metrics use the mean over heads, as MultiHeadSO3LRCalculator does."""
+    from ase.build import molecule
+
+    from so3krates_torch.tools.eval import ModelEval
+    from so3krates_torch.tools.multihead_utils import to_multihead_model
+
+    mh = to_multihead_model(SO3LR(**so3lr_model_config), 3, seed=0).eval()
+    ev = ModelEval()
+    expected_delta_f = []
+    for name in ("H2O", "CH4"):  # 3 and 5 atoms
+        atoms = molecule(name)
+        atoms.info["REF_energy"] = -1.0
+        batch = make_batch(atoms, r_max=5.0, cutoff_lr=10.0)
+        batch.forces = torch.zeros_like(batch.positions)
+        out = mh(batch.to_dict(), training=False)
+        assert out["forces"].dim() == 3  # (heads, atoms, 3)
+        expected_delta_f.append(-out["forces"].mean(0).detach())
+        ev.update(batch, out)
+    aux = ev.compute()  # no loss_fn: only the metrics
+    expected = torch.cat(expected_delta_f).abs().mean().item()
+    assert aux["mae_f"] == pytest.approx(expected, rel=1e-10)
