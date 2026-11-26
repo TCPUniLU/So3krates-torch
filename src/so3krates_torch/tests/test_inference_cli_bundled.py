@@ -201,3 +201,54 @@ def test_lammps_export_of_tauri_defaults_to_theory_level_5(
     )
     model = exported.model.model
     assert model.atomic_energy_output_block.num_theory_levels == 1
+
+
+def test_calculator_uses_the_model_long_range_cutoff(
+    so3lr_model_config, tmp_path
+):
+    """A trained long-range model (.model) works in TorchkratesCalculator
+    without repeating its r_max_lr, and gives the same result as with it."""
+    from ase.build import molecule
+
+    from so3krates_torch.calculator.so3 import TorchkratesCalculator
+
+    model = SO3LR(**so3lr_model_config).double()
+    path = tmp_path / "trained.model"
+    torch.save(model, path)
+    atoms = molecule("CH3CH2OH")
+
+    energies = []
+    for kwargs in ({}, {"r_max_lr": model.r_max_lr}):
+        atoms.calc = TorchkratesCalculator(
+            model_paths=str(path), default_dtype="float64", **kwargs
+        )
+        energies.append(atoms.get_potential_energy())
+    assert energies[0] == pytest.approx(energies[1], abs=1e-10)
+
+
+def test_multihead_calculator_uses_the_model_long_range_cutoff(
+    multihead_model_config,
+):
+    from ase.build import molecule
+
+    from so3krates_torch.calculator.so3 import MultiHeadSO3LRCalculator
+    from so3krates_torch.modules.models import MultiHeadSO3LR
+
+    model = MultiHeadSO3LR(**multihead_model_config).double()
+    atoms = molecule("CH3CH2OH")
+    atoms.calc = MultiHeadSO3LRCalculator(
+        model=model, device="cpu", default_dtype="float64"
+    )
+    assert np.isfinite(atoms.get_potential_energy())
+
+
+def test_convert_heads_of_bundled_model_uses_calculator_cutoffs(tmp_path):
+    from so3krates_torch.cli.convert_heads import main as convert_heads
+
+    out = tmp_path / "mh.model"
+    convert_heads(
+        ["--model", TAURI, "--to-multihead", "2", "--output", str(out)]
+    )
+    model = torch.load(out, weights_only=False)
+    assert model.r_max_lr == 12.0
+    assert model.dispersion_energy_cutoff_lr_damping == 2.0

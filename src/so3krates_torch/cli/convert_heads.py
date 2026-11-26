@@ -22,6 +22,7 @@ from typing import List, Optional
 import torch
 from pydantic import ValidationError
 
+from so3krates_torch.tools.eval import BUNDLED_LR_DAMPING, BUNDLED_R_MAX_LR
 from so3krates_torch.calculator.so3 import (
     _PRETRAINED_SO3LR_MODELS,
     load_pretrained_so3lr,
@@ -87,7 +88,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _load_model(source: str, device: str) -> torch.nn.Module:
     if source in _PRETRAINED_SO3LR_MODELS:
-        return load_pretrained_so3lr(source, device=device)
+        # As SO3LRCalculator: the checkpoints save no (v1) or a very
+        # large (tauri: 1000 A) long-range cutoff.
+        return load_pretrained_so3lr(
+            source,
+            device=device,
+            r_max_lr=BUNDLED_R_MAX_LR,
+            dispersion_energy_cutoff_lr_damping=BUNDLED_LR_DAMPING,
+        )
     if not os.path.isfile(source):
         raise ValueError(
             f"Model file not found: {source} (and not a bundled model "

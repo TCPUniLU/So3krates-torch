@@ -302,6 +302,19 @@ class TorchkratesCalculator(Calculator):
                 f"committee r_max are not all the same {' '.join(r_maxs)}"
             )
         self.r_max = float(r_maxs[0])
+        if r_max_lr is None:
+            # The models' own long-range cutoff (as torchkrates-eval).
+            lr_cutoffs = {
+                model.r_max_lr
+                for model in self.models
+                if getattr(model, "use_lr", False)
+            }
+            if len(lr_cutoffs) > 1:
+                raise ValueError(
+                    f"committee r_max_lr are not all the same {lr_cutoffs}; "
+                    "pass r_max_lr."
+                )
+            r_max_lr = next(iter(lr_cutoffs), None)
         self.r_max_lr = r_max_lr
         for model in self.models:
             if r_max_lr is not None and getattr(model, "use_lr", False):

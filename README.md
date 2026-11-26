@@ -230,16 +230,19 @@ torchkrates-merge --inputs a.h5 b.h5 --output merged.h5 \
 Convert a trained SO3LR model to a format compatible with the LAMMPS ML-IAP interface.
 
 ```bash
-torchkrates-create-lammps-model model.pt --elements Si O
+torchkrates-create-lammps-model my_model.model --elements Si O
+# bundled tauri model, theory level 5 (the default)
+torchkrates-create-lammps-model tauri-s-2606 --elements C H O --theory-level 5
 ```
 
 | Flag | Description |
 |------|-------------|
-| `model_path` | Path to the trained `.pt` model file |
+| `model_path` | Pickled model file (`.model`, as written by training) or a bundled model name (`v1`, `tauri-s-2606`, ...); the output is `<model_path>-mliap_lammps.pt` |
 | `--elements` | Element symbols present in the simulation (must match LAMMPS `pair_coeff` type order) |
 | `--head` | Head name for multi-head models (interactive selection if omitted) |
 | `--dtype` | `float32` or `float64` (default: `float64`) |
-| `--r-max-lr` | Override the long-range cutoff radius (Å). Only applicable to LR models. |
+| `--r-max-lr` | Override the long-range cutoff radius (Å). Only applicable to LR models. Default for the bundled models: `12.0` (damping `2.0`), as in `SO3LRCalculator`. |
+| `--theory-level` | Theory level to export from a multi-theory-level model such as tauri (LAMMPS passes no theory level). Default: `5` (so3lr_dev's level). |
 | `--electrostatic-energy-scale` | Override the electrostatic energy scaling factor. |
 | `--dispersion-energy-scale` | Override the dispersion energy scaling factor. |
 | `--dispersion-energy-cutoff-lr-damping` | Override the dispersion long-range damping cutoff. |
@@ -299,7 +302,7 @@ torchkrates-convert-heads --model finetuned.model --output head2.model --select-
 | `--output` | Output `.model` file |
 | `--to-multihead N` | Make a multi-head model with N new heads (exactly one of `--to-multihead` / `--select-head`) |
 | `--select-head K` | Keep head K (0-based) of a multi-head model |
-| `--theory-level T` | Theory level to keep for multi-theory-level models such as tauri (default: `5`, so3lr_dev's level; only with `--to-multihead`) |
+| `--theory-level T` | Theory level to keep for multi-theory-level models such as tauri (default: `5`, so3lr_dev's level; only with `--to-multihead`). A bundled model gets `SO3LRCalculator`'s long-range cutoff (`12.0` Å, damping `2.0`) instead of the checkpoint's 1000 Å |
 | `--seed` | Seed for the new heads' weights (default: `42`) |
 | `--device` | Torch device (default: `cpu`) |
 | `--force` | Overwrite an existing output file |
@@ -347,6 +350,8 @@ Models with several theory levels (the tauri models and the `v2-*` aliases) need
 | `--dtype` | `float32` | `float32` or `float64` |
 | `--multihead_model` | `False` | Enable multi-head model support |
 | `--multispecies` | `False` | Required when the dataset's structures don't all share the same atom count (allows batches/results to be ragged instead of stacked into one array) |
+| `--theory_level` | see description | Theory level of a multi-theory-level model (e.g. the tauri models, 16 levels). Default: each structure's `atoms.info["theory_level"]` if every structure has one, otherwise `5` (so3lr_dev's level, logged) |
+| `--r_max_lr` | see description | Long-range cutoff [Å]. Default: the model's own; `12.0` (and damping `2.0`) for the bundled models, as in `SO3LRCalculator` |
 | `--compute_dipole` | `False` | Compute dipole predictions |
 | `--compute_stress` | `False` | Compute stress predictions |
 | `--compute_hirshfeld` | `False` | Compute Hirshfeld ratio predictions |
@@ -530,14 +535,15 @@ Note there is no `--multispecies` flag here (unlike `torchkrates-eval`); use `--
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--models` | *required* | Path to a model file or a directory of model files, a bundled pretrained keyword (`v1`, `tauri-*`, `v2-*`), or a `.pt` state_dict checkpoint with a sibling `<stem>_settings.yaml` |
+| `--models` | *required* | Path to a `.model` file or a directory of `.model` files (e.g. a training `model_dir`), a bundled pretrained keyword (`v1`, `tauri-*`, `v2-*`), or a `.pt` state_dict checkpoint with a sibling `<stem>_settings.yaml` |
 | `--data` | *required* | Dataset path (must contain reference values) |
 | `--output_args` | `energy forces` | Properties to evaluate. Can include `stress`, `virials`, `dipole`, `hirshfeld_ratios`, `c6_ratios`. |
 | `--batch_size` | `16` | Structures per batch |
 | `--device` | `cpu` | `cuda` or `cpu` |
 | `--save` | `./` | Directory for output files |
 | `--results_file` | `ensemble_test_results.npz` | `.npz` file with raw error arrays |
-| `--r_max_lr` | `None` | Long-range cutoff when model uses electrostatics/dispersion |
+| `--r_max_lr` | see description | Long-range cutoff [Å]. Default: the model's own; `12.0` (and damping `2.0`) for the bundled models, as in `SO3LRCalculator` |
+| `--theory_level` | see description | Theory level of a multi-theory-level model (e.g. the tauri models, 16 levels). Default: each structure's `atoms.info["theory_level"]` if every structure has one, otherwise `5` (so3lr_dev's level, logged) |
 | `--multihead_model` | `False` | Enable multi-head model support |
 | `--multihead_return_mean` | `False` | Return mean prediction across heads |
 | `--energy_key` | `REF_energy` | Key for reference energies |

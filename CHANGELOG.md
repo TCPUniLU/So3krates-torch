@@ -19,6 +19,12 @@
 - **`convert_theory_level` without `convert_to_multihead`**: fine-tune one
   theory level of a multi-level pretrained model (e.g. tauri) as a plain
   single-level model, on data without `theory_level`.
+- **`--theory_level` for `torchkrates-eval` and `torchkrates-metric`, and
+  `--theory-level` for `torchkrates-create-lammps-model`** (multi-level
+  models such as tauri). Default, as `torchkrates-md-nvalchemi`: each
+  structure's `atoms.info["theory_level"]` if every structure has one,
+  otherwise level 5 (logged). `torchkrates-create-lammps-model` also
+  accepts the bundled model names.
 
 ### Fixed
 
@@ -47,6 +53,24 @@
   with `KeyError: 'theory_level'` on data without theory levels: the frozen
   copy of the pretrained model kept all levels. It now keeps one (the
   long-range heads do not depend on the theory level).
+- **The tauri models in `torchkrates-eval` / `torchkrates-metric`**
+  crashed (`KeyError: 'theory_level'`) unless every structure had a
+  theory level. See the new `--theory_level`.
+- **Bundled models in `torchkrates-eval`, `torchkrates-metric`,
+  `torchkrates-create-lammps-model` and `torchkrates-convert-heads`** now
+  use `SO3LRCalculator`'s long-range cutoff and damping (12 Å, 2.0) unless
+  given. Before, v1 crashed (no cutoff) and tauri used the checkpoint's
+  1000 Å, which gave different energies than the calculator (e.g. 0.2 eV
+  for ethanol) and, in LAMMPS, a 500 Å neighbour cutoff.
+- **Long-range models without an explicit `r_max_lr`**:
+  `torchkrates-metric` and `TorchkratesCalculator` /
+  `MultiHeadSO3LRCalculator` built no long-range graph and crashed
+  (`KeyError: 'edge_index_lr'`). They now use the model's own `r_max_lr`,
+  as `torchkrates-eval` does.
+- **`torchkrates-metric --models`** rejected a single `.model` file (the
+  README's own example) and loaded every file in a folder, including the
+  `<name>.pth` state dict that training writes next to the model; it now
+  loads a `.model` file or the `*.model` files of a folder.
 - **`torchkrates-train --dry-run` always crashed** ("element 0 of tensors
   does not require grad"): its forward pass ran without gradients, which
   the forces need. It now also prepares the model exactly as training does
