@@ -13,6 +13,8 @@
   `dipole_vec` (torch aliases `charges`, `dipole`). A warning is logged
   when the data also has labels for an anchored quantity. Validation logs
   `RMSE_anchor_<quantity>`, the deviation from the pretrained model.
+  Runnable example:
+  [`examples/training/anchoring/finetune_anchoring.yaml`](examples/training/anchoring/finetune_anchoring.yaml).
 
 ### Fixed
 
@@ -20,6 +22,17 @@
   validation** when batches differed in atom count. Validation metrics of
   multi-head models now use the mean over heads, as
   `MultiHeadSO3LRCalculator` and `torchkrates-metric` do.
+- **Warm-starting from `pretrained_weights` ignored
+  `ARCHITECTURE.avg_num_neighbors`**, so the model used 1.0 instead of the
+  checkpoint's value and did not reproduce the pretrained model (e.g. the
+  bundled v1 weights gave a force error of about 7 eV/Å instead of
+  0.18 eV/Å on ethanol). It is now read from `ARCHITECTURE`, and a warning
+  is logged when it is missing. Copy it from the checkpoint's
+  `*_settings.yaml` with the rest of the architecture. Pickled
+  `pretrained_model` files were not affected.
+- **`torchkrates-train --dry-run` always crashed** ("element 0 of tensors
+  does not require grad"): its forward pass ran without gradients, which
+  the forces need.
 
 ## 0.4.0 (2026-11-25)
 

@@ -47,3 +47,4 @@ CLAUDE.md
 /.claude
 .worktrees/
 examples/pme_tuning/tune_pme_batch.py
+/anchoring_example

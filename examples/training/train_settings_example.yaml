@@ -192,7 +192,9 @@ TRAINING:
   #   fresh from this file's own ARCHITECTURE section below -- so
   #   ARCHITECTURE must match the checkpoint's architecture (see its
   #   sibling `*_settings.yaml`, e.g. `pretrained/so3lr/tauri/
-  #   so3lr-tauri-s-2606_settings.yaml`, for the exact values to copy in). Enabling
+  #   so3lr-tauri-s-2606_settings.yaml`, for the exact values to copy in,
+  #   including avg_num_neighbors: the state dict does not contain it,
+  #   and without it the model uses 1.0). Enabling
   #   PME here on top of a checkpoint trained without it (`use_pme: true`
   #   + `pme_smearing`/`pme_mesh_spacing` above) is fine even so: PME
   #   introduces no new *learned* parameters, only its own non-learned
@@ -238,7 +240,9 @@ TRAINING:
   # so energy/force-only data cannot bend the long-range heads. Keys:
   # partial_charges (or charges), a0_ratios (or hirshfeld_ratios),
   # c6_ratios, dipole_vec (or dipole). Needs pretrained_model or
-  # pretrained_weights. Warns if the data also has labels for one of them.
+  # pretrained_weights and loss_type auto (default) or properties. Warns if
+  # the data also has labels for one of them. Runnable example:
+  # examples/training/anchoring/finetune_anchoring.yaml
   # long_range_anchor_weights:
   #   partial_charges: 1.0
   #   a0_ratios: 1.0
