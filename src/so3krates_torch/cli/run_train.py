@@ -377,14 +377,14 @@ def run_dry_run(config: dict) -> None:
     batch_dict = batch.to_dict()
 
     logging.info("Running one forward pass...")
-    with torch.no_grad():
-        output = model(
-            batch_dict,
-            training=False,
-            compute_force=True,
-            compute_virials=False,
-            compute_stress=False,
-        )
+    # No torch.no_grad(): forces are the gradient of the energy.
+    output = model(
+        batch_dict,
+        training=False,
+        compute_force=True,
+        compute_virials=False,
+        compute_stress=False,
+    )
     logging.info(
         f"Forward pass successful. Output keys: {list(output.keys())}"
     )

@@ -61,6 +61,10 @@ def create_model(config: dict, device: torch.device) -> SO3LR:
         "message_normalization": arch_config.get(
             "message_normalization", "avg_num_neighbors"
         ),
+        # Not part of a state dict: a model warm-started from
+        # pretrained_weights gets it only from here (training from scratch
+        # overwrites it with the training data's value).
+        "avg_num_neighbors": arch_config.get("avg_num_neighbors", None),
         "radial_basis_fn": arch_config.get("radial_basis_fn", "bernstein"),
         "energy_learn_atomic_type_shifts": arch_config.get(
             "energy_learn_atomic_type_shifts", False
@@ -290,6 +294,27 @@ def _is_multihead_state_dict(state_dict: dict) -> bool:
     return "atomic_energy_output_block.final_layer_weights" in state_dict
 
 
+def _warn_if_avg_num_neighbors_unset(config: dict) -> None:
+    """pretrained_weights hold no average number of neighbours: without
+    ARCHITECTURE.avg_num_neighbors the warm-started model uses 1.0 and does
+    not reproduce the pretrained model."""
+    arch = config["ARCHITECTURE"]
+    if (
+        arch.get("avg_num_neighbors") is None
+        and arch.get("message_normalization", "avg_num_neighbors")
+        == "avg_num_neighbors"
+        and not config["TRAINING"].get("ft_update_avg_num_neighbors", False)
+    ):
+        logging.warning(
+            "ARCHITECTURE.avg_num_neighbors is not set, and "
+            "pretrained_weights do not contain it: the model uses 1.0 and "
+            "does not reproduce the pretrained model. Copy "
+            "avg_num_neighbors from the checkpoint's *_settings.yaml (or "
+            "set TRAINING.ft_update_avg_num_neighbors: true to compute it "
+            "from the training data)."
+        )
+
+
 def _setup_model_for_training(
     config: dict,
     device: torch.device,
@@ -339,6 +364,7 @@ def _setup_model_for_training(
                 model, pretrained_weights, device, state_dict=state_dict
             )
             warm_start = True
+            _warn_if_avg_num_neighbors_unset(config)
 
     config_r_max = config["ARCHITECTURE"].get("r_max", 4.5)
     if model.r_max != config_r_max:
