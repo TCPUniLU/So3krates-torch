@@ -855,7 +855,10 @@ def evaluate(
                 compute_virials=output_args["virials"],
                 compute_stress=output_args["stress"],
             )
-            avg_loss, aux = metrics(batch, output)
+            # update(), not metrics(...): Metric.forward runs update twice
+            # (and computes) per batch, which also ran the anchoring
+            # teacher twice; only the final compute() is used.
+            metrics.update(batch, output)
 
     avg_loss, aux = metrics.compute()
     aux["time"] = time.time() - start_time

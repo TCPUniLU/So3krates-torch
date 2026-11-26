@@ -400,3 +400,81 @@ def test_anchors_without_pretrained_model_rejected(tmp_path):
     path.write_text(yaml.dump(raw))
     with pytest.raises(ValueError, match="pretrained"):
         setup_config_from_yaml(str(path))
+
+
+def _atomic_data(atoms):
+    from so3krates_torch.data.atomic_data import AtomicData
+    from so3krates_torch.data.utils import (
+        KeySpecification,
+        config_from_atoms,
+        update_keyspec_from_kwargs,
+    )
+    from so3krates_torch.tools.default_keys import DefaultKeys
+    from so3krates_torch.tools.utils import AtomicNumberTable
+
+    keyspec = update_keyspec_from_kwargs(
+        KeySpecification(), DefaultKeys.keydict()
+    )
+    return AtomicData.from_config(
+        config_from_atoms(atoms, key_specification=keyspec),
+        z_table=AtomicNumberTable(list(range(1, 119))),
+        cutoff=5.0,
+        cutoff_lr=10.0,
+    )
+
+
+def test_validation_runs_teacher_once_per_batch(config_with_anchors, lr_model):
+    from so3krates_torch.tools import torch_geometric
+    from so3krates_torch.tools.train import evaluate
+
+    teacher = make_anchor_teacher(lr_model, "float64")
+    calls = []
+    teacher.register_forward_hook(lambda *args: calls.append(1))
+    fns = setup_loss_functions(config_with_anchors, teacher=teacher)
+    loader = torch_geometric.dataloader.DataLoader(
+        [_atomic_data(molecule(m)) for m in ("H2O", "CH4", "NH3")],
+        batch_size=1,
+    )
+    evaluate(
+        lr_model,
+        fns.valid,
+        loader,
+        {"forces": True, "virials": False, "stress": False},
+        torch.device("cpu"),
+    )
+    assert len(calls) == 3
+
+
+def test_hard_label_warning_accounts_for_stage_two(
+    config_with_anchors, lr_model, caplog
+):
+    import logging
+
+    import numpy as np
+
+    cfg = _with(
+        config_with_anchors,
+        TRAINING=dict(
+            charges_weight=0.0,
+            stage_two_start_epoch=1,
+            stage_two_loss_weights={"charges_weight": 2.0},
+            num_epochs=3,
+        ),
+    )
+    fns = setup_loss_functions(
+        cfg, teacher=make_anchor_teacher(lr_model, "float64")
+    )
+    atoms = molecule("H2O")
+    atoms.arrays["REF_charges"] = np.array([-0.8, 0.4, 0.4])
+    labelled = _batch(atoms)
+    with caplog.at_level(logging.WARNING):
+        fns.train(ref=labelled, pred=_pred(lr_model, labelled))
+    msgs = [
+        r.getMessage()
+        for r in caplog.records
+        if "long_range_anchor_weights" in r.getMessage()
+    ]
+    assert len(msgs) == 1
+    assert "ignored" not in msgs[0]
+    assert "stage two" in msgs[0] and "2" in msgs[0]
+    assert msgs[0].startswith("The data has hard labels")

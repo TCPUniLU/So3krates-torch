@@ -265,11 +265,26 @@ def _anchor_loss_functions(
         )
     warned: set = set()
     wrappers: Dict[int, AnchoredLoss] = {}
+    stages = {"": fns.train}
+    if fns.stage_two is not None:
+        stages = {"stage one": fns.train, "stage two": fns.stage_two.loss_fn}
+    label_weights = {
+        name: {
+            stage: float(getattr(base, f"{name}_weight"))
+            for stage, base in stages.items()
+        }
+        for name in anchors
+    }
 
     def wrap(base: torch.nn.Module) -> AnchoredLoss:
         if id(base) not in wrappers:
             wrappers[id(base)] = AnchoredLoss(
-                base, teacher, anchors, adaptive=adaptive, warned=warned
+                base,
+                teacher,
+                anchors,
+                adaptive=adaptive,
+                warned=warned,
+                label_weights=label_weights,
             )
         return wrappers[id(base)]
 

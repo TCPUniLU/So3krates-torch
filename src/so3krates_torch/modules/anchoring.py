@@ -123,6 +123,7 @@ class AnchoredLoss(torch.nn.Module):
         weights: Dict[str, float],
         adaptive: Optional["AdaptiveRobustParams"] = None,
         warned: Optional[set] = None,
+        label_weights: Optional[Dict[str, Dict[str, float]]] = None,
     ) -> None:
         super().__init__()
         from so3krates_torch.modules.loss import AdaptiveRobustParams
@@ -147,6 +148,12 @@ class AnchoredLoss(torch.nn.Module):
         # Quantities already warned about; shared between the losses of
         # one run so each warns once.
         self._warned = warned if warned is not None else set()
+        # Loss weight of each anchored quantity's label term per training
+        # stage ({"": w} for single-stage), for the hard-label warning.
+        self._label_weights = label_weights or {
+            name: {"": float(getattr(base, f"{name}_weight"))}
+            for name in self.anchor_weights
+        }
 
     # Attributes the training code reads from the loss.
     @property
@@ -228,24 +235,31 @@ class AnchoredLoss(torch.nn.Module):
                 if not bool(labelled.any()):
                     continue
             self._warned.add(name)
-            label_weight = float(getattr(self.base, f"{name}_weight"))
-            if label_weight > 0:
-                effect = (
-                    f"Both the label term (loss weight {label_weight:g}) "
-                    "and the anchor term are trained."
-                )
-            else:
-                effect = (
-                    "The labels are ignored (loss weight 0); only the "
-                    "anchor term is trained."
-                )
-            logging.warning(
-                f"Training data has hard labels for '{name}' while "
-                "long_range_anchor_weights also anchors it to the "
-                f"pretrained model. {effect} To use only one, remove "
-                f"'{_CONFIG_KEY[name]}' from long_range_anchor_weights or "
-                "set the label's loss weight to 0."
+            logging.warning(self._hard_label_message(name))
+
+    def _hard_label_message(self, name: str) -> str:
+        weights = self._label_weights.get(name, {})
+        trained = {stage: w for stage, w in weights.items() if w > 0}
+        intro = (
+            f"The data has hard labels for '{name}' while "
+            "long_range_anchor_weights also anchors it to the pretrained "
+            "model. "
+        )
+        if not trained:
+            return intro + (
+                "The labels are ignored (loss weight 0); only the anchor "
+                "term is trained."
             )
+        desc = ", ".join(
+            f"{w:g} in {stage}" if stage else f"{w:g}"
+            for stage, w in trained.items()
+        )
+        return intro + (
+            f"Both the label term (loss weight {desc}) and the anchor term "
+            f"are trained. To use only one, remove '{_CONFIG_KEY[name]}' "
+            "from long_range_anchor_weights or set the label's loss weight "
+            "to 0."
+        )
 
     def forward(self, ref, pred, ddp: Optional[bool] = None) -> torch.Tensor:
         from so3krates_torch.modules.loss import _PROPERTY_LOSS_TERMS
