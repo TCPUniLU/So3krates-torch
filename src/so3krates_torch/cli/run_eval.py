@@ -46,9 +46,9 @@ from ase.io import read
 import torch
 from so3krates_torch.calculator.so3 import (
     _PRETRAINED_SO3LR_MODELS,
-    _build_so3lr_from_settings_and_state_dict,
+    is_state_dict_checkpoint,
     load_pretrained_so3lr,
-    settings_path_for_checkpoint,
+    load_so3lr_model,
 )
 from so3krates_torch.data.utils import KeySpecification
 from pathlib import Path
@@ -131,11 +131,9 @@ def run_evaluation(
             r_max_lr = BUNDLED_R_MAX_LR
         if dispersion_energy_cutoff_lr_damping is None:
             dispersion_energy_cutoff_lr_damping = BUNDLED_LR_DAMPING
-    elif model_path.endswith(".pt"):
-        settings_path = settings_path_for_checkpoint(model_path)
-        model = _build_so3lr_from_settings_and_state_dict(
-            settings_path, model_path, device=device
-        ).to(torch_dtype)
+    elif is_state_dict_checkpoint(model_path):
+        # <stem>.pt/.pth + <stem>_settings.yaml, single- or multi-head
+        model = load_so3lr_model(model_path, device=device).to(torch_dtype)
         model.return_mean = False
         models = [model]
     else:

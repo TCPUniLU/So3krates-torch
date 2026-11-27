@@ -372,10 +372,9 @@ class TorchkratesCalculator(Calculator):
 
             self.num_models = len(model_paths)
 
+            # Pickled models, or <stem>.pt/.pth + <stem>_settings.yaml.
             self.models = [
-                torch.load(
-                    f=model_path, map_location=device, weights_only=False
-                )
+                load_so3lr_model(model_path, device=device)
                 for model_path in model_paths
             ]
 

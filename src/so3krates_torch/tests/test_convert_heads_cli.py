@@ -124,7 +124,7 @@ def test_state_dict_input_gives_clear_error(
             ["--model", str(path), "--output", str(tmp_path / "o.model")]
             + ["--to-multihead", "2"]
         )
-    assert "state_dict" in capsys.readouterr().err
+    assert "sd_settings.yaml" in capsys.readouterr().err
 
 
 def test_missing_model_file(tmp_path, capsys):

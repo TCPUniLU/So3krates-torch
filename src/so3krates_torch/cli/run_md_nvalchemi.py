@@ -477,38 +477,16 @@ def _load_raw_model(
     """Load the SO3LR model behind ``--model``.
 
     ``path`` is one of the bundled keywords (``v1``, ``v2-s``, ``v2-m``,
-    ``v2-l``), a ``<stem>.pt`` state_dict with a sibling
+    ``v2-l``), a ``<stem>.pt``/``<stem>.pth`` state dict (single- or
+    multi-head) with a sibling
     ``<stem>_settings.yaml`` (same convention as ``torchkrates-eval``), or a
     pickled whole model (``.model``, as written by training).
     """
-    from so3krates_torch.calculator.so3 import (
-        _PRETRAINED_SO3LR_MODELS,
-        _build_so3lr_from_settings_and_state_dict,
-        load_pretrained_so3lr,
-        settings_path_for_checkpoint,
-    )
+    from so3krates_torch.calculator.so3 import load_so3lr_model
 
-    overrides = architecture_overrides or {}
-    if path in _PRETRAINED_SO3LR_MODELS:
-        return load_pretrained_so3lr(path, device=device, **overrides)
-    if str(path).endswith(".pt"):
-        return _build_so3lr_from_settings_and_state_dict(
-            settings_path_for_checkpoint(path),
-            path,
-            device=device,
-            **overrides,
-        )
-    if overrides:
-        raise ValueError(
-            f"{sorted(overrides)} change the model architecture, which is "
-            "only possible for bundled keywords and .pt checkpoints with a "
-            "settings file; the pickled model "
-            f"{path!r} is used as saved."
-        )
-    raw = torch.load(path, map_location=device, weights_only=False)
-    if isinstance(raw, dict) and "model" in raw:
-        raw = raw["model"]
-    return raw
+    return load_so3lr_model(
+        path, device=device, **(architecture_overrides or {})
+    )
 
 
 def load_model(

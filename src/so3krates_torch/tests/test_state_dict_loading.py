@@ -266,3 +266,113 @@ def test_training_writes_settings_that_rebuild_the_model(
     pickled = torch.load(model_dir / f"{name}.model", weights_only=False)
     assert type(pair) is type(pickled)
     _assert_same_predictions(pair, pickled, make_batch)
+
+
+# --- every tool accepts a .pt/.pth + settings pair --------------------------
+
+
+@pytest.fixture
+def mh_files(multihead, tmp_path):
+    """A multi-head model as training saves it: .model, .pth, settings."""
+    from so3krates_torch.calculator.so3 import model_settings
+
+    pair = _save_pair(
+        multihead, tmp_path, model_settings(multihead), ".pth", "mh"
+    )
+    pickled = tmp_path / "mh.model"
+    torch.save(multihead, pickled)
+    return str(pair), str(pickled)
+
+
+def _energy(calc):
+    atoms = molecule("CH3CH2OH")
+    atoms.calc = calc
+    return atoms.get_potential_energy()
+
+
+def test_eval_multihead_pair(mh_files, example_xyz_with_data):
+    from so3krates_torch.cli.run_eval import run_evaluation
+
+    results = [
+        run_evaluation(
+            model_path=path,
+            data_path=example_xyz_with_data,
+            device="cpu",
+            dtype="float64",
+            multispecies=True,
+            multihead_model=True,
+        )[0]
+        for path in mh_files
+    ]
+    for a, b in zip(results[0]["energies"], results[1]["energies"]):
+        torch.testing.assert_close(torch.as_tensor(a), torch.as_tensor(b))
+
+
+def test_metric_loads_multihead_pair(mh_files):
+    from so3krates_torch.tools.utils import ensemble_from_folder
+
+    ensemble = ensemble_from_folder(mh_files[0], "cpu", torch.float64)
+    assert [type(m) for m in ensemble.values()] == [MultiHeadSO3LR]
+
+
+def test_md_loads_multihead_pair(mh_files, make_batch):
+    from so3krates_torch.cli.run_md_nvalchemi import _load_raw_model
+
+    pair, pickled = (_load_raw_model(p, "cpu") for p in mh_files)
+    assert type(pair) is MultiHeadSO3LR
+    _assert_same_predictions(pair, pickled, make_batch)
+
+
+def test_calculators_accept_pairs(mh_files, so3lr_model_config, tmp_path):
+    from so3krates_torch.calculator.so3 import (
+        MultiHeadSO3LRCalculator,
+        TorchkratesCalculator,
+        model_settings,
+    )
+
+    energies = [
+        _energy(
+            MultiHeadSO3LRCalculator(
+                model_path=p, device="cpu", default_dtype="float64"
+            )
+        )
+        for p in mh_files
+    ]
+    assert energies[0] == pytest.approx(energies[1], abs=1e-8)
+
+    single = SO3LR(**so3lr_model_config).double()
+    pair = _save_pair(single, tmp_path, model_settings(single), ".pt", "sh")
+    pickled = tmp_path / "sh.model"
+    torch.save(single, pickled)
+    energies = [
+        _energy(
+            TorchkratesCalculator(model_paths=str(p), default_dtype="float64")
+        )
+        for p in (pair, pickled)
+    ]
+    assert energies[0] == pytest.approx(energies[1], abs=1e-8)
+
+
+def test_lammps_export_of_pair(mh_files, monkeypatch):
+    import sys
+
+    from so3krates_torch.cli import create_lammps_model
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["x", mh_files[0], "--elements", "C", "H", "O"],
+    )
+    create_lammps_model.main()
+    exported = torch.load(mh_files[0] + "-mliap_lammps.pt", weights_only=False)
+    assert type(exported.model.model) is MultiHeadSO3LR
+
+
+def test_convert_heads_select_head_from_pair(mh_files, tmp_path):
+    from so3krates_torch.cli.convert_heads import main as convert_heads
+
+    out = tmp_path / "head1.model"
+    convert_heads(
+        ["--model", mh_files[0], "--select-head", "1", "--output", str(out)]
+    )
+    assert type(torch.load(out, weights_only=False)) is SO3LR
