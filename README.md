@@ -237,7 +237,7 @@ torchkrates-create-lammps-model tauri-s-2606 --elements C H O --theory-level 5
 
 | Flag | Description |
 |------|-------------|
-| `model_path` | Pickled model file (`.model`, as written by training) or a bundled model name (`v1`, `tauri-s-2606`, ...); the output is `<model_path>-mliap_lammps.pt` |
+| `model_path` | Pickled model file (`.model`, as written by training), a `.pt`/`.pth` state dict with a sibling `<stem>_settings.yaml` (single- or multi-head, e.g. training's `<name>.pth`), or a bundled model name (`v1`, `tauri-s-2606`, ...); the output is `<model_path>-mliap_lammps.pt` |
 | `--elements` | Element symbols present in the simulation (must match LAMMPS `pair_coeff` type order) |
 | `--head` | Head name for multi-head models (interactive selection if omitted) |
 | `--dtype` | `float32` or `float64` (default: `float64`) |
@@ -298,7 +298,7 @@ torchkrates-convert-heads --model finetuned.model --output head2.model --select-
 
 | Flag | Description |
 |------|-------------|
-| `--model` | Pickled model file (`torch.save(model)`, e.g. the `.model` written by training) or a bundled model name (`v1`, `tauri-m-2606`, ...) |
+| `--model` | Pickled model file (`torch.save(model)`, e.g. the `.model` written by training), a `.pt`/`.pth` state dict with a sibling `<stem>_settings.yaml` (single- or multi-head, e.g. training's `<name>.pth`), or a bundled model name (`v1`, `tauri-m-2606`, ...) |
 | `--output` | Output `.model` file |
 | `--to-multihead N` | Make a multi-head model with N new heads (exactly one of `--to-multihead` / `--select-head`) |
 | `--select-head K` | Keep head K (0-based) of a multi-head model |
@@ -319,7 +319,7 @@ torchkrates-eval --model_path my_model.model --data_path test_set.xyz
 
 `--model_path` also accepts, in addition to the `.model`-file/directory form above:
 - one of the bundled pretrained keywords directly (`v1`, `tauri-{s,m,l}-{2602,2606}`, or the aliases `v2-{s,m,l}`).
-- a path ending in `.pt` with a sibling `<stem>_settings.yaml` (the same naming convention used by the bundled checkpoints under `pretrained/so3lr/{v1,tauri}/`) — this is how a checkpoint produced by `torchkrates-jax2torch --save_state_dict_path my_checkpoint.pt --save_settings_path my_checkpoint_settings.yaml` gets loaded here.
+- a path ending in `.pt` or `.pth` with a sibling `<stem>_settings.yaml`, single- or multi-head (the same naming convention used by the bundled checkpoints under `pretrained/so3lr/{v1,tauri}/`, and the `<name>.pth` + `<name>_settings.yaml` that training writes) — this is how a checkpoint produced by `torchkrates-jax2torch --save_state_dict_path my_checkpoint.pt --save_settings_path my_checkpoint_settings.yaml` gets loaded here.
 
 ```bash
 torchkrates-eval --model_path v1 --data_path my_data.xyz \
@@ -341,7 +341,7 @@ Models with several theory levels (the tauri models and the `v2-*` aliases) need
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model_path` | *required* | Path to a single `.model` file, a directory of `.model` files (use with `--ensemble_size N` for ensemble inference), a bundled pretrained keyword (`v1`, `tauri-*`, `v2-*`), or a `.pt` state_dict checkpoint with a sibling `<stem>_settings.yaml` |
+| `--model_path` | *required* | Path to a single `.model` file, a directory of `.model` files (use with `--ensemble_size N` for ensemble inference), a bundled pretrained keyword (`v1`, `tauri-*`, `v2-*`), or a `.pt`/`.pth` state dict with a sibling `<stem>_settings.yaml` (single- or multi-head, e.g. training's `<name>.pth`) |
 | `--data_path` | *required* | ASE-readable dataset (xyz, extxyz, HDF5) |
 | `--output_file` | `results.h5` | Output HDF5 file |
 | `--ensemble_size` | `1` | Number of models to load from a directory |
@@ -416,7 +416,7 @@ torchkrates-md-nvalchemi \
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model` | *required* | Path to a trained model (`.pt`) |
+| `--model` | *required* | A bundled keyword, a pickled `.model`, or a `.pt`/`.pth` state dict with a sibling `<stem>_settings.yaml` (single- or multi-head, e.g. training's `<name>.pth`) |
 | `--atoms` | *required* | ASE-readable input structure |
 | `--index` | `-1` | ASE frame selection; `-1` runs the last frame, `:` runs every frame as an independent system in one batch |
 | `--ensemble` | `nvt` | `nvt` (Langevin) or `npt` (MTK barostat) |
@@ -448,14 +448,14 @@ torchkrates-md-nvalchemi \
 | `--log-file` | `md_log.csv` | Output CSV log path |
 | `--log-freq` | `100` | Log every N steps |
 
-**Multi-head models.** A model with several independent energy output heads (`MultiHeadSO3LR`, from `convert_to_multihead`, saved by training as a pickled `.model`) runs on the mean over heads of energy, forces and stress, the same as `MultiHeadSO3LRCalculator`. The CSV log then has two extra columns with the spread over heads, a measure of the model's uncertainty:
+**Multi-head models.** A model with several independent energy output heads (`MultiHeadSO3LR`, from `convert_to_multihead`, saved by training as a pickled `.model` and as `.pth` + `_settings.yaml`) runs on the mean over heads of energy, forces and stress, the same as `MultiHeadSO3LRCalculator`. The CSV log then has two extra columns with the spread over heads, a measure of the model's uncertainty:
 
 - `energy_std_eV`: standard deviation of the per-head energies [eV];
 - `force_std_max_eV_A`: per atom, the root-mean-square deviation of the head forces from their mean; the largest value in each structure [eV/Å]. It is `nan` with `--electrostatics nvalchemi`, where the model only returns energies and the forces come from the summed pipeline energy.
 
 Forces for all heads come from a single vectorised backward pass (as in the ASE calculator), which costs more than a single-head model's. `--compile` is refused for these models. In Python, `find_so3lr_wrapper(model).head_results` (from `so3krates_torch.calculator.nvalchemi_so3`) holds the per-head values of the last evaluation: `energies`, `energy_var`, `forces_comm` and `stress_var`, named as in the ASE calculator's results. Multi-theory-level models such as tauri are a different mechanism and use `--theory-level`.
 
-**Running a bundled pre-trained model.** `--model` takes a bundled keyword (`v1`, `tauri-{s,m,l}-{2602,2606}`, see [Pretrained SO3LR Models](#pretrained-so3lr-models-ase-calculator)), a `<stem>.pt` state_dict with a sibling `<stem>_settings.yaml`, or a pickled `.model`. The long-range cutoff defaults to 12.0 Å and the dispersion damping to 2.0 Å when the model stores none, the same values `SO3LRCalculator` uses, so NPT on a periodic cell needs no extra flags:
+**Running a bundled pre-trained model.** `--model` takes a bundled keyword (`v1`, `tauri-{s,m,l}-{2602,2606}`, see [Pretrained SO3LR Models](#pretrained-so3lr-models-ase-calculator)), a `<stem>.pt`/`<stem>.pth` state dict with a sibling `<stem>_settings.yaml` (single- or multi-head), or a pickled `.model`. The long-range cutoff defaults to 12.0 Å and the dispersion damping to 2.0 Å when the model stores none, the same values `SO3LRCalculator` uses, so NPT on a periodic cell needs no extra flags:
 
 ```bash
 torchkrates-md-nvalchemi \
@@ -517,7 +517,7 @@ Compute error metrics over an ASE-readable dataset. Prints a table with MAE and 
 torchkrates-metric --models my_model.model --data test_set.xyz
 ```
 
-`--models` accepts the same two additional forms as `torchkrates-eval`'s `--model_path` above (a pretrained keyword, or a `.pt` + sibling `<stem>_settings.yaml`), on top of the original `.model`-file/directory form:
+`--models` accepts the same two additional forms as `torchkrates-eval`'s `--model_path` above (a pretrained keyword, or a `.pt`/`.pth` + sibling `<stem>_settings.yaml`, single- or multi-head), on top of the original `.model`-file/directory form:
 
 ```bash
 torchkrates-metric --models v1 --data test_set.xyz \
@@ -535,7 +535,7 @@ Note there is no `--multispecies` flag here (unlike `torchkrates-eval`); use `--
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--models` | *required* | Path to a `.model` file or a directory of `.model` files (e.g. a training `model_dir`), a bundled pretrained keyword (`v1`, `tauri-*`, `v2-*`), or a `.pt` state_dict checkpoint with a sibling `<stem>_settings.yaml` |
+| `--models` | *required* | Path to a `.model` file or a directory of `.model` files (e.g. a training `model_dir`), a bundled pretrained keyword (`v1`, `tauri-*`, `v2-*`), or a `.pt`/`.pth` state dict with a sibling `<stem>_settings.yaml` (single- or multi-head, e.g. training's `<name>.pth`) |
 | `--data` | *required* | Dataset path (must contain reference values) |
 | `--output_args` | `energy forces` | Properties to evaluate. Can include `stress`, `virials`, `dipole`, `hirshfeld_ratios`, `c6_ratios`. |
 | `--batch_size` | `16` | Structures per batch |
@@ -1025,11 +1025,11 @@ The JAX trainer's per-target loss `scales` and per-element `atom_loss_weights` a
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `pretrained_model` | `str` | `None` | Path to a complete pre-trained model (`.model` file). The full model object is loaded, including architecture and weights. Cannot be combined with `pretrained_weights`. |
-| `pretrained_weights` | `str` | `None` | Path to pre-trained weights (state dict). Weights are loaded into the model defined by the `ARCHITECTURE` section. Cannot be combined with `pretrained_model`. |
+| `pretrained_weights` | `str` | `None` | Path to pre-trained weights (state dict). Weights are loaded into the model defined by the `ARCHITECTURE` section. Multi-head weights load as a multi-head model with their head count (to continue training, no `convert_to_multihead` needed). An energy head that does not match `ARCHITECTURE` is an error. Cannot be combined with `pretrained_model`. |
 | `ft_update_avg_num_neighbors` | `bool` | `False` | Recompute the average number of neighbors from the new training data instead of keeping the value from the pre-trained model. |
 | `force_use_average_shifts` | `bool` | `False` | Use E0 shifts computed from the new training data instead of the pre-trained model's shifts. |
 
-`pretrained_weights` also accepts a converted checkpoint's `.pt` state_dict directly, e.g. `pretrained/so3lr/tauri/so3lr-tauri-s-2606.pt` (one of the bundled checkpoints described in [Pretrained SO3LR Models](#pretrained-so3lr-models-ase-calculator) above) or your own `torchkrates-jax2torch`-converted checkpoint following the same `<stem>.pt` + `<stem>_settings.yaml` naming convention. `ARCHITECTURE` in this config must match the checkpoint's architecture (copy from its sibling `*_settings.yaml`, including `avg_num_neighbors`, which the state dict does not contain) — see the annotated example and caveats in [`examples/training/train_settings_example.yaml`](examples/training/train_settings_example.yaml) (near `TRAINING.patience`). This is plain warm-started training; for LoRA/DoRA/VeRA fine-tuning of a bundled checkpoint instead, see [`examples/finetuning/finetune_pretrained_so3lr.py`](examples/finetuning/finetune_pretrained_so3lr.py).
+`pretrained_weights` also accepts a converted checkpoint's `.pt` state_dict directly, e.g. `pretrained/so3lr/tauri/so3lr-tauri-s-2606.pt` (one of the bundled checkpoints described in [Pretrained SO3LR Models](#pretrained-so3lr-models-ase-calculator) above) or your own `torchkrates-jax2torch`-converted checkpoint following the same `<stem>.pt` + `<stem>_settings.yaml` naming convention, or a model from an earlier training run (`<model_dir>/<name>.pth`, with its `<name>_settings.yaml`). `ARCHITECTURE` in this config must match the checkpoint's architecture (copy from its sibling `*_settings.yaml`, including `avg_num_neighbors`, which the state dict does not contain) — see the annotated example and caveats in [`examples/training/train_settings_example.yaml`](examples/training/train_settings_example.yaml) (near `TRAINING.patience`). This is plain warm-started training; for LoRA/DoRA/VeRA fine-tuning of a bundled checkpoint instead, see [`examples/finetuning/finetune_pretrained_so3lr.py`](examples/finetuning/finetune_pretrained_so3lr.py).
 
 #### Fine-Tuning Strategy
 
@@ -1095,12 +1095,14 @@ This samples 3500 structures from `pretrain_A.xyz` and 1500 from `pretrain_B.h5`
 |-----|------|---------|-------------|
 | `name_exp` | `str` | *required* | Experiment name. Used for checkpoint filenames, log files, and the final saved model. |
 | `checkpoints_dir` | `str` | *required* | Directory where training checkpoints are saved. |
-| `model_dir` | `str` | `"./model"` | Directory for the final trained model, saved as `<model_dir>/<name_exp>.model` (pickled model) and `<name_exp>.pth` (state dict). Created if missing. |
+| `model_dir` | `str` | `"./model"` | Directory for the final trained model, saved as `<model_dir>/<name_exp>.model` (pickled model), `<name_exp>.pth` (state dict) and `<name_exp>_settings.yaml` (its `ARCHITECTURE`, describing the final model). Created if missing. |
 | `log_dir` | `str` | *required* | Directory for training and validation log files. |
 | `default_dtype` | `str` | `"float64"` | Default floating-point precision. Options: `float32`, `float64`, `float16`, `bfloat16`. Training typically uses `float64` for numerical stability. |
 | `seed` | `int` | `42` | Random seed for reproducibility (weight initialization, data shuffling). |
 | `compute_stress` | `bool` | `False` | Compute stress tensors during training. Required when training with stress/virial labels. |
 
+
+**Model files.** Every tool that takes a model (`torchkrates-eval`, `-metric`, `-md-nvalchemi`, `-create-lammps-model`, `-convert-heads`, the ASE calculators, `pretrained_model`/`pretrained_weights`) accepts the pickled `<name>.model` or the pair `<name>.pth` + `<name>_settings.yaml`, single- or multi-head. The pair needs no pickled Python classes, so it keeps loading across code changes. To rebuild a model in Python: `from so3krates_torch.calculator.so3 import load_so3lr_model; model = load_so3lr_model("model/my_model.pth")`.
 
 ### Runtime and Logging (`MISC`)
 

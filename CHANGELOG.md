@@ -26,7 +26,26 @@
   otherwise level 5 (logged). `torchkrates-create-lammps-model` also
   accepts the bundled model names.
 
+- **Training writes `<name>_settings.yaml`** next to `<model_dir>/<name>.pth`:
+  the `ARCHITECTURE` of the final model (after theory-level selection,
+  multi-head conversion and LoRA merging). The pair `<name>.pth` +
+  `<name>_settings.yaml` loads wherever a pickled `.model` does.
+- **State dicts with a settings file load everywhere, single- or
+  multi-head**: `torchkrates-eval`, `-metric`, `-md-nvalchemi`,
+  `-create-lammps-model`, `-convert-heads`, `TorchkratesCalculator`,
+  `MultiHeadSO3LRCalculator`, `pretrained_weights`. `.pth` is accepted
+  alongside `.pt`. In Python: `load_so3lr_model(path)`.
+
 ### Fixed
+
+- **Multi-head models could not be loaded from a `.pt` + settings file**
+  (`TypeError: ... 'num_output_heads'`), and the ASE calculators accepted
+  no state dict at all.
+- **`pretrained_weights` with multi-head weights** (without
+  `convert_to_multihead`) loaded them into a single-head model, leaving
+  the energy head random with only a "missing/unexpected keys" warning.
+  They now load as a multi-head model, and an energy head that does not
+  match `ARCHITECTURE` is an error.
 
 - **Training a `convert_to_multihead` model crashed at the first
   validation** when batches differed in atom count. Validation metrics of
