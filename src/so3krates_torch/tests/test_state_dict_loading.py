@@ -10,6 +10,7 @@ from ase.build import molecule
 from so3krates_torch.calculator.so3 import load_so3lr_model
 from so3krates_torch.modules.models import MultiHeadSO3LR, SO3LR
 from so3krates_torch.tests.test_multihead_conversion import _trained_like
+from so3krates_torch.tools.model_setup import set_avg_num_neighbors_in_model
 
 
 @pytest.fixture(autouse=True)
@@ -148,3 +149,120 @@ def test_overrides_on_pickled_model_raise(multihead, tmp_path):
     torch.save(multihead, path)
     with pytest.raises(ValueError, match="use_pme"):
         load_so3lr_model(str(path), use_pme=True)
+
+
+# --- settings written from a model ----------------------------------------
+
+
+def _round_trip(model, tmp_path, suffix=".pth"):
+    from so3krates_torch.calculator.so3 import model_settings
+
+    settings = model_settings(model)
+    path = _save_pair(model, tmp_path, settings, suffix)  # YAML-safe
+    return load_so3lr_model(str(path))
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "single",
+        "theory_levels",
+        "multihead",
+        "no_final_bias",
+        "pme",
+        "nhl_c6_simple_hirshfeld",
+    ],
+)
+def test_model_settings_rebuild_the_model(
+    kind, so3lr_model_config, multihead, tmp_path, make_batch
+):
+    torch.manual_seed(1)
+    extra = {
+        "single": {},
+        "theory_levels": {"num_theory_levels": 3},
+        "no_final_bias": {"final_layer_bias": False},
+        "pme": {"use_pme": True, "pme_smearing": 1.1},
+        "nhl_c6_simple_hirshfeld": {
+            "nhl_repulsion_bool": True,
+            "zbl_repulsion_bool": False,
+            "c6_ratios_bool": True,
+            "use_simple_hirshfeld": True,
+        },
+    }
+    if kind == "multihead":
+        model = multihead
+    else:
+        model = _trained_like(SO3LR(**{**so3lr_model_config, **extra[kind]}))
+        model = model.double()
+        # changed after construction, as training does
+        set_avg_num_neighbors_in_model(model, 7.5)
+        model.r_max_lr = 9.0
+
+    loaded = _round_trip(model, tmp_path)
+
+    assert type(loaded) is type(model)
+    assert loaded.avg_num_neighbors == model.avg_num_neighbors
+    assert loaded.r_max_lr == model.r_max_lr
+    level = 2 if kind == "theory_levels" else None
+    _assert_same_predictions(loaded, model, make_batch, theory_level=level)
+
+
+@pytest.mark.parametrize("name", ["v1", "tauri-s-2606"])
+def test_model_settings_of_bundled_models(name, tmp_path, make_batch):
+    from so3krates_torch.calculator.so3 import load_pretrained_so3lr
+
+    model = load_pretrained_so3lr(
+        name, r_max_lr=10.0, dispersion_energy_cutoff_lr_damping=2.0
+    )
+    loaded = _round_trip(model, tmp_path)
+    level = 5 if name.startswith("tauri") else None
+    _assert_same_predictions(loaded, model, make_batch, theory_level=level)
+
+
+# --- training writes <name>_settings.yaml ---------------------------------
+
+
+def _pretrained(config, tmp_path, **arch):
+    from so3krates_torch.tools.model_setup import create_model
+
+    cfg = {**config, "ARCHITECTURE": {**config["ARCHITECTURE"], **arch}}
+    path = tmp_path / "pretrained.model"
+    torch.save(create_model(cfg, "cpu"), path)
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    "variant", ["plain", "multihead", "one_theory_level", "lora"]
+)
+def test_training_writes_settings_that_rebuild_the_model(
+    variant, tmp_path, monkeypatch, make_batch
+):
+    from so3krates_torch.cli.run_train import run_training
+    from so3krates_torch.tests.test_run_train_cli import _small_config
+
+    config = _small_config(tmp_path, num_epochs=1)
+    arch, training = config["ARCHITECTURE"], config["TRAINING"]
+    if variant == "multihead":
+        training["pretrained_model"] = _pretrained(config, tmp_path)
+        arch.update(convert_to_multihead=True, num_output_heads=2)
+        training["finetune_choice"] = "naive"
+    elif variant == "one_theory_level":
+        training["pretrained_model"] = _pretrained(
+            config, tmp_path, num_theory_levels=3
+        )
+        arch["convert_theory_level"] = 1
+        training["finetune_choice"] = "naive"
+    elif variant == "lora":
+        training["pretrained_model"] = _pretrained(config, tmp_path)
+        training["finetune_choice"] = "lora"
+    monkeypatch.chdir(tmp_path)
+
+    run_training(config)
+
+    model_dir = tmp_path / "model_dir"
+    name = config["GENERAL"]["name_exp"]
+    assert (model_dir / f"{name}_settings.yaml").is_file()
+    pair = load_so3lr_model(str(model_dir / f"{name}.pth"))
+    pickled = torch.load(model_dir / f"{name}.model", weights_only=False)
+    assert type(pair) is type(pickled)
+    _assert_same_predictions(pair, pickled, make_batch)

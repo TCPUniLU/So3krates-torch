@@ -119,6 +119,57 @@ def _build_so3lr_from_settings_and_state_dict(
 STATE_DICT_SUFFIXES = (".pt", ".pth")
 
 
+def model_settings(model: torch.nn.Module) -> dict:
+    """The ``ARCHITECTURE`` settings that rebuild ``model`` (as it is now,
+    e.g. after fine-tuning or conversion) from its state dict, in the
+    format of the bundled ``*_settings.yaml`` files.
+
+    The constructor arguments are read back from the model, which stores
+    them under the same names; modules and classes are stored by name
+    (``<arg>_name``), and the theory levels, final-layer bias and head
+    count come from the energy head. The energy shifts are part of the
+    state dict, so ``atomic_type_shifts`` is ``None``.
+    """
+    import inspect
+
+    names = []
+    for cls in type(model).__mro__:
+        if cls is torch.nn.Module:
+            break
+        if "__init__" not in vars(cls):
+            continue
+        for name in inspect.signature(cls.__init__).parameters:
+            if name not in ("self", "args", "kwargs") and name not in names:
+                names.append(name)
+
+    head = model.atomic_energy_output_block
+    derived = {
+        "device": None,  # chosen when loading
+        "dtype": str(next(model.parameters()).dtype).rsplit(".", 1)[-1],
+        "atomic_type_shifts": None,
+        "num_theory_levels": getattr(head, "num_theory_levels", 1),
+        "final_layer_bias": (
+            getattr(head, "final_layer_bias", None) is not None
+            if isinstance(model, MultiHeadSO3LR)
+            else head.final_layer.bias is not None
+        ),
+    }
+    settings = {}
+    for name in names:
+        if name in derived:
+            value = derived[name]
+        elif hasattr(model, f"{name}_name"):
+            value = getattr(model, f"{name}_name")
+        else:
+            value = getattr(model, name, None)
+        if value is None and name == "device":
+            continue
+        if isinstance(value, tuple):
+            value = list(value)
+        settings[name] = value
+    return settings
+
+
 def is_state_dict_checkpoint(path: Union[str, Path]) -> bool:
     """A ``<stem>.pt``/``<stem>.pth`` weights file, loaded together with
     its ``<stem>_settings.yaml``."""
