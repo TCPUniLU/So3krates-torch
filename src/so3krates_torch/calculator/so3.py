@@ -17,7 +17,11 @@ import numpy as np
 from so3krates_torch.data.atomic_data import AtomicData as So3Data
 from so3krates_torch.tools import torch_geometric, torch_tools, utils
 from so3krates_torch.data.utils import KeySpecification, config_from_atoms
-from so3krates_torch.modules.models import SO3LR
+from so3krates_torch.modules.models import (
+    MultiHeadSO3LR,
+    SO3LR,
+    num_heads_in_state_dict,
+)
 import importlib.resources as resources
 
 
@@ -75,13 +79,28 @@ def _build_so3lr_from_settings_and_state_dict(
     settings.pop("device", None)
     settings.update(architecture_overrides)
 
-    torch_model = SO3LR(**settings)
-
     state_dict = torch.load(
         state_dict_path, map_location=device, weights_only=False
     )
-
+    if isinstance(state_dict, dict) and "model" in state_dict:
+        state_dict = state_dict["model"]  # training checkpoint file
     label = error_label if error_label is not None else str(state_dict_path)
+
+    # Multi-head models (MultiHeadSO3LR) are recognised by their weights;
+    # the settings' num_output_heads, if given, must agree.
+    heads = num_heads_in_state_dict(state_dict)
+    settings_heads = settings.pop("num_output_heads", None)
+    if settings_heads is not None and settings_heads != heads:
+        raise ValueError(
+            f"{settings_path} has num_output_heads={settings_heads}, but "
+            f"the weights in {label!r} have "
+            f"{heads if heads is not None else 'a single'} energy head(s)."
+        )
+    if heads is not None:
+        torch_model = MultiHeadSO3LR(**settings, num_output_heads=heads)
+    else:
+        torch_model = SO3LR(**settings)
+
     missing, unexpected = torch_model.load_state_dict(state_dict, strict=False)
     if unexpected:
         raise RuntimeError(
@@ -95,6 +114,52 @@ def _build_so3lr_from_settings_and_state_dict(
         )
     torch_model.to(device)
     return torch_model
+
+
+STATE_DICT_SUFFIXES = (".pt", ".pth")
+
+
+def is_state_dict_checkpoint(path: Union[str, Path]) -> bool:
+    """A ``<stem>.pt``/``<stem>.pth`` weights file, loaded together with
+    its ``<stem>_settings.yaml``."""
+    return Path(path).suffix in STATE_DICT_SUFFIXES
+
+
+def load_so3lr_model(
+    path: Union[str, Path], device: str = "cpu", **architecture_overrides
+) -> torch.nn.Module:
+    """Load a model the way every tool accepts one: a bundled model name
+    (``v1``, ``tauri-s-2606``, ...), a ``<stem>.pt``/``<stem>.pth`` state
+    dict with its ``<stem>_settings.yaml`` (single- or multi-head), or a
+    pickled model (``.model``, as written by training).
+
+    ``architecture_overrides`` (e.g. ``use_pme=True``) change the
+    architecture before construction, so they need a bundled name or a
+    settings file.
+    """
+    path = str(path)
+    if path in _PRETRAINED_SO3LR_MODELS:
+        return load_pretrained_so3lr(
+            path, device=device, **architecture_overrides
+        )
+    if is_state_dict_checkpoint(path):
+        return _build_so3lr_from_settings_and_state_dict(
+            settings_path_for_checkpoint(path),
+            path,
+            device=device,
+            **architecture_overrides,
+        )
+    if architecture_overrides:
+        raise ValueError(
+            f"{sorted(architecture_overrides)} change the model "
+            "architecture, which is only possible for bundled models and "
+            "state dicts with a settings file; the pickled model "
+            f"{path!r} is used as saved."
+        )
+    model = torch.load(path, map_location=device, weights_only=False)
+    if isinstance(model, dict) and "model" in model:
+        model = model["model"]
+    return model
 
 
 def settings_path_for_checkpoint(state_dict_path: Union[str, Path]) -> Path:

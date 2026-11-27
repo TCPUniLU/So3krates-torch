@@ -31,6 +31,17 @@ from so3krates_torch.tools import scatter
 from so3krates_torch.tools import utils
 
 
+# Only multi-head models have stacked per-head energy weights.
+MULTIHEAD_STATE_DICT_KEY = "atomic_energy_output_block.final_layer_weights"
+
+
+def num_heads_in_state_dict(state_dict: Dict[str, Any]) -> Optional[int]:
+    """Number of energy output heads of a multi-head state dict, or None
+    for a single-head one."""
+    weights = state_dict.get(MULTIHEAD_STATE_DICT_KEY)
+    return None if weights is None else int(weights.shape[0])
+
+
 class So3krates(torch.nn.Module):
     def __init__(
         self,

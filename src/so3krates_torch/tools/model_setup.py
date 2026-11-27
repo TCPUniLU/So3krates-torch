@@ -4,7 +4,11 @@ from typing import Union, Optional
 
 import torch
 import torch.nn as nn
-from so3krates_torch.modules.models import SO3LR, MultiHeadSO3LR
+from so3krates_torch.modules.models import (
+    SO3LR,
+    MultiHeadSO3LR,
+    num_heads_in_state_dict,
+)
 from so3krates_torch.tools.finetune import fuse_lora_weights, setup_finetuning
 from so3krates_torch.tools.multihead_utils import (
     select_theory_level,
@@ -284,10 +288,6 @@ def load_pretrained_weights(
     logging.info("Successfully loaded pretrained weights")
 
 
-def _is_multihead_state_dict(state_dict: dict) -> bool:
-    return "atomic_energy_output_block.final_layer_weights" in state_dict
-
-
 def _warn_if_avg_num_neighbors_unset(config: dict) -> None:
     """pretrained_weights hold no average number of neighbours: without
     ARCHITECTURE.avg_num_neighbors the warm-started model uses 1.0 and does
@@ -340,9 +340,10 @@ def _setup_model_for_training(
         state_dict = None
         if pretrained_weights:
             state_dict = read_pretrained_state_dict(pretrained_weights, device)
-            if config["ARCHITECTURE"].get(
-                "convert_to_multihead", False
-            ) and not _is_multihead_state_dict(state_dict):
+            if (
+                config["ARCHITECTURE"].get("convert_to_multihead", False)
+                and num_heads_in_state_dict(state_dict) is None
+            ):
                 # Single-head weights: load them into an SO3LR; it is
                 # converted to multiple heads in prepare_model_for_training.
                 build_config = {
