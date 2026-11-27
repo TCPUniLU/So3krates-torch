@@ -12,6 +12,7 @@ from so3krates_torch.calculator.lammps_mliap_so3 import LAMMPS_MLIAP_SO3
 from so3krates_torch.calculator.so3 import (
     _PRETRAINED_SO3LR_MODELS,
     load_pretrained_so3lr,
+    load_so3lr_model,
 )
 from so3krates_torch.tools.multihead_utils import DEFAULT_THEORY_LEVEL
 from so3krates_torch.tools.eval import (
@@ -195,7 +196,8 @@ def main():
         if args.dispersion_energy_cutoff_lr_damping is None:
             args.dispersion_energy_cutoff_lr_damping = BUNDLED_LR_DAMPING
     else:
-        model = torch.load(model_path, map_location=torch.device("cpu"))
+        # A pickled model, or a <stem>.pt/.pth + <stem>_settings.yaml pair.
+        model = load_so3lr_model(model_path, device="cpu")
 
     # LAMMPS passes no theory level: keep one level of a multi-level model
     # (default 5, so3lr_dev's level, as torchkrates-md-nvalchemi).

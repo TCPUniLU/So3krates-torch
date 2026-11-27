@@ -26,6 +26,7 @@ from so3krates_torch.tools.eval import BUNDLED_LR_DAMPING, BUNDLED_R_MAX_LR
 from so3krates_torch.calculator.so3 import (
     _PRETRAINED_SO3LR_MODELS,
     load_pretrained_so3lr,
+    load_so3lr_model,
 )
 from so3krates_torch.config import ConvertHeadsArgs
 from so3krates_torch.modules.models import MultiHeadSO3LR
@@ -101,12 +102,16 @@ def _load_model(source: str, device: str) -> torch.nn.Module:
             f"Model file not found: {source} (and not a bundled model "
             f"name: {', '.join(sorted(_PRETRAINED_SO3LR_MODELS))})."
         )
-    loaded = torch.load(source, map_location=device, weights_only=False)
+    # A pickled model, or a <stem>.pt/.pth + <stem>_settings.yaml pair.
+    try:
+        loaded = load_so3lr_model(source, device=device)
+    except FileNotFoundError as err:  # state dict without its settings
+        raise ValueError(str(err)) from err
     if not isinstance(loaded, torch.nn.Module):
         raise ValueError(
             f"{source} is not a pickled model (torch.save(model)); it "
-            f"holds a {type(loaded).__name__}, e.g. a state_dict. Load "
-            "it into a model first."
+            f"holds a {type(loaded).__name__}. Give a state dict as "
+            "<stem>.pt or <stem>.pth with its <stem>_settings.yaml."
         )
     return loaded
 

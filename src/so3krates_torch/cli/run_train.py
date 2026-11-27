@@ -16,6 +16,7 @@ from so3krates_torch.modules.anchoring import (
     normalize_anchor_weights,
 )
 from so3krates_torch.tools.finetune import fuse_lora_weights
+from so3krates_torch.calculator.so3 import model_settings
 from so3krates_torch.tools.torch_geometric import seed_everything
 from torch.nn.parallel import DistributedDataParallel as DDP
 
@@ -330,7 +331,16 @@ def run_training(config: dict) -> None:
         stem = os.path.join(model_dir, config["GENERAL"]["name_exp"])
         torch.save(model.state_dict(), f"{stem}.pth")
         torch.save(model, f"{stem}.model")
-        logging.info(f"Saved the final model to {stem}.model (and .pth)")
+        # <stem>.pth + <stem>_settings.yaml load like the bundled
+        # checkpoints (load_so3lr_model), without pickling the class.
+        # Serialise first: a failure must not leave an empty file.
+        settings = yaml.safe_dump({"ARCHITECTURE": model_settings(model)})
+        with open(f"{stem}_settings.yaml", "w") as f:
+            f.write(settings)
+        logging.info(
+            f"Saved the final model to {stem}.model, and as {stem}.pth "
+            f"with {stem}_settings.yaml"
+        )
 
 
 def run_dry_run(config: dict) -> None:

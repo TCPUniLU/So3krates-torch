@@ -17,7 +17,11 @@ import numpy as np
 from so3krates_torch.data.atomic_data import AtomicData as So3Data
 from so3krates_torch.tools import torch_geometric, torch_tools, utils
 from so3krates_torch.data.utils import KeySpecification, config_from_atoms
-from so3krates_torch.modules.models import SO3LR
+from so3krates_torch.modules.models import (
+    MultiHeadSO3LR,
+    SO3LR,
+    num_heads_in_state_dict,
+)
 import importlib.resources as resources
 
 
@@ -75,13 +79,28 @@ def _build_so3lr_from_settings_and_state_dict(
     settings.pop("device", None)
     settings.update(architecture_overrides)
 
-    torch_model = SO3LR(**settings)
-
     state_dict = torch.load(
         state_dict_path, map_location=device, weights_only=False
     )
-
+    if isinstance(state_dict, dict) and "model" in state_dict:
+        state_dict = state_dict["model"]  # training checkpoint file
     label = error_label if error_label is not None else str(state_dict_path)
+
+    # Multi-head models (MultiHeadSO3LR) are recognised by their weights;
+    # the settings' num_output_heads, if given, must agree.
+    heads = num_heads_in_state_dict(state_dict)
+    settings_heads = settings.pop("num_output_heads", None)
+    if settings_heads is not None and settings_heads != heads:
+        raise ValueError(
+            f"{settings_path} has num_output_heads={settings_heads}, but "
+            f"the weights in {label!r} have "
+            f"{heads if heads is not None else 'a single'} energy head(s)."
+        )
+    if heads is not None:
+        torch_model = MultiHeadSO3LR(**settings, num_output_heads=heads)
+    else:
+        torch_model = SO3LR(**settings)
+
     missing, unexpected = torch_model.load_state_dict(state_dict, strict=False)
     if unexpected:
         raise RuntimeError(
@@ -95,6 +114,141 @@ def _build_so3lr_from_settings_and_state_dict(
         )
     torch_model.to(device)
     return torch_model
+
+
+STATE_DICT_SUFFIXES = (".pt", ".pth")
+
+
+def model_settings(model: torch.nn.Module) -> dict:
+    """The ``ARCHITECTURE`` settings that rebuild ``model`` (as it is now,
+    e.g. after fine-tuning or conversion) from its state dict, in the
+    format of the bundled ``*_settings.yaml`` files.
+
+    The constructor arguments are read back from the model, which stores
+    them under the same names; modules and classes are stored by name
+    (``<arg>_name``), and the theory levels, final-layer bias and head
+    count come from the energy head. The energy shifts are part of the
+    state dict, so ``atomic_type_shifts`` is ``None``.
+    """
+    import inspect
+
+    defaults = {}  # constructor argument -> its default
+    for cls in type(model).__mro__:
+        if cls is torch.nn.Module:
+            break
+        if "__init__" not in vars(cls):
+            continue
+        for name, param in inspect.signature(cls.__init__).parameters.items():
+            if name in ("self", "args", "kwargs") or name in defaults:
+                continue
+            empty = param.default is inspect.Parameter.empty
+            defaults[name] = None if empty else param.default
+    names = list(defaults)
+
+    head = model.atomic_energy_output_block
+    derived = {
+        "device": None,  # chosen when loading
+        "dtype": str(next(model.parameters()).dtype).rsplit(".", 1)[-1],
+        "atomic_type_shifts": None,
+        "num_theory_levels": getattr(head, "num_theory_levels", 1),
+        "final_layer_bias": (
+            getattr(head, "final_layer_bias", None) is not None
+            if isinstance(model, MultiHeadSO3LR)
+            else head.final_layer.bias is not None
+        ),
+    }
+    settings = {}
+    for name in names:
+        if name in derived:
+            value = derived[name]
+        elif hasattr(model, f"{name}_name"):
+            value = getattr(model, f"{name}_name")
+        else:
+            # Models pickled before an argument existed lack the
+            # attribute: they were built with its default.
+            value = getattr(model, name, defaults[name])
+        if value is None and name == "device":
+            continue
+        settings[name] = _plain(value)
+    return settings
+
+
+def _settings_sibling(path: Union[str, Path]) -> Path:
+    path = Path(path)
+    return path.with_name(path.stem + "_settings.yaml")
+
+
+def _plain(value):
+    """YAML-safe Python value (numpy / 0-d torch scalars, tuples)."""
+    if isinstance(value, (np.generic, torch.Tensor)) and np.ndim(value) == 0:
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (tuple, list)):
+        return [_plain(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    return value
+
+
+def is_state_dict_checkpoint(path: Union[str, Path]) -> bool:
+    """A ``<stem>.pt``/``<stem>.pth`` weights file, loaded together with
+    its ``<stem>_settings.yaml``."""
+    return Path(path).suffix in STATE_DICT_SUFFIXES
+
+
+def load_so3lr_model(
+    path: Union[str, Path], device: str = "cpu", **architecture_overrides
+) -> torch.nn.Module:
+    """Load a model the way every tool accepts one: a bundled model name
+    (``v1``, ``tauri-s-2606``, ...), a ``<stem>.pt``/``<stem>.pth`` state
+    dict with its ``<stem>_settings.yaml`` (single- or multi-head), or a
+    pickled model (``.model``, as written by training).
+
+    ``architecture_overrides`` (e.g. ``use_pme=True``) change the
+    architecture before construction, so they need a bundled name or a
+    settings file.
+    """
+    path = str(path)
+    if path in _PRETRAINED_SO3LR_MODELS:
+        return load_pretrained_so3lr(
+            path, device=device, **architecture_overrides
+        )
+    if is_state_dict_checkpoint(path) and not _settings_sibling(path).exists():
+        # A pickled model saved as .pt/.pth (common torch.save naming).
+        loaded = torch.load(path, map_location=device, weights_only=False)
+        if isinstance(loaded, dict) and isinstance(
+            loaded.get("model"), torch.nn.Module
+        ):
+            loaded = loaded["model"]
+        if not isinstance(loaded, torch.nn.Module):
+            settings_path_for_checkpoint(path)  # raises: settings missing
+        if architecture_overrides:
+            raise ValueError(
+                f"{sorted(architecture_overrides)} change the model "
+                "architecture, which is only possible for bundled models "
+                "and state dicts with a settings file; the pickled model "
+                f"{path!r} is used as saved."
+            )
+        return loaded
+    if is_state_dict_checkpoint(path):
+        return _build_so3lr_from_settings_and_state_dict(
+            settings_path_for_checkpoint(path),
+            path,
+            device=device,
+            **architecture_overrides,
+        )
+    if architecture_overrides:
+        raise ValueError(
+            f"{sorted(architecture_overrides)} change the model "
+            "architecture, which is only possible for bundled models and "
+            "state dicts with a settings file; the pickled model "
+            f"{path!r} is used as saved."
+        )
+    model = torch.load(path, map_location=device, weights_only=False)
+    if isinstance(model, dict) and "model" in model:
+        model = model["model"]
+    return model
 
 
 def settings_path_for_checkpoint(state_dict_path: Union[str, Path]) -> Path:
@@ -256,10 +410,9 @@ class TorchkratesCalculator(Calculator):
 
             self.num_models = len(model_paths)
 
+            # Pickled models, or <stem>.pt/.pth + <stem>_settings.yaml.
             self.models = [
-                torch.load(
-                    f=model_path, map_location=device, weights_only=False
-                )
+                load_so3lr_model(model_path, device=device)
                 for model_path in model_paths
             ]
 

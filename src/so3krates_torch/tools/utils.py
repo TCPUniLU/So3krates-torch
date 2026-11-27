@@ -714,22 +714,19 @@ def ensemble_from_folder(path_to_models: str, device: str, dtype: str) -> dict:
     # circular. A function-local import breaks the cycle.
     from so3krates_torch.calculator.so3 import (
         _PRETRAINED_SO3LR_MODELS,
-        _build_so3lr_from_settings_and_state_dict,
+        is_state_dict_checkpoint,
         load_pretrained_so3lr,
-        settings_path_for_checkpoint,
+        load_so3lr_model,
     )
 
     if path_to_models in _PRETRAINED_SO3LR_MODELS:
         model = load_pretrained_so3lr(path_to_models, device=device).to(dtype)
         return {path_to_models: model}
 
-    if path_to_models.endswith(".pt"):
-        settings_path = settings_path_for_checkpoint(path_to_models)
-        model = _build_so3lr_from_settings_and_state_dict(
-            settings_path, path_to_models, device=device
-        ).to(dtype)
-        stem = os.path.splitext(os.path.basename(path_to_models))[0]
-        return {stem: model}
+    if is_state_dict_checkpoint(path_to_models):
+        # <stem>.pt/.pth + <stem>_settings.yaml, single- or multi-head
+        model = load_so3lr_model(path_to_models, device=device).to(dtype)
+        return {Path(path_to_models).stem: model}
 
     path = Path(path_to_models)
     if not path.exists():

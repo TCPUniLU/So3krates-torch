@@ -203,6 +203,10 @@ TRAINING:
   #   + `pme_smearing`/`pme_mesh_spacing` above) is fine even so: PME
   #   introduces no new *learned* parameters, only its own non-learned
   #   buffers, which is exactly what strict=False allows to be missing.
+  #   A model from an earlier training run works the same way:
+  #   <model_dir>/<name>.pth, with ARCHITECTURE copied from its
+  #   <name>_settings.yaml. Multi-head weights load as a multi-head model
+  #   (no convert_to_multihead needed to continue training).
   #   Mutually exclusive with `pretrained_model` (a pickled whole-model
   #   `.model` file) below -- use one or the other.
   # pretrained_model: /path/to/model.model  # complete pickled model object
