@@ -184,3 +184,76 @@ def test_model_eval_multihead_batches_of_different_sizes(
     aux = ev.compute()  # no loss_fn: only the metrics
     expected = torch.cat(expected_delta_f).abs().mean().item()
     assert aux["mae_f"] == pytest.approx(expected, rel=1e-10)
+
+
+def _saved_weights(cfg, tmp_path, name="weights.pt"):
+    model = create_model(cfg, "cpu")
+    path = tmp_path / name
+    torch.save(model.state_dict(), path)
+    return model, str(path)
+
+
+def test_multihead_weights_load_as_multihead_without_flag(config, tmp_path):
+    """Continuing training from a multi-head state dict needs no
+    convert_to_multihead: the weights say it is multi-head."""
+    pretrained, path = _saved_weights(
+        _with(
+            config,
+            ARCHITECTURE=dict(convert_to_multihead=True, num_output_heads=3),
+        ),
+        tmp_path,
+    )
+    cfg = _with(
+        config,
+        TRAINING=dict(pretrained_weights=path, finetune_choice="naive"),
+    )
+
+    loaded, warm_start = _setup_model_for_training(cfg, "cpu")
+
+    assert warm_start
+    assert type(loaded) is MultiHeadSO3LR and loaded.num_output_heads == 3
+    for key, value in pretrained.state_dict().items():
+        assert torch.equal(loaded.state_dict()[key], value), key
+
+
+def test_multihead_weights_head_count_mismatch_raises(config, tmp_path):
+    _, path = _saved_weights(
+        _with(
+            config,
+            ARCHITECTURE=dict(convert_to_multihead=True, num_output_heads=3),
+        ),
+        tmp_path,
+    )
+    cfg = _with(
+        config,
+        ARCHITECTURE=dict(convert_to_multihead=True, num_output_heads=2),
+        TRAINING=dict(pretrained_weights=path, finetune_choice="naive"),
+    )
+    with pytest.raises(ValueError, match="3"):
+        _setup_model_for_training(cfg, "cpu")
+
+
+def test_energy_head_mismatch_raises(config, tmp_path):
+    """A mismatched energy head must not load loosely into a random head."""
+    _, path = _saved_weights(
+        _with(config, ARCHITECTURE=dict(final_layer_bias=True)), tmp_path
+    )
+    cfg = _with(
+        config,
+        ARCHITECTURE=dict(final_layer_bias=False),
+        TRAINING=dict(pretrained_weights=path),
+    )
+    with pytest.raises(RuntimeError, match="atomic_energy_output_block"):
+        _setup_model_for_training(cfg, "cpu")
+
+
+def test_non_head_missing_keys_still_tolerated(config, tmp_path):
+    """E.g. PME buffers, which weights trained without PME do not have."""
+    _, path = _saved_weights(config, tmp_path)
+    cfg = _with(
+        config,
+        ARCHITECTURE=dict(use_pme=True),
+        TRAINING=dict(pretrained_weights=path),
+    )
+    loaded, warm_start = _setup_model_for_training(cfg, "cpu")
+    assert warm_start and loaded.use_pme

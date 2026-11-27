@@ -273,6 +273,20 @@ def load_pretrained_weights(
     missing_keys, unexpected_keys = model.load_state_dict(
         state_dict, strict=False
     )
+    # Other keys may differ (e.g. PME buffers), but an energy head that
+    # does not match would silently stay randomly initialised.
+    head_keys = [
+        k
+        for k in list(missing_keys) + list(unexpected_keys)
+        if k.startswith("atomic_energy_output_block.")
+    ]
+    if head_keys:
+        raise RuntimeError(
+            f"The energy head of {pretrained_path} does not match the model "
+            f"built from ARCHITECTURE (missing or unexpected: {head_keys}). "
+            "Check that ARCHITECTURE matches the weights (e.g. copy it from "
+            "the weights' *_settings.yaml)."
+        )
 
     if missing_keys:
         logging.warning(
@@ -340,10 +354,33 @@ def _setup_model_for_training(
         state_dict = None
         if pretrained_weights:
             state_dict = read_pretrained_state_dict(pretrained_weights, device)
-            if (
-                config["ARCHITECTURE"].get("convert_to_multihead", False)
-                and num_heads_in_state_dict(state_dict) is None
-            ):
+            heads = num_heads_in_state_dict(state_dict)
+            if heads is not None:
+                # Multi-head weights (e.g. to continue training): build a
+                # multi-head model with their head count.
+                configured = config["ARCHITECTURE"].get("num_output_heads")
+                if (
+                    config["ARCHITECTURE"].get("convert_to_multihead", False)
+                    and configured is not None
+                    and configured != heads
+                ):
+                    raise ValueError(
+                        f"pretrained_weights have {heads} energy heads, but "
+                        f"ARCHITECTURE.num_output_heads is {configured}."
+                    )
+                logging.info(
+                    f"Multi-head weights ({heads} heads): continuing as a "
+                    "multi-head model."
+                )
+                build_config = {
+                    **config,
+                    "ARCHITECTURE": {
+                        **config["ARCHITECTURE"],
+                        "convert_to_multihead": True,
+                        "num_output_heads": heads,
+                    },
+                }
+            elif config["ARCHITECTURE"].get("convert_to_multihead", False):
                 # Single-head weights: load them into an SO3LR; it is
                 # converted to multiple heads in prepare_model_for_training.
                 build_config = {
