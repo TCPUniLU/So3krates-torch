@@ -376,3 +376,67 @@ def test_convert_heads_select_head_from_pair(mh_files, tmp_path):
         ["--model", mh_files[0], "--select-head", "1", "--output", str(out)]
     )
     assert type(torch.load(out, weights_only=False)) is SO3LR
+
+
+# --- final review fixes -----------------------------------------------------
+
+
+def test_model_settings_are_plain_python_with_numpy_values(
+    so3lr_model_config, tmp_path, make_batch
+):
+    """Preprocessed HDF5 metadata gives numpy scalars (avg_num_neighbors):
+    the settings must still be YAML-safe."""
+    import numpy as np
+
+    model = SO3LR(**so3lr_model_config).double()
+    set_avg_num_neighbors_in_model(model, np.float64(8.0))
+    model.r_max_lr = np.float64(9.0)
+
+    loaded = _round_trip(model, tmp_path)
+
+    assert loaded.avg_num_neighbors == 8.0
+    _assert_same_predictions(loaded, model, make_batch)
+
+
+def test_model_settings_default_for_attributes_older_models_lack(
+    so3lr_model_config, tmp_path, make_batch
+):
+    """A model pickled before an argument existed: its default, not None."""
+    model = SO3LR(**so3lr_model_config).double()
+    del model.input_convention
+    del model.pme_mesh_rule
+
+    from so3krates_torch.calculator.so3 import model_settings
+
+    settings = model_settings(model)
+    assert settings["input_convention"] == "positions"
+    assert settings["pme_mesh_rule"] == "jax"
+    _assert_same_predictions(_round_trip(model, tmp_path), model, make_batch)
+
+
+@pytest.mark.parametrize("suffix", [".pt", ".pth"])
+def test_pickled_model_with_pt_suffix_still_loads(multihead, tmp_path, suffix):
+    from so3krates_torch.calculator.so3 import TorchkratesCalculator
+
+    path = tmp_path / f"pickled{suffix}"
+    torch.save(multihead, path)  # no <stem>_settings.yaml
+
+    assert type(load_so3lr_model(str(path))) is MultiHeadSO3LR
+    calc = TorchkratesCalculator(
+        model_paths=str(path), default_dtype="float64"
+    )
+    assert type(calc.models[0]) is MultiHeadSO3LR
+
+
+def test_state_dict_without_settings_still_says_so(multihead, tmp_path):
+    path = tmp_path / "weights.pt"
+    torch.save(multihead.state_dict(), path)
+    with pytest.raises(FileNotFoundError, match="weights_settings.yaml"):
+        load_so3lr_model(str(path))
+
+
+def test_pretrained_model_accepts_a_pair(mh_files):
+    from so3krates_torch.tools.model_setup import load_pretrained_model_direct
+
+    model = load_pretrained_model_direct(mh_files[0], "cpu")
+    assert type(model) is MultiHeadSO3LR

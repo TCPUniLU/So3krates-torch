@@ -333,8 +333,10 @@ def run_training(config: dict) -> None:
         torch.save(model, f"{stem}.model")
         # <stem>.pth + <stem>_settings.yaml load like the bundled
         # checkpoints (load_so3lr_model), without pickling the class.
+        # Serialise first: a failure must not leave an empty file.
+        settings = yaml.safe_dump({"ARCHITECTURE": model_settings(model)})
         with open(f"{stem}_settings.yaml", "w") as f:
-            yaml.safe_dump({"ARCHITECTURE": model_settings(model)}, f)
+            f.write(settings)
         logging.info(
             f"Saved the final model to {stem}.model, and as {stem}.pth "
             f"with {stem}_settings.yaml"

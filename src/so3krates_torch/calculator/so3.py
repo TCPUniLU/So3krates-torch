@@ -132,15 +132,18 @@ def model_settings(model: torch.nn.Module) -> dict:
     """
     import inspect
 
-    names = []
+    defaults = {}  # constructor argument -> its default
     for cls in type(model).__mro__:
         if cls is torch.nn.Module:
             break
         if "__init__" not in vars(cls):
             continue
-        for name in inspect.signature(cls.__init__).parameters:
-            if name not in ("self", "args", "kwargs") and name not in names:
-                names.append(name)
+        for name, param in inspect.signature(cls.__init__).parameters.items():
+            if name in ("self", "args", "kwargs") or name in defaults:
+                continue
+            empty = param.default is inspect.Parameter.empty
+            defaults[name] = None if empty else param.default
+    names = list(defaults)
 
     head = model.atomic_energy_output_block
     derived = {
@@ -161,13 +164,31 @@ def model_settings(model: torch.nn.Module) -> dict:
         elif hasattr(model, f"{name}_name"):
             value = getattr(model, f"{name}_name")
         else:
-            value = getattr(model, name, None)
+            # Models pickled before an argument existed lack the
+            # attribute: they were built with its default.
+            value = getattr(model, name, defaults[name])
         if value is None and name == "device":
             continue
-        if isinstance(value, tuple):
-            value = list(value)
-        settings[name] = value
+        settings[name] = _plain(value)
     return settings
+
+
+def _settings_sibling(path: Union[str, Path]) -> Path:
+    path = Path(path)
+    return path.with_name(path.stem + "_settings.yaml")
+
+
+def _plain(value):
+    """YAML-safe Python value (numpy / 0-d torch scalars, tuples)."""
+    if isinstance(value, (np.generic, torch.Tensor)) and np.ndim(value) == 0:
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (tuple, list)):
+        return [_plain(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    return value
 
 
 def is_state_dict_checkpoint(path: Union[str, Path]) -> bool:
@@ -193,6 +214,23 @@ def load_so3lr_model(
         return load_pretrained_so3lr(
             path, device=device, **architecture_overrides
         )
+    if is_state_dict_checkpoint(path) and not _settings_sibling(path).exists():
+        # A pickled model saved as .pt/.pth (common torch.save naming).
+        loaded = torch.load(path, map_location=device, weights_only=False)
+        if isinstance(loaded, dict) and isinstance(
+            loaded.get("model"), torch.nn.Module
+        ):
+            loaded = loaded["model"]
+        if not isinstance(loaded, torch.nn.Module):
+            settings_path_for_checkpoint(path)  # raises: settings missing
+        if architecture_overrides:
+            raise ValueError(
+                f"{sorted(architecture_overrides)} change the model "
+                "architecture, which is only possible for bundled models "
+                "and state dicts with a settings file; the pickled model "
+                f"{path!r} is used as saved."
+            )
+        return loaded
     if is_state_dict_checkpoint(path):
         return _build_so3lr_from_settings_and_state_dict(
             settings_path_for_checkpoint(path),

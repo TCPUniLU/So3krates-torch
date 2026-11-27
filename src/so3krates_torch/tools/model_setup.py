@@ -179,10 +179,10 @@ def load_pretrained_model_direct(
 
     logging.info(f"Loading complete pretrained model from: {pretrained_path}")
 
-    # Load the pretrained model
-    loaded_object = torch.load(
-        pretrained_path, map_location=device, weights_only=False
-    )
+    # A pickled model, or a <stem>.pt/.pth + <stem>_settings.yaml pair.
+    from so3krates_torch.calculator.so3 import load_so3lr_model
+
+    loaded_object = load_so3lr_model(pretrained_path, device=str(device))
 
     if isinstance(loaded_object, torch.nn.Module):
         # If it's a complete model object, return it directly
